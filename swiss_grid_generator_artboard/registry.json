@@ -1,0 +1,17 @@
+{
+  "scripts": [
+    {
+      "id": "swiss_grid_generator_artboard_1.0",
+      "name": "swiss_grid_generator_artboard_1.0",
+      "description": "Artboard and Units support for swiss_grid_generator_en",
+      "version": "1.0.0",
+      "author": "olliollio",
+      "contributors": ["olliollio"],
+      "category": "Layout",
+      "image": "previews/swiss_grid_generator_artboard_1.0.webp",
+      "url": "https://www.analog.de",
+      "email": "ollio@ollio.de",
+      "download_url": "https://raw.githubusercontent.com/olliollio/affinity-scripts/main/swiss_grid_generator_artboard/swiss_grid_generator_artboard_1.0.js"
+    }
+  ]
+}
