@@ -12,18 +12,6 @@
  * author: olliollio - analog digitalagentur
  */
 
-// ---------------------------------------------------------------------------
-// Verified API surface (from examples/ community scripts):
-//   - getNodeChildrenRecursive(parent.handle, NodeChildType.Main, false)  [/nodes]
-//       walks every descendant node under a scope container.
-//   - node.storyInterface.story.getGlyphAtts(pos).height  [read font size, in pt]
-//   - Selection.createEmpty(doc) + .add(node) + (doc.selection = sel)  [/selections]
-//       commits a computed node list as the app's live selection.
-//   - doc.selection.items -> each { node, getSubSelectionOfType(SubSelectionType.Text) }
-//       a text sub-selection has .isEmpty, .rangeCount, .ranges[i].{begin,end}.
-// console.log is not visible in the Scripts panel, so all user-facing output
-// goes through app.alert.
-// ---------------------------------------------------------------------------
 
 const { app } = require('/application');
 const { Document } = require('/document');
@@ -42,12 +30,6 @@ function sizeKey(h) { return h.toFixed(2); }
 // huge text frame can't stall the whole pass.
 const MAX_SCAN = 5000;
 
-// Walk the glyph runs of a node's text story, calling onAtts(atts) for each
-// sampled position. Return true from onAtts to stop early. Non-text nodes are
-// silently skipped. `range` (optional {begin,end}) limits the scan to a
-// selected text sub-range. atts is the object from getGlyphAtts: verified
-// members include height (pt), font [Font], brushFill/penFill [FillDescriptor],
-// styleName, and more.
 function scanGlyphs(node, range, onAtts) {
   let story;
   try { story = node && node.storyInterface && node.storyInterface.story; }
