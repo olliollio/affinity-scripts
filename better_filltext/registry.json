@@ -1,0 +1,17 @@
+{
+  "scripts": [
+    {
+      "id": "better_filltext_1.0",
+      "name": "Better Filltext",
+      "description": "Fills the selected text frame(s) with placeholder text in a choice of styles (Lorem, Hipster, Cupcake, Bacon, Cheese, Pirate, Cat, Corporate, Coffee, Zombie, Cosmic, Legalese). Set the amount by paragraphs, sentences, words or characters, and optionally begin with the style's signature opening. Gives the exact-count control Affinity's native filler text lacks.",
+      "version": "1.1.0",
+      "author": "olliollio",
+      "contributors": ["olliollio"],
+      "category": "Text",
+      "image": "better-filltext.webp",
+      "url": "https://www.analog.de",
+      "email": "ollio@ollio.de",
+      "download_url": "https://raw.githubusercontent.com/olliollio/affinity-scripts/main/better_filltext/better_filltext_1.0.js"
+    }
+  ]
+}
