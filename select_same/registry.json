@@ -1,0 +1,17 @@
+{
+  "scripts": [
+    {
+      "id": "select_same_1.0",
+      "name": "select_same_1.0",
+      "description": "Select every object that shares the chosen attribute(s) with your selection: font family, family & style, font size, text fill/stroke colour, opacity, blend mode, shape type, corner radius, rotation. Combine with Match-all for Illustrator's Family/Style/Size etc. Affinity's missing Select > Same.",
+      "version": "1.5.0",
+      "author": "olliollio",
+      "contributors": ["olliollio"],
+      "category": "Selection",
+      "image": "select-same.webp",
+      "url": "https://www.analog.de",
+      "email": "ollio@ollio.de",
+      "download_url": "https://raw.githubusercontent.com/olliollio/affinity-scripts/main/select_same/select_same_1.0.js"
+    }
+  ]
+}
