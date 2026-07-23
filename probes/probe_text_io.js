@@ -138,18 +138,22 @@ function run() {
   let si = null; try { si = node.storyInterface; } catch (e) {}
   if (si) scalarDump(gSI, si, 12);
 
-  // Text-related command factories (createSetText is known; hunt for range ops).
-  const gCmd = c2.addGroup('DocumentCommand text/range creators');
+  // Text-content command factories. Tight filter (the broad /set/ matched every
+  // createSet* effect and flooded the list). /text|filler|insert|replace|delete/
+  // catches createSetText and any range-aware / filler-text ops.
+  const gCmd = c2.addGroup('DocumentCommand text creators');
   if (DocumentCommand) {
-    const hits = members(DocumentCommand).filter((k) => /text|story|set|replace|insert|delete|range/i.test(k));
-    line(gCmd, '(matching)', hits.length ? hits.join(', ') : '(none matched)');
+    const hits = members(DocumentCommand).filter((k) => /text|filler|insert|replace|delete/i.test(k));
+    if (!hits.length) line(gCmd, '', '(none matched)');
+    for (let i = 0; i < hits.length; i += 2) { if (budget <= 20) break; line(gCmd, '', hits.slice(i, i + 2).join(', ')); }
   } else line(gCmd, '', '(/commands not available)');
 
   // StoryDelta creators (for formatting-safe / range text edits).
-  const gDelta = c2.addGroup('StoryDelta create* factories');
+  const gDelta = c2.addGroup('StoryDelta text/string factories');
   if (StoryDelta) {
-    const creators = members(StoryDelta).filter((k) => /^create/i.test(k) || /text|string|range/i.test(k));
-    for (let i = 0; i < creators.length; i += 4) { if (budget <= 8) break; line(gDelta, '', creators.slice(i, i + 4).join(', ')); }
+    const creators = members(StoryDelta).filter((k) => /text|string|insert|replace|delete/i.test(k));
+    if (!creators.length) line(gDelta, '', '(none matched — StoryDelta is attribute-only)');
+    for (let i = 0; i < creators.length; i += 3) { if (budget <= 8) break; line(gDelta, '', creators.slice(i, i + 3).join(', ')); }
   } else line(gDelta, '', '(/storydelta not available)');
 
   // StoryRange shape (for addressing sub-ranges).
