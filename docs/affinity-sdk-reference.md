@@ -222,7 +222,7 @@ a **SpreadNode** (`node[Symbol.toStringTag] === 'SpreadNode'`); spread extents v
 |---|---|
 | `sel.length` | Count (0 when empty; also 0 with artboards selected). |
 | `sel.firstNode` | First selected node, or null. |
-| `sel.nodes` | Node collection; `sel.nodes.first`. |
+| `sel.nodes` | Node collection: `sel.nodes.first`, `.isEmpty`, `.filter(fn)`, and `for…of`. |
 | `sel.items` | **Iterable** collection. Each item: `.node`, `.getSubSelectionOfType(SubSelectionType.Text)`. |
 
 ⚠️ **Gotcha:** `sel.items` is iterable (`for...of`) but **NOT index-accessible** —
@@ -334,10 +334,43 @@ builder.addShapeNode(ShapeNodeDefinition.create(shape, rect,
   FillDescriptor.createSolid(SVG11.black)));
 ```
 
-**Curves** (`node.curvesInterface`): `polyCurve` `[PolyCurve]`,
-`corneredPolyCurve` `[PolyCurve]`, `polyPolyCurves`, `windingOrder`,
-`domainTransform`, `isMutable`, `node`, `handle`. A `PolyCurve` holds the
-segments; a segment `s` has `s.start, s.end, s.c1, s.c2` (bezier control points).
+**Curves** (`node.curvesInterface`, present on `PolyCurveNode` / editable vector
+shapes): members `polyCurve` `[PolyCurve]`, `corneredPolyCurve` `[PolyCurve]`,
+`polyPolyCurves`, `windingOrder`, `domainTransform`, `isMutable`, `node`,
+`handle`.
+
+**Read** the geometry:
+- `pc = ci.polyCurve`; `pc.curveCount`; `pc.at(i)` → a `Curve`.
+- `curve.beziers` — iterable of segments; each `bz` has `bz.start, bz.c1, bz.c2,
+  bz.end` (points with `.x` / `.y`). `curve.isClosed`.
+
+> ⚠️ **Straight segments are stored as cubics** with the handles collapsed onto
+> the anchors (`c1 ≈ start`, `c2 ≈ end`), and those cubics are **not
+> constant-speed** — so distributing points by curve *parameter* `t` bunches
+> them toward the ends. Distribute by **arc length** when you need even spacing.
+
+**Rebuild & write back** (round-trip verified in `add_anchor_points`):
+
+```js
+const { CurveBuilder, PolyCurve } = require('/geometry');
+const ci  = node.curvesInterface;
+const pc  = ci.polyCurve;
+const out = PolyCurve.create();
+for (let i = 0; i < pc.curveCount; i++) {
+  const curve = pc.at(i);
+  const cb = CurveBuilder.create();
+  cb.begin(firstSeg.start);
+  for (const s of segments) cb.addBezier(s.c1, s.c2, s.end);
+  if (curve.isClosed) cb.close();
+  out.addCurve(cb.createCurve());
+}
+doc.executeCommand(DocumentCommand.createSetCurves(ci, out));
+```
+
+An exact **De Casteljau split** preserves shape exactly (lines stay lines,
+curves keep their form). `examples/redundantnodesremover.js` is the inverse op.
+Filter selected curves with `doc.selection.nodes.filter((n) => n.isPolyCurveNode)`
+(`sel.nodes` supports `.filter()`, `.isEmpty`, and `for…of`).
 
 ---
 
@@ -406,6 +439,39 @@ A text frame node satisfies:
 - `story = node.storyInterface.story`
 - `story.length` — glyph count (valid positions `0 … length-1`)
 - `story.getGlyphAtts(pos)` — the glyph attributes at a position (see schema)
+
+### Reading & writing text content (verified)
+
+Reading the frame's string:
+
+| Accessor | Result |
+|---|---|
+| `story.text` | The whole string. ✅ |
+| `story.getText(begin, end)` | Substring by glyph index. ✅ |
+| `story.getText(new StoryRange(begin, end))` | Substring by range. ✅ |
+| `story.string` / `.plainText` / `.getString` / `.substring` | do **not** exist |
+| `story.toString()` | `"[object Story]"` (not the text) |
+
+Boundary / range helpers on the story (for word- or paragraph-aware search &
+replace): `getWordRange`, `getParagraphRange`, `getTextRange`, `getGlyphRange`,
+`findWordBegin`, `findWordEnd`, `findWordPart`, `findParagraphBreak`,
+`rFindWordBegin`, `rFindWordEnd` (reverse find), `isWordBegin`, `isWordEnd`,
+`isEmpty`, `length`. Also `fillerTextGlyphs` — Affinity's native filler /
+placeholder text.
+
+**Set a frame's text** (whole-frame; replaces all existing runs):
+
+```js
+const { Selection } = require('/selections');
+const sel = Selection.create(doc, frameNode);
+doc.executeCommand(DocumentCommand.createSetText(sel, 'Hello\nWorld'));
+// '\n' acts as a paragraph break.
+```
+
+`Math.random()` **is** available in the Affinity script runtime (used for e.g.
+placeholder-text generation). `storyInterface` also exposes many `*Glyphs`
+collections (`charGlyphs`, `anchorGlyphs`, `dataMergeGlyphs`, `fieldGlyphs`, …)
+plus `domainTransform`.
 
 **Read a font size** (verified):
 
@@ -564,7 +630,9 @@ Observed: `ShapeType.value === 0` for a rectangle.
 |---|---|
 | `DocumentCommand.createAddGuide(isHorizontal, position)` | `false` = vertical guide at x; `true` = horizontal at y. Position in **document px** (add the artboard's `spreadBaseBox.x`/`.y` offset to place relative to an artboard). |
 | `DocumentCommand.createFormatText(selection, delta)` | Text formatting. |
-| `DocumentCommand.createSetText(selection, text)` | Replace frame text. |
+| `DocumentCommand.createSetText(selection, text)` | Replace a frame's whole text. `selection` = `Selection.create(doc, frameNode)`; `'\n'` = paragraph break. |
+| `DocumentCommand.createSetCurves(curvesInterface, polyCurve)` | Replace a curve node's geometry (see [Shape nodes → Curves](#9-shape-nodes)). |
+| `DocumentCommand.createSetDescription(...)`, `createSetOpacity(...)`, `createSetCurveNodeStyle(...)`, `createSetDocumentProperties(...)` | Many `createSet*` setters exist (opacity, description, effects, adjustments, …) — enumerate `members(DocumentCommand)` to discover. |
 | `CompoundCommandBuilder.create()` → `.addCommand(cmd)` → `.createCommand()` | Batch many commands into one undo step. |
 | `AddChildNodesCommandBuilder.create()` → `.setInsertionTarget(node)` / `.addNode(def)` / `.addShapeNode(def)` → `.createCommand(true, NodeChildType.Main)` | Insert nodes. |
 | `doc.executeCommand(cmd)` / `doc.executeCommand(cmd, true)` | `true` = preview (non-committed). |
@@ -698,6 +766,22 @@ setIdentity, shear, xAxis, yAxis
 corneredPolyCurve, domainTransform, handle, isMutable, node, polyCurve,
 polyPolyCurves, windingOrder
 ```
+
+### `story` (text frame — `node.storyInterface.story`)
+```
+anchorGlyphs, attRuns, charGlyphs, containsBookEndnotes, containsIndex,
+containsToc, dataMergeGlyphs, documentFieldGlyphs, fieldGlyphs, fillerTextGlyphs,
+findParagraphBreak, findWordBegin, findWordEnd, findWordPart, formattableFieldGlyphs,
+getAttRunsFrom, getGlyph, getGlyphAtts, getGlyphAttsRunEnd, getGlyphType,
+getParagraphAtts, getParagraphRange, getSoftBreakType, getText, getTextRange,
+getWordRange, glyphs, handle, hardBreakGlyphs, isEmpty, isParagraphBreak, isTable,
+isWordBegin, isWordEnd, isWordPart, length, listNumberGlyphs, nonSpaceParts,
+pageNumberGlyphs, paragraphRanges, punctuationParts, rFindParagraphBreak,
+rFindWordBegin, rFindWordEnd, spaceParts, text, usesGlobalNumbering, wordParts,
+wordRanges
+```
+(`story.text` returns the whole string; `getText`/`getTextRange`/`getWordRange`/
+`getParagraphRange` address sub-ranges. No `string`/`getString`/`substring`.)
 
 ---
 
