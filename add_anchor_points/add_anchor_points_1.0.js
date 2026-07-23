@@ -4,9 +4,11 @@
  * name: add_anchor_points_1.0
  * description: Add Anchor Points — inserts N evenly-spaced anchor points into
  *              every segment of the selected curve(s), exactly like Illustrator's
- *              Object > Path > Add Anchor Points. Uses a De Casteljau split so the
- *              path shape is preserved exactly (curves are NOT flattened). Fills a
- *              gap in Affinity, which only lets you add nodes one click at a time.
+ *              Object > Path > Add Anchor Points. Distributes by arc length so
+ *              points are geometrically even on lines and curves, and uses a De
+ *              Casteljau split so path shape is preserved exactly (curves are NOT
+ *              flattened). Fills a gap in Affinity, which only lets you add nodes
+ *              one click at a time.
  * version: 1.0.0
  * author: olliollio - analog digitalagentur
  */
