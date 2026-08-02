@@ -89,9 +89,8 @@ panel UI.
 
 ## 2. Debugging technique
 
-- **`console.log` IS visible** in the Scripts panel (verified 2026-08-02; an
-  earlier note here claimed otherwise). It is the best debugging channel: no
-  clipping, no control-count cap, copyable as text. Prefer it.
+- **`console.log` IS visible** in the Scripts panel. It is the best debugging
+  channel: no clipping, no control-count cap, copyable as text. Prefer it.
 - The built-in Documentation / SDK Search can fail ("Listing failed").
 
 **Fallback — dump to a Dialog** (this is how much of the API below was
@@ -795,24 +794,24 @@ Observed: `ShapeType.value === 0` for a rectangle.
 
 | # | Gotcha | Detail / workaround |
 |---|---|---|
-| 1 | ~~`console.log` invisible~~ | **Corrected:** it is visible. Prefer it over dialogs. |
-| 1b | Assigning to a getter-only SDK property silently succeeds | Non-strict mode discards it — no throw, no change. `node.transform` is the notable case. Verify with `Object.getOwnPropertyDescriptor` across the prototype chain, **not** with try/catch. |
-| 1c | `story.getGlyphAttsRunEnd(pos)` returns `0` | Unusable for run walks. Use `story.attRuns.toArray()`. |
-| 1e | Stroke scaling is never stored | `lineWeight` / `effectiveWeight()` are identical before and after a transform on every node. Read `lineStyleDescriptor.isScale` for the flag and `effectiveWeight(localTransform)` for the rendered value. `effectiveWeight` is a **method** — reading it as a property returns the function, which stringifies to something that looks like data. |
-| 1d | `createTransform` doesn't scale frame text | Frame text is a layout container; the box scales, the type doesn't. Artistic text *is* scaled. Compensate frame text with per-run `createFormatText` deltas. |
-| 2 | `sel.items[0]` throws | `sel.items` is iterable, not indexable. Use `for...of` or `sel.firstNode`. |
-| 3 | Shared `try/catch` hides fallbacks | Guard each selection accessor separately. |
-| 4 | Script library caches a copy | Re-import to apply on-disk edits. |
-| 5 | Silent abort on error | A throw before `runModal()` shows nothing — wrap in `try/catch` + error dialog. |
-| 6 | `UnitValueEditor` `max: null` | Resets value to 0; set `.value` after creation. |
-| 7 | `UnitValueEditor.units` read-only | Can't follow a live dropdown. |
-| 8 | Pixel→Point factor = 1 | Avoid Point, or compute from dpi. |
-| 9 | `artboard.baseBox` is local | Use `spreadBaseBox` for document-space geometry. |
-| 10 | No active-artboard accessor | Enumerate `doc.artboards` or walk parents. |
-| 11 | `description` may be localised | Don't use as a stable key (use `shapeType.value` etc.). |
-| 12 | Converted rectangle ≠ shape | A `PolyCurveNode` has no `shape`/corner-radius params. |
-| 13 | No text-style creation API | Only direct formatting + `StyleName` metadata. |
-| 14 | Dialog not scrollable | Cap control count; chunk long output. |
+| 1 | Assigning to a getter-only SDK property silently succeeds | Non-strict mode discards it — no throw, no change. `node.transform` is the notable case. Verify with `Object.getOwnPropertyDescriptor` across the prototype chain, **not** with try/catch. |
+| 2 | `story.getGlyphAttsRunEnd(pos)` returns `0` | Unusable for run walks. Use `story.attRuns.toArray()`. |
+| 3 | `createTransform` doesn't scale frame text | Frame text is a layout container; the box scales, the type doesn't. Artistic text *is* scaled. Compensate frame text with per-run `createFormatText` deltas. |
+| 4 | Stroke scaling is never stored | `lineWeight` / `effectiveWeight()` are identical before and after a transform on every node. Read `lineStyleDescriptor.isScale` for the flag and `effectiveWeight(localTransform)` for the rendered value. `effectiveWeight` is a **method** — reading it as a property returns the function, which stringifies to something that looks like data. |
+| 5 | `sel.items[0]` throws | `sel.items` is iterable, not indexable. Use `for...of` or `sel.firstNode`. |
+| 6 | Shared `try/catch` hides fallbacks | Guard each selection accessor separately. |
+| 7 | Script library caches a copy | Re-import to apply on-disk edits. |
+| 8 | Silent abort on error | A throw before the dialog opens shows nothing — wrap the whole script in `try/catch` and log or alert the message. |
+| 9 | `UnitValueEditor` `max: null` | Resets value to 0; set `.value` after creation. |
+| 10 | `UnitValueEditor.units` read-only | Can't follow a live dropdown. |
+| 11 | Pixel→Point factor = 1 | Avoid Point, or compute from dpi. |
+| 12 | `artboard.baseBox` is local | Use `spreadBaseBox` for document-space geometry. |
+| 13 | No active-artboard accessor | Enumerate `doc.artboards` or walk parents. |
+| 14 | `description` may be localised | Don't use as a stable key (use `shapeType.value` etc.). |
+| 15 | Converted rectangle ≠ shape | A `PolyCurveNode` has no `shape`/corner-radius params. |
+| 16 | No text-style creation API | Only direct formatting + `StyleName` metadata. |
+| 17 | Dialog not scrollable | Cap control count; chunk long output. |
+| 18 | Dialog labels don't reflow | A label wider than its column is clipped; one that wraps to a second line is clipped vertically. Treat label length as a layout constraint. |
 
 ---
 
