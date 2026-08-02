@@ -3,7 +3,7 @@
     {
       "id": "scale_with_text_1.0",
       "name": "scale_with_text_1.0",
-      "description": "Scale a selection to a target width/height about a 3x3 anchor - including Frame Text, which Affinity's Transform panel resizes without scaling the type. Optionally scales strokes even where \"Scale with object\" is off. Handles multi-selections and nested groups, and commits as a single undo step.",
+      "description": "Scales a selection to a target width or height about a 3x3 anchor, including Frame Text, which Affinity's Transform panel leaves unscaled.",
       "version": "1.1.1",
       "author": "olliollio",
       "contributors": ["olliollio"],
