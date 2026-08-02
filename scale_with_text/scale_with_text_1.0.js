@@ -1,7 +1,7 @@
 /**
  * name: scale_with_text_1.0
  * description: Scale a selection to a target width/height about a 3x3 anchor - including Frame Text, which Affinity's Transform panel resizes without scaling the type. Optionally scales strokes even where "Scale with object" is off. Handles multi-selections and nested groups, and commits as a single undo step.
- * version: 1.1.0
+ * version: 1.1.1
  * author: olliollio
  */
 
@@ -91,6 +91,23 @@ function isNoOp(f) {
 // Not sqrt(kx*ky) and not a mean. Collapses to k when uniform.
 function strokeFactor(kx, ky) {
   return Math.sqrt((kx * kx + ky * ky) / 2);
+}
+
+// Should this node's stroke be scaled by us?
+//
+// info: { weight, isScale, isLineStyleVisible, isNoFill } - plain values, so
+// this is testable without a document.
+function strokeNeedsScaling(info) {
+  if (typeof info.weight !== 'number' || info.weight <= 0) return false;
+  // isScale === true means Affinity scales this stroke at render time already.
+  if (info.isScale) return false;
+  // A shape with no stroke STILL reports a stored lineWeight - Affinity keeps
+  // the weight (and dash pattern) when you remove the stroke colour. Writing a
+  // line style descriptor to such a node makes that dormant stroke visible.
+  // Weight alone is not evidence of a stroke; visibility is.
+  if (info.isLineStyleVisible !== true) return false;
+  if (info.isNoFill === true) return false;
+  return true;
 }
 
 // Scale by (kx,ky) while holding the anchor point fixed: T(p) . S . T(-p)
@@ -209,12 +226,13 @@ function collectTargets(doc) {
   }
 
   function considerStroke(node) {
-    var w = 0;
-    try { w = node.lineWeight; } catch (e) { return; }
-    if (typeof w !== 'number' || w <= 0) return;
-    var scales = true;
-    try { scales = !!node.lineStyleDescriptor.isScale; } catch (e) { return; }
-    if (!scales) strokes.push(node);
+    var info = { weight: undefined, isScale: true, isLineStyleVisible: undefined, isNoFill: undefined };
+    try { info.weight = node.lineWeight; } catch (e) { return; }
+    try { info.isScale = !!node.lineStyleDescriptor.isScale; } catch (e) { return; }
+    // Read via lineStyleInterface - node.isLineStyleVisible is undefined.
+    try { info.isLineStyleVisible = node.lineStyleInterface.isLineStyleVisible; } catch (e) {}
+    try { info.isNoFill = node.lineStyleInterface.isNoFill; } catch (e) {}
+    if (strokeNeedsScaling(info)) strokes.push(node);
   }
 
   for (var i = 0; i < nodes.length; i++) {
@@ -459,6 +477,34 @@ function runSelfTests() {
   assertClose('identity stays 1', strokeFactor(1, 1), 1, 1e-9);
   // Must NOT be the geometric mean - that would give 1.4142 for (2,1).
   assert('not sqrt(kx*ky)', Math.abs(strokeFactor(2, 1) - Math.sqrt(2)) > 0.1);
+
+  console.log('-- strokeNeedsScaling --');
+  // Values taken from a real document via probes/probe_stroke_bug.js.
+
+  // A genuinely stroked shape whose stroke Affinity will not scale.
+  assert('visible stroke, isScale false -> scale it', strokeNeedsScaling(
+    { weight: 5, isScale: false, isLineStyleVisible: true, isNoFill: false }) === true);
+
+  // Affinity scales this one at render time already.
+  assert('visible stroke, isScale true -> skip', strokeNeedsScaling(
+    { weight: 2.98, isScale: true, isLineStyleVisible: true, isNoFill: false }) === false);
+
+  // THE BUG: a shape with NO stroke still reports a stored lineWeight.
+  // Writing a line style descriptor to it materialises a stroke out of nowhere,
+  // dash pattern and all.
+  assert('no stroke colour -> skip (isNoFill)', strokeNeedsScaling(
+    { weight: 4.17, isScale: false, isLineStyleVisible: false, isNoFill: true }) === false);
+  assert('no stroke colour -> skip (not visible)', strokeNeedsScaling(
+    { weight: 4, isScale: false, isLineStyleVisible: false, isNoFill: true }) === false);
+
+  assert('zero weight -> skip', strokeNeedsScaling(
+    { weight: 0, isScale: false, isLineStyleVisible: false, isNoFill: true }) === false);
+  assert('missing weight -> skip', strokeNeedsScaling(
+    { weight: undefined, isScale: false, isLineStyleVisible: true, isNoFill: false }) === false);
+
+  // Tolerate a node type that does not expose isNoFill: visible is enough.
+  assert('undefined isNoFill tolerated', strokeNeedsScaling(
+    { weight: 5, isScale: false, isLineStyleVisible: true, isNoFill: undefined }) === true);
 
   console.log('-- buildAnchoredScale --');
   // Transform.data is row-major 2x3 [a, b, tx, c, d, ty].

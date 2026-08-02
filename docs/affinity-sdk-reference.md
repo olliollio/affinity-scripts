@@ -461,6 +461,29 @@ Measured: `(2,2)→2.0000`, `(2,1)→1.5811` (=√2.5), `(2,4)→3.1623` (=√10
 `(0.5,0.5)→0.5000`, and symmetric in kx/ky. **Not** `sqrt(kx*ky)` (1.4142) and
 **not** a mean (1.5).
 
+**⚠️ `lineWeight > 0` does NOT mean the node has a stroke.** Affinity keeps the
+stored weight — and the dash pattern — when you remove a stroke's colour. Such a
+node reports a plausible weight (e.g. `4.17`) with:
+
+```
+hasPenFill = true            // means "has a pen fill SLOT", not a visible stroke
+lineStyleInterface.isNoFill            = true
+lineStyleInterface.isLineStyleVisible  = false
+penFillDescriptor.fill                 -> NoFill
+```
+
+Writing a `LineStyleDescriptor` to it **materialises that dormant stroke**,
+dashes and all. Before touching a stroke, require:
+
+```js
+const ls = node.lineStyleInterface;
+const hasStroke = node.lineWeight > 0 &&
+                  ls.isLineStyleVisible === true &&
+                  ls.isNoFill !== true;
+```
+`node.isLineStyleVisible` exists in the member list but reads `undefined` — the
+usable one is on `lineStyleInterface`.
+
 **To scale a stroke that Affinity would skip** (`isScale === false`):
 
 ```js
@@ -811,7 +834,8 @@ Observed: `ShapeType.value === 0` for a rectangle.
 | 15 | Converted rectangle ≠ shape | A `PolyCurveNode` has no `shape`/corner-radius params. |
 | 16 | No text-style creation API | Only direct formatting + `StyleName` metadata. |
 | 17 | Dialog not scrollable | Cap control count; chunk long output. |
-| 18 | Dialog labels don't reflow | A label wider than its column is clipped; one that wraps to a second line is clipped vertically. Treat label length as a layout constraint. |
+| 18 | `lineWeight > 0` ≠ has a stroke | Removing a stroke's colour leaves the weight and dash pattern stored. Writing a `LineStyleDescriptor` to such a node creates a visible stroke from nothing. Gate on `lineStyleInterface.isLineStyleVisible === true` and `isNoFill !== true`. `hasPenFill` means "has a pen fill slot" and is `true` even on strokeless groups. |
+| 19 | Dialog labels don't reflow | A label wider than its column is clipped; one that wraps to a second line is clipped vertically. Treat label length as a layout constraint. |
 
 ---
 
