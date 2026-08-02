@@ -1,7 +1,7 @@
 /**
  * name: scale_with_text_1.0
- * description: Scale a selection to a target width/height about a 3x3 anchor - including Frame Text, which Affinity's Transform panel resizes without scaling the type. Handles multi-selections and nested groups, and commits as a single undo step.
- * version: 1.0.0
+ * description: Scale a selection to a target width/height about a 3x3 anchor - including Frame Text, which Affinity's Transform panel resizes without scaling the type. Optionally scales strokes even where "Scale with object" is off. Handles multi-selections and nested groups, and commits as a single undo step.
+ * version: 1.1.0
  * author: olliollio
  */
 
@@ -81,6 +81,16 @@ function scaleFactors(box, targetW, targetH, lockRatio) {
 // Guard against committing an empty undo step.
 function isNoOp(f) {
   return Math.abs(f.kx - 1) < 1e-6 && Math.abs(f.ky - 1) < 1e-6;
+}
+
+// Affinity's own stroke-scale factor: the RMS of the axis scales.
+//
+// Derived by measuring LineStyleDescriptor.effectiveWeight(localTransform):
+//   (2,2) -> 2.0000   (2,1) -> 1.5811 = sqrt(2.5)   (2,4) -> 3.1623 = sqrt(10)
+//   (1,2) -> 1.5811 (symmetric)        (0.5,0.5) -> 0.5000
+// Not sqrt(kx*ky) and not a mean. Collapses to k when uniform.
+function strokeFactor(kx, ky) {
+  return Math.sqrt((kx * kx + ky * ky) / 2);
 }
 
 // Scale by (kx,ky) while holding the anchor point fixed: T(p) . S . T(-p)
@@ -175,14 +185,19 @@ function planRunDeltas(run, kx, ky) {
 // ---------------------------------------------------------------- document
 
 // Resolve the selection into scale targets.
-// Returns { nodes: [...], frames: [...], box: {...} } or null when unusable.
+// Returns { nodes, frames, strokes, box } or null when unusable.
 //
 // `frames` holds only FRAME text nodes. Artistic text is deliberately excluded:
 // createTransform already scales it, so compensating it would double-scale.
+//
+// `strokes` holds only nodes whose stroke Affinity will NOT scale, i.e.
+// lineStyleDescriptor.isScale === false (the stroke panel's "Scale with object"
+// unchecked). isScale === true strokes are scaled at render time from the node's
+// transform, so touching them would double-scale.
 function collectTargets(doc) {
   var nodesMod = require('/nodes');
   var sel = doc.selection;
-  var nodes = [], boxes = [], frames = [];
+  var nodes = [], boxes = [], frames = [], strokes = [];
 
   for (var n of sel.nodes) { nodes.push(n); }
   if (!nodes.length) return null;
@@ -193,19 +208,44 @@ function collectTargets(doc) {
     if (isFrame) frames.push(node);
   }
 
+  function considerStroke(node) {
+    var w = 0;
+    try { w = node.lineWeight; } catch (e) { return; }
+    if (typeof w !== 'number' || w <= 0) return;
+    var scales = true;
+    try { scales = !!node.lineStyleDescriptor.isScale; } catch (e) { return; }
+    if (!scales) strokes.push(node);
+  }
+
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
     try { boxes.push(node.spreadBaseBox); } catch (e) {}
     considerText(node);
+    considerStroke(node);
     try {
       var kids = nodesMod.getNodeChildrenRecursive(node.handle, nodesMod.NodeChildType.Main, false);
-      for (var k of kids) { considerText(k); }
+      for (var k of kids) { considerText(k); considerStroke(k); }
     } catch (e) {}
   }
 
   var box = unionBox(boxes);
   if (!box) return null;
-  return { nodes: nodes, frames: frames, box: box };
+  return { nodes: nodes, frames: frames, strokes: strokes, box: box };
+}
+
+// Scales one node's stroke to match the transform, for strokes Affinity skips.
+//
+// Limitation: lineStyleInterface exposes descriptorCount / getAllLineStyleDescriptors,
+// so a node can in principle carry several strokes. This handles the current
+// descriptor only - enough for every case observed so far (descriptorCount === 1).
+function buildStrokeCommands(doc, node, factor) {
+  var DocumentCommand = require('/commands').DocumentCommand;
+  var Selection = require('/selections').Selection;
+
+  // cloneScaled() returns a new descriptor and leaves the original alone.
+  // It takes ONE factor - a second argument is ignored.
+  var scaled = node.lineStyleDescriptor.cloneScaled(factor);
+  return [DocumentCommand.createSetLineStyleDescriptor(Selection.create(doc, node), scaled)];
 }
 
 // Converts planRunDeltas() output into DocumentCommands for one frame.
@@ -286,6 +326,10 @@ function showDialog(doc, box) {
   // so it renders clipped.
   var lock = grp.addCheckBox('Lock ratio', true);
 
+  // Off by default: on means overriding each object's own "Scale with object"
+  // stroke setting.
+  var scaleStrokes = grp.addCheckBox('Scale strokes', false);
+
   // 3x3 anchor grid: three columns of three checkboxes, added row by row so
   // the visual order is row-major and matches ANCHORS.
   var anchorGroups = [];
@@ -341,7 +385,12 @@ function showDialog(doc, box) {
   var ok = (res === Ok) || (res && res.value !== undefined && Ok && res.value === Ok.value);
   if (!ok) return null;
 
-  return { width: wField.value, height: hField.value, anchor: anchorIndex };
+  return {
+    width: wField.value,
+    height: hField.value,
+    anchor: anchorIndex,
+    scaleStrokes: !!scaleStrokes.value
+  };
 }
 
 // ---------------------------------------------------------------- selftest
@@ -399,6 +448,17 @@ function runSelfTests() {
 
   var f4 = scaleFactors(bx, 100, 100, false);
   assert('real change not a no-op', !isNoOp(f4));
+
+  console.log('-- strokeFactor --');
+  // Expected values measured from LineStyleDescriptor.effectiveWeight().
+  assertClose('uniform 2x', strokeFactor(2, 2), 2, 1e-4);
+  assertClose('uniform 0.5x', strokeFactor(0.5, 0.5), 0.5, 1e-4);
+  assertClose('2,1 -> sqrt(2.5)', strokeFactor(2, 1), 1.5811, 1e-4);
+  assertClose('2,4 -> sqrt(10)', strokeFactor(2, 4), 3.1623, 1e-4);
+  assertClose('symmetric in kx/ky', strokeFactor(1, 2), strokeFactor(2, 1), 1e-9);
+  assertClose('identity stays 1', strokeFactor(1, 1), 1, 1e-9);
+  // Must NOT be the geometric mean - that would give 1.4142 for (2,1).
+  assert('not sqrt(kx*ky)', Math.abs(strokeFactor(2, 1) - Math.sqrt(2)) > 0.1);
 
   console.log('-- buildAnchoredScale --');
   // Transform.data is row-major 2x3 [a, b, tx, c, d, ty].
@@ -528,6 +588,21 @@ function main() {
       skipped++;
       console.log('skipped a text frame: ' + (e && e.message ? e.message : e));
     }
+  }
+
+  var strokeCount = 0;
+  if (input.scaleStrokes) {
+    var sf = strokeFactor(f.kx, f.ky);
+    for (var st = 0; st < t.strokes.length; st++) {
+      try {
+        var sc = buildStrokeCommands(doc, t.strokes[st], sf);
+        for (var q = 0; q < sc.length; q++) builder.addCommand(sc[q]);
+        strokeCount += sc.length;
+      } catch (e) {
+        console.log('skipped a stroke: ' + (e && e.message ? e.message : e));
+      }
+    }
+    console.log('stroke factor ' + sf.toFixed(4) + ' applied to ' + strokeCount + ' stroke(s)');
   }
 
   doc.executeCommand(builder.createCommand());
