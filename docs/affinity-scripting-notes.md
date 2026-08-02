@@ -34,12 +34,17 @@ To get a full green chain:
 
 ## Debugging technique (important)
 
-`console.log` output is **not visible** in the Scripts panel in this build —
-running a log-only script appears to "do nothing". Also, the built-in
-Documentation / SDK Search can fail ("Listing failed"), so it's not reliable.
+> **Corrected 2026-08-02:** `console.log` **is** visible in the Scripts panel.
+> The earlier claim below was wrong. Use the console — it has no length limit,
+> no clipping, and the output can be copied as text. The dialog technique
+> remains useful only when you need output while a modal is open.
 
-**Workaround: dump to a Dialog.** Build a modal dialog and write findings with
-`addStaticText`. This is how the whole API below was reverse-engineered. Pattern:
+Also, the built-in Documentation / SDK Search can fail ("Listing failed"), so
+it's not reliable.
+
+**Fallback: dump to a Dialog.** Build a modal dialog and write findings with
+`addStaticText`. This is how much of the API below was reverse-engineered.
+Pattern:
 
 ```javascript
 const { Dialog } = require('/dialog');

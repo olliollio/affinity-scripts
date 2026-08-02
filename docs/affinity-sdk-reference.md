@@ -89,11 +89,12 @@ panel UI.
 
 ## 2. Debugging technique
 
-- **`console.log` is invisible** in the Scripts panel — a log-only script appears
-  to "do nothing".
+- **`console.log` IS visible** in the Scripts panel (verified 2026-08-02; an
+  earlier note here claimed otherwise). It is the best debugging channel: no
+  clipping, no control-count cap, copyable as text. Prefer it.
 - The built-in Documentation / SDK Search can fail ("Listing failed").
 
-**Workaround — dump to a Dialog** (this is how the API below was
+**Fallback — dump to a Dialog** (this is how much of the API below was
 reverse-engineered):
 
 ```js
@@ -376,6 +377,58 @@ Filter selected curves with `doc.selection.nodes.filter((n) => n.isPolyCurveNode
 
 ## 10. Transform & rotation
 
+> ⚠️ **`node.transform` is GETTER-ONLY.** The descriptor on `Node` is
+> `get=function set=undefined`. Assigning to it **silently does nothing** in
+> non-strict mode — no throw, no change. To verify writability of any SDK
+> property, walk the prototype chain with `Object.getOwnPropertyDescriptor`;
+> a try/catch tells you nothing here.
+
+**To change geometry, use a command:**
+
+| Call | Notes |
+|---|---|
+| `DocumentCommand.createTransform(selection, xf, options)` | Applies `xf` to the selection. Works in **spread coordinates about the spread origin** — anchoring is your job. `options` is **unvalidated** (accepts `{}`, `true`, `1` alike); there is no hidden "scale text" flag. |
+| `DocumentCommand.createGroupTransform(selection, xDataOrNull, yDataOrNull)` | Takes `GroupTransformData`, not a `Transform`. Almost certainly the Transform panel's W/H box-relayout path — the one that does *not* scale text. |
+
+`Transform` is exported from **`/geometry`**, with statics `createIdentity`,
+`createScale`, `createTranslate`, `createRotate`, `createShear`, plus
+`multiply` / `add` / `subtract`.
+
+`Transform.data` is **row-major 2×3**: `[a, b, tx, c, d, ty]`.
+(`createTranslate(10,20)` → `[1,0,10, 0,1,20]`.)
+
+**Scale about an anchor point `p`** (verified against a non-uniform kx=2/ky=3 test):
+
+```js
+const { Transform } = require('/geometry');
+const xf = Transform.createTranslate(p.x, p.y)
+                    .multiply(Transform.createScale(kx, ky))
+                    .multiply(Transform.createTranslate(-p.x, -p.y));
+// data === [kx, 0, p.x*(1-kx), 0, ky, p.y*(1-ky)]
+```
+`t.around(x,y)` and `t.translated(...)` produce the same matrix but `around()`
+**mutates its receiver** and `translated()`'s multiply side is undocumented —
+prefer the explicit form. `t.about()` is deprecated in favour of `around()`.
+
+**What `createTransform` scales for you — do NOT scale these from a script:**
+
+| Thing | Handled by |
+|---|---|
+| Shapes, images, curves, nested groups | the transform itself |
+| **Artistic** text | the transform (glyphs are geometry) |
+| Stroke weight | the stroke panel's **"Scale with object"** flag |
+| Layer effects | each effect's own **"Scale with object"** flag |
+| **Frame text** | ❌ **nothing** — the frame box scales, the type does not. Compensate manually (see [Text](#12-text-stories--glyph-attributes)). |
+
+Useful geometry accessors on any node: `baseBox` (local), `spreadBaseBox` /
+`exactSpreadBaseBox` (document space, matches the Transform panel W/H),
+`localVisibleBox` / `spreadVisibleBox` (includes stroke + effect bleed),
+`getContentExtentsBox()`, `getContentExtentsBoxOfChildren()`, plus
+`baseToSpreadTransform` / `spreadToBaseTransform` / `localToSpreadTransform`.
+There is **no** `node.boundingBox` or `node.getBounds()`.
+
+### Rotation
+
 `node.transform` is a `Transform`.
 
 | Member | Type | Notes |
@@ -451,6 +504,53 @@ Reading the frame's string:
 | `story.getText(new StoryRange(begin, end))` | Substring by range. ✅ |
 | `story.string` / `.plainText` / `.getString` / `.substring` | do **not** exist |
 | `story.toString()` | `"[object Story]"` (not the text) |
+
+### Attribute runs — use `attRuns`, not `getGlyphAttsRunEnd`
+
+> ⚠️ **`story.getGlyphAttsRunEnd(pos)` returns `0`** and cannot drive a run
+> walk — a loop built on it never advances.
+
+Use the `attRuns` **Collection** instead. Each item is a plain
+`{begin, end, glyphAtts, paragraphAtts}`:
+
+```js
+const runs = story.attRuns.toArray();
+for (const run of runs) {
+  run.begin; run.end;
+  run.glyphAtts.height;              // font size, points
+  run.paragraphAtts.spaceAfter;      // absolute, points
+  run.paragraphAtts.leadingType.value;
+}
+```
+`story.getAttRunsFrom(pos)` returns the same shape from an offset.
+
+**Format one run** (verified — 18pt → 27pt at ×1.5):
+
+```js
+const s = Selection.create(doc, frameNode);
+s.addSubSelectionForNode(frameNode, TextSelection.create(new StoryRange(run.begin, run.end)));
+doc.executeCommand(DocumentCommand.createFormatText(s,
+  StoryDelta.createGlyphDouble(GlyphAttDoubleType.Height, run.glyphAtts.height * 1.5)));
+```
+Build a **fresh `Selection` per delta** — sub-selections are consumed by the
+command that receives them. Batch with `CompoundCommandBuilder` for one undo step.
+
+### Which text attributes are absolute vs relative
+
+Matters whenever you scale type. Absolute ones must be multiplied; relative ones
+already follow the font size, so scaling them **double-applies**.
+
+| Absolute (scale these) | Relative (leave alone) |
+|---|---|
+| glyph: `height`, `baselineAdvance`, `offsetX`, `offsetY` | glyph: `characterSpacing`, `manualKerning` (em-based) |
+| para: `spaceBefore`, `spaceAfter`, `leftIndent`, `rightIndent`, `firstLineIndent`, `lastLineOutdent`, `defaultTabStops`, `hyphenationZone*` | para: `relativeLeading`, `min`/`desired`/`max` word + letter spacing (fractions) |
+
+`absoluteLeading` (on **both** glyph and paragraph atts) is only read when
+`paragraphAtts.leadingType.value ∈ {2 ExactlyAbsolute, 3 AtLeastAbsolute,
+4 RelativeToIdealAbsolute}`. In the common `0 RelativeToIdeal` mode it is `0`
+and unused — scaling it is a silent no-op.
+
+Non-uniform type scaling: set `height *= ky`, then `scaleX *= kx/ky`.
 
 Boundary / range helpers on the story (for word- or paragraph-aware search &
 replace): `getWordRange`, `getParagraphRange`, `getTextRange`, `getGlyphRange`,
@@ -645,7 +745,10 @@ Observed: `ShapeType.value === 0` for a rectangle.
 
 | # | Gotcha | Detail / workaround |
 |---|---|---|
-| 1 | `console.log` invisible | Use a Dialog or `app.alert`. |
+| 1 | ~~`console.log` invisible~~ | **Corrected:** it is visible. Prefer it over dialogs. |
+| 1b | Assigning to a getter-only SDK property silently succeeds | Non-strict mode discards it — no throw, no change. `node.transform` is the notable case. Verify with `Object.getOwnPropertyDescriptor` across the prototype chain, **not** with try/catch. |
+| 1c | `story.getGlyphAttsRunEnd(pos)` returns `0` | Unusable for run walks. Use `story.attRuns.toArray()`. |
+| 1d | `createTransform` doesn't scale frame text | Frame text is a layout container; the box scales, the type doesn't. Artistic text *is* scaled. Compensate frame text with per-run `createFormatText` deltas. |
 | 2 | `sel.items[0]` throws | `sel.items` is iterable, not indexable. Use `for...of` or `sel.firstNode`. |
 | 3 | Shared `try/catch` hides fallbacks | Guard each selection accessor separately. |
 | 4 | Script library caches a copy | Re-import to apply on-disk edits. |
