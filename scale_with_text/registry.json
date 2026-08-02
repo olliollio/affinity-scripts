@@ -1,0 +1,17 @@
+{
+  "scripts": [
+    {
+      "id": "scale_with_text_1.0",
+      "name": "scale_with_text_1.0",
+      "description": "Scale a selection to a target width/height about a 3x3 anchor - including Frame Text, which Affinity's Transform panel resizes without scaling the type. Handles multi-selections and nested groups, and commits as a single undo step.",
+      "version": "1.0.0",
+      "author": "olliollio",
+      "contributors": ["olliollio"],
+      "category": "Transform",
+      "image": "scale_with_text.webp",
+      "url": "https://www.analog.de",
+      "email": "ollio@ollio.de",
+      "download_url": "https://raw.githubusercontent.com/olliollio/affinity-scripts/main/scale_with_text/scale_with_text_1.0.js"
+    }
+  ]
+}
