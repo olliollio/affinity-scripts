@@ -416,7 +416,7 @@ prefer the explicit form. `t.about()` is deprecated in favour of `around()`.
 |---|---|
 | Shapes, images, curves, nested groups | the transform itself |
 | **Artistic** text | the transform (glyphs are geometry) |
-| Stroke weight | the stroke panel's **"Scale with object"** flag |
+| Stroke weight | the stroke panel's **"Scale with object"** flag — see below |
 | Layer effects | each effect's own **"Scale with object"** flag |
 | **Frame text** | ❌ **nothing** — the frame box scales, the type does not. Compensate manually (see [Text](#12-text-stories--glyph-attributes)). |
 
@@ -426,6 +426,56 @@ Useful geometry accessors on any node: `baseBox` (local), `spreadBaseBox` /
 `getContentExtentsBox()`, `getContentExtentsBoxOfChildren()`, plus
 `baseToSpreadTransform` / `spreadToBaseTransform` / `localToSpreadTransform`.
 There is **no** `node.boundingBox` or `node.getBounds()`.
+
+### Strokes and scaling
+
+`node.lineStyleDescriptor` is a **`LineStyleDescriptor`**:
+
+| Member | Notes |
+|---|---|
+| `isScale` | **This is the stroke panel's "Scale with object" checkbox.** (Not `penFillDescriptor.isScaleWithObject` — that governs fill anchoring and reads `true` on almost everything, including groups.) |
+| `effectiveWeight(localTransform?, worldTransform?)` | A **method**, not a property. With no arguments it returns the nominal weight. |
+| `cloneScaled(scale)` | Returns a new descriptor with the weight scaled. **Arity 1** — a second argument is silently ignored. Original untouched. |
+| `clone`, `cloneWithNewLineStyle`, `cloneWithNewArrowHeads`, `lineStyle`, `strokeAlignment`, `isBehind`, `pressure`, `frontArrowHead`, `backArrowHead` | — |
+
+**Nothing is stored scaled.** `createTransform` leaves `lineWeight` and
+`effectiveWeight()` untouched on *every* node, flag or not — the scaling happens
+at render time from the node's transform. Measuring `lineWeight` before/after a
+transform therefore proves nothing.
+
+The rendering model is visible through `effectiveWeight`'s two arguments:
+
+| | `local` slot | `world` slot | product |
+|---|---|---|---|
+| `isScale = false` | scales | inverse | **1.0** → stroke unchanged |
+| `isScale = true` | scales | 1.0 | **factor** → stroke scales |
+
+The `local` factor is **not** gated by `isScale`; the flag only decides whether
+`world` cancels it.
+
+**Affinity's stroke-scale factor is the RMS of the axis scales:**
+
+```js
+factor = Math.sqrt((kx*kx + ky*ky) / 2);
+```
+Measured: `(2,2)→2.0000`, `(2,1)→1.5811` (=√2.5), `(2,4)→3.1623` (=√10),
+`(0.5,0.5)→0.5000`, and symmetric in kx/ky. **Not** `sqrt(kx*ky)` (1.4142) and
+**not** a mean (1.5).
+
+**To scale a stroke that Affinity would skip** (`isScale === false`):
+
+```js
+const scaled = node.lineStyleDescriptor.cloneScaled(factor);
+doc.executeCommand(DocumentCommand.createSetLineStyleDescriptor(
+  Selection.create(doc, node), scaled));
+```
+Signature is `createSetLineStyleDescriptor(selection, lineStyleDescriptor, options)`
+where `options` may carry `lineStyleMask`, `contentType`, `useTextSelection`,
+`defaultsMode` — all optional. **Never** do this when `isScale === true`; the
+renderer already applies the factor and you would double-scale.
+
+`node.lineStyleInterface` exposes `descriptorCount` and
+`getAllLineStyleDescriptors()`, so a node can carry more than one stroke.
 
 ### Rotation
 
@@ -748,6 +798,7 @@ Observed: `ShapeType.value === 0` for a rectangle.
 | 1 | ~~`console.log` invisible~~ | **Corrected:** it is visible. Prefer it over dialogs. |
 | 1b | Assigning to a getter-only SDK property silently succeeds | Non-strict mode discards it — no throw, no change. `node.transform` is the notable case. Verify with `Object.getOwnPropertyDescriptor` across the prototype chain, **not** with try/catch. |
 | 1c | `story.getGlyphAttsRunEnd(pos)` returns `0` | Unusable for run walks. Use `story.attRuns.toArray()`. |
+| 1e | Stroke scaling is never stored | `lineWeight` / `effectiveWeight()` are identical before and after a transform on every node. Read `lineStyleDescriptor.isScale` for the flag and `effectiveWeight(localTransform)` for the rendered value. `effectiveWeight` is a **method** — reading it as a property returns the function, which stringifies to something that looks like data. |
 | 1d | `createTransform` doesn't scale frame text | Frame text is a layout container; the box scales, the type doesn't. Artistic text *is* scaled. Compensate frame text with per-run `createFormatText` deltas. |
 | 2 | `sel.items[0]` throws | `sel.items` is iterable, not indexable. Use `for...of` or `sel.firstNode`. |
 | 3 | Shared `try/catch` hides fallbacks | Guard each selection accessor separately. |
