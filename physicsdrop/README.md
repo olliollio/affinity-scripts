@@ -166,9 +166,14 @@ probe in `probes/`, not assumed.
 - `curve.generatePolygon(tolerance)` returns a `PolygonHandle` with no readable members, so
   flattening is `flatten.js`'s job. Straight edges arrive as cubics with collapsed handles and are
   emitted as single segments rather than subdivided.
-- **Text is refused** with "convert to curves first". `ArtTextNode` does expose curves, but
-  reports `curveCount === 1` for an entire string — a single glyph. Using it would silently build
-  a body from one letter.
+- **Text drops as individual glyphs and stays editable.** `curvesInterface.polyCurve` reports
+  `curveCount === 1` for an entire string — one glyph — which is why text was refused at first.
+  `curvesInterface.polyPolyCurves` is the real container: one `PolyCurve` per glyph, counters
+  included. Those glyphs sit in **em space**, so `getTransformedPolyCurve(i)` is what lands them
+  in the node's base space; `getPolyCurve(i)` would pile every letter at the origin. Each glyph
+  becomes its own body, so a word tumbles as letters. `DocumentCommand.createConvertToCurves`
+  exists but is not used — converting would rewrite the document to work around a read we can
+  simply do. `textPolicy: 'refuse'` skips text instead.
 - Classification order matters: an `ImageNode` also has `curvesInterface`, so the image test comes
   before the vector test. An image becomes its placement rectangle and is marked `approximate`;
   `imagePolicy: 'refuse'` rejects it instead.

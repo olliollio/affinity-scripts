@@ -42,12 +42,26 @@ function mockNode(spec) {
   if (spec.tag === 'ArtTextNode') node.isTextNode = true;
   if (spec.tag === 'ImageNode') node.isImageNode = true;
 
-  if (curves.length) {
+  if (curves.length || spec.glyphs) {
     var pc = {
       curveCount: curves.length,
       at: function (i) { return curves[i]; }
     };
     node.curvesInterface = { corneredPolyCurve: pc, polyCurve: pc, isMutable: !!spec.mutable };
+
+    // PolyPolyCurve as the probe recorded it: polyCurveCount plus getTransformedPolyCurve(i),
+    // one PolyCurve per glyph. Glyphs live in em space until transformed, which is why the
+    // untransformed getter is deliberately NOT what extract.js calls.
+    if (spec.glyphs) {
+      node.curvesInterface.polyPolyCurves = {
+        polyCurveCount: spec.glyphs.length,
+        getPolyCurve: function () { throw new Error('em space — extract must not use this'); },
+        getTransformedPolyCurve: function (g) {
+          var list = spec.glyphs[g];
+          return { curveCount: list.length, at: function (i) { return list[i]; } };
+        }
+      };
+    }
   }
 
   // Groups are walked through firstChild/nextSibling, because require('/nodes') is unavailable
@@ -140,6 +154,51 @@ module.exports = function (PD, h) {
   h.assertEqual('for the right reason', mixed.refusals[0].reason, 'text');
   h.assert('with a message naming the node',
     mixed.refusals[0].message.indexOf('Lorem ipsum') >= 0, mixed.refusals[0].message);
+
+  h.group('extract: text glyphs');
+
+  // "Lorem ipsum" style: several glyphs, two of them with counters. polyCurve would report a
+  // single curve for the whole string, which is why polyPolyCurves is the one that matters.
+  var textNode = mockNode({
+    tag: 'ArtTextNode',
+    name: 'Lorem ipsum',
+    curves: [mockCurve(boxBeziers(0, 0, 10, 10))],   // the misleading single-glyph polyCurve
+    glyphs: [
+      [mockCurve(boxBeziers(0, 0, 40, 60))],                                     // L
+      [mockCurve(boxBeziers(50, 0, 90, 60)), mockCurve(boxBeziers(60, 15, 80, 45))], // o, with counter
+      [mockCurve(boxBeziers(100, 0, 140, 60))]                                   // r
+    ]
+  });
+
+  var t = PD.extract([textNode]);
+  h.assertEqual('text is no longer refused', t.refusals.length, 0);
+  h.assertEqual('one body per glyph', t.objects.length, 3);
+  h.assertEqual('the counter became a hole', t.objects[1].faces[0].holes.length, 1);
+  h.assert('glyph bodies are named individually',
+    t.objects[0].name.indexOf('[0]') >= 0 && t.objects[2].name.indexOf('[2]') >= 0,
+    t.objects.map(function (x) { return x.name; }).join(','));
+
+  // The glyphs must come from the TRANSFORMED getter — the untransformed one throws in the mock,
+  // so reaching for it would fail loudly rather than silently piling every letter at the origin.
+  var moved2 = PD.glyphRingsOf(textNode);
+  h.assertEqual('all glyphs extracted', moved2.length, 3);
+  var bb = PD.ringsBBox(moved2[0]);
+  h.assertClose('the first glyph is where the transform put it', bb.x0, 0, 1e-9);
+  h.assertClose('and spans its own width', bb.x1, 40, 1e-9);
+
+  var merged2 = PD.extract([textNode], { groupsAsOneBody: true });
+  h.assertEqual('merging makes the whole string one body', merged2.objects.length, 1);
+  h.assertEqual('carrying every glyph ring', merged2.objects[0].rings.length, 4);
+
+  h.assertEqual('text can still be refused on request',
+    PD.extract([textNode], { textPolicy: 'refuse' }).refusals.length, 1);
+
+  // A text node with no glyph outlines must refuse rather than silently drop the object.
+  var emptyText = mockNode({ tag: 'ArtTextNode', name: 'Empty', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
+  var et = PD.extract([emptyText]);
+  h.assertEqual('text without glyph outlines is refused', et.refusals.length, 1);
+  h.assert('and says why', et.refusals[0].message.indexOf('convert to curves') >= 0,
+    et.refusals[0].message);
 
   h.group('extract: groups');
 

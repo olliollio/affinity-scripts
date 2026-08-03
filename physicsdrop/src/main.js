@@ -59,12 +59,28 @@
       var ob = ex.objects[i];
       var holes = 0;
       for (var f = 0; f < ob.faces.length; f++) holes += ob.faces[f].holes.length;
+      // Does the extracted geometry actually sit where the node does? A wrong coordinate space
+      // produces rings that are perfectly self-consistent and land somewhere else entirely, which
+      // no amount of downstream checking would catch. Comparing against the node's own reported
+      // box is the cheap way to notice.
+      var space = '';
+      try {
+        var bb = PD.ringsBBox(ob.rings);
+        var sb = ob.node.spreadBaseBox;
+        if (bb && sb) {
+          var off = Math.max(Math.abs(bb.x0 - sb.x), Math.abs(bb.y0 - sb.y));
+          var span = Math.max(sb.width, sb.height, 1);
+          if (off > 0.5 * span) space = '  <-- SUSPECT: geometry is ' + fmt(off) + 'pt from the node box';
+        }
+      } catch (e) { /* not every node reports a box */ }
+
       console.log('  [' + i + '] ' + (ob.name || '(unnamed)') +
         '  rings=' + ob.rings.length +
         ' faces=' + ob.faces.length +
         ' holes=' + holes +
         (ob.isStatic ? ' STATIC' : '') +
-        (ob.approximate ? ' (' + ob.approximate + ')' : ''));
+        (ob.approximate ? ' (' + ob.approximate + ')' : '') +
+        space);
     }
     for (var r = 0; r < ex.refusals.length; r++) console.log('  refused: ' + ex.refusals[r].message);
     if (!ex.objects.length) { console.log('physicsdrop: nothing usable in the selection.'); return null; }
