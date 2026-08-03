@@ -99,8 +99,12 @@ function main() {
   L('  chooseFileAsync sig', sig(app, 'chooseFileAsync'));
 
   console.log('');
-  console.log('  A picker should appear now. Choose a location on your Desktop and name the file');
-  console.log('  something like drop_test.png — then the export below is attempted there.');
+  console.log('  A picker should appear now. It is an OPEN dialog, so pick any EXISTING file that');
+  console.log('  sits in the folder you would want frames written to.');
+  console.log('');
+  console.log('  The file you pick is NEVER written to. Only new files named physicsdrop_probe_*');
+  console.log('  beside it are attempted — which is also the real question, since a sequence needs');
+  console.log('  hundreds of files from a single prompt.');
 
   var chosen = null;
   var attempts = [
@@ -128,30 +132,45 @@ function main() {
 
   L('  chosen path', chosen);
 
-  // --------------------------------------------- 3. does a chosen path export?
-  H('3. Exporting to the chosen path');
+  // The picked file is never touched. Everything below writes NEW names in its folder, which is
+  // both the safe thing to do and the actual question: a sequence needs many files from one grant.
+  var sep = String(chosen).lastIndexOf('\\') >= 0 ? '\\' : '/';
+  var folder = String(chosen).slice(0, String(chosen).lastIndexOf(sep));
+  L('  folder', folder || '(could not derive a folder)');
+
+  // -------------------------------------- 3. does the grant cover NEW siblings?
+  H('3. Writing new files in the chosen folder');
   var opts = null, area = null;
   L('  options', safe(function () { opts = FEO.createWithPresetName('PNG'); return String(opts); }));
   L('  area', safe(function () { area = docMod.FileExportArea.createForCurrentSpread(); return String(area); }));
 
-  if (opts && area) {
-    L('  doc.export(chosen)  <-- THE QUESTION', safe(function () {
-      doc.export(chosen, opts, area);
-      return 'OK — a file should now exist at the path you chose';
-    }));
+  if (!opts || !area || !folder) {
+    console.log('  cannot continue without options, area and a folder.');
+    console.log('######## end ########');
+    return;
   }
 
-  // ------------------------------------- 4. can siblings be written beside it?
-  H('4. Sibling files in the same folder');
-  console.log('  A sequence needs hundreds of files from ONE prompt, so the grant has to extend to');
-  console.log('  neighbouring names — otherwise export means one dialog per frame, which is useless.');
+  var first = folder + sep + 'physicsdrop_probe_0001.png';
+  L('  path', first);
+  L('  doc.export  <-- THE QUESTION', safe(function () {
+    doc.export(first, opts, area);
+    return 'OK — a user-picked location lifts PERMISSION_DENIED';
+  }));
 
-  var sibling = String(chosen).replace(/(\.[A-Za-z0-9]+)?$/, '_sibling0001.png');
-  L('  sibling path', sibling);
-  L('  doc.export(sibling)', safe(function () {
-    doc.export(sibling, opts, area);
+  // ------------------------------------- 4. a second file, from the same grant
+  H('4. A second file, without another prompt');
+  console.log('  If this also succeeds the grant covers the folder and a sequence is possible.');
+  console.log('  If only the first worked, the grant is per-file and export is not worth shipping.');
+
+  var second = folder + sep + 'physicsdrop_probe_0002.png';
+  L('  path', second);
+  L('  doc.export', safe(function () {
+    doc.export(second, opts, area);
     return 'OK — the grant covers the folder, so a sequence is possible';
   }));
+
+  console.log('');
+  console.log('  Delete physicsdrop_probe_0001.png / _0002.png afterwards; they are throwaway.');
 
   console.log('');
   console.log('######## end ########');
