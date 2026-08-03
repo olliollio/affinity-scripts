@@ -170,8 +170,19 @@ module.exports = function (PD, h) {
     ]
   });
 
-  var t = PD.extract([textNode]);
-  h.assertEqual('text is no longer refused', t.refusals.length, 0);
+  // Live text is skipped by DEFAULT. Glyph outlines can be read, but they have not been shown to
+  // land in the right coordinate space — in a real document the letters fell correctly and
+  // collided with nothing, which is exactly how a body far from where it renders behaves.
+  // Converting to curves goes through the proven vector path instead.
+  var skipped = PD.extract([textNode]);
+  h.assertEqual('live text is skipped by default', skipped.objects.length, 0);
+  h.assertEqual('and reported', skipped.refusals.length, 1);
+  h.assert('with the fix named in the message',
+    skipped.refusals[0].message.indexOf('Convert text to curves') >= 0,
+    skipped.refusals[0].message);
+
+  var t = PD.extract([textNode], { textPolicy: 'glyphs' });
+  h.assertEqual('glyph extraction is available on request', t.refusals.length, 0);
   h.assertEqual('one body per glyph', t.objects.length, 3);
   h.assertEqual('the counter became a hole', t.objects[1].faces[0].holes.length, 1);
   h.assert('glyph bodies are named individually',
@@ -186,19 +197,24 @@ module.exports = function (PD, h) {
   h.assertClose('the first glyph is where the transform put it', bb.x0, 0, 1e-9);
   h.assertClose('and spans its own width', bb.x1, 40, 1e-9);
 
-  var merged2 = PD.extract([textNode], { groupsAsOneBody: true });
+  var merged2 = PD.extract([textNode], { textPolicy: 'glyphs', groupsAsOneBody: true });
   h.assertEqual('merging makes the whole string one body', merged2.objects.length, 1);
   h.assertEqual('carrying every glyph ring', merged2.objects[0].rings.length, 4);
 
-  h.assertEqual('text can still be refused on request',
-    PD.extract([textNode], { textPolicy: 'refuse' }).refusals.length, 1);
-
-  // A text node with no glyph outlines must refuse rather than silently drop the object.
+  // A text node with no glyph outlines must refuse rather than silently drop the object, even
+  // when glyph extraction was explicitly asked for.
   var emptyText = mockNode({ tag: 'ArtTextNode', name: 'Empty', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
-  var et = PD.extract([emptyText]);
+  var et = PD.extract([emptyText], { textPolicy: 'glyphs' });
   h.assertEqual('text without glyph outlines is refused', et.refusals.length, 1);
   h.assert('and says why', et.refusals[0].message.indexOf('convert to curves') >= 0,
     et.refusals[0].message);
+
+  // convertTextToCurves must not throw when the SDK is absent, which is how it behaves in tests.
+  var conv = PD.convertTextToCurves(null, [textNode]);
+  h.assertEqual('conversion reports failure rather than throwing', conv.converted, 0);
+  h.assert('and explains itself', typeof conv.error === 'string' && conv.error.length > 0, String(conv.error));
+  h.assertEqual('with no text nodes it is a no-op',
+    PD.convertTextToCurves(null, [mockNode({ curves: [mockCurve(boxBeziers(0, 0, 10, 10))] })]).converted, 0);
 
   h.group('extract: groups');
 

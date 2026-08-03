@@ -74,13 +74,16 @@
       'stops bulldozing small artwork. Off: real physics, where area decides weight.').setIsFullWidth(true);
 
     var beh = col.addGroup('Objects');
+    var convertCtl = beh.addCheckBox('Convert text to curves', false);
+    beh.addStaticText('', 'Live text is skipped. Tick this to convert it to curves first so it ' +
+      'drops as letters. This changes the document, as its own undo step.').setIsFullWidth(true);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
       'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
 
     var help = col.addGroup('How to use');
-    help.addStaticText('', 'Select objects and run. Live text drops as individual letters and stays ' +
-      'editable — no need to convert it to curves.').setIsFullWidth(true);
+    help.addStaticText('', 'Select objects and run. Live text is skipped unless you tick "Convert ' +
+      'text to curves" above.').setIsFullWidth(true);
     help.addStaticText('', 'Name an object "wall", "floor", "ramp" or "ground", or lock its layer, to make it ' +
       'solid scenery that never moves. Objects follow their true outline, holes included.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays once on canvas, then a Finished dialog lets you scrub to any frame. ' +
@@ -104,6 +107,7 @@
       equaliseMass: !!equaliseCtl.value,
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
+      convertText: !!convertCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
       maxFrames: Math.round(secs * 30)
     };

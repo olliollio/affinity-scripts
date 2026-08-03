@@ -51,6 +51,21 @@
     console.log('physicsdrop 2.0.0-dev' + (o.dryRun ? ' — dry run, the document is not modified' : ''));
     console.log('selection: ' + nodes.length + ' node(s)');
 
+    // Conversion happens before extraction, and the selection is re-read afterwards because the
+    // text nodes are replaced by new curve nodes - the old references would be stale.
+    if (o.convertText && !o.dryRun) {
+      var conv = PD.convertTextToCurves(doc, nodes);
+      if (conv.error) {
+        console.log('  could not convert text to curves: ' + conv.error);
+      } else if (conv.converted) {
+        console.log('  converted ' + conv.converted + ' text object(s) to curves (undoable)');
+        nodes = [];
+        try { for (var n2 of doc.selection.nodes) nodes.push(n2); }
+        catch (e) { console.log('  could not re-read the selection after converting: ' + e); return null; }
+        console.log('  selection is now ' + nodes.length + ' node(s)');
+      }
+    }
+
     // ---------------------------------------------------------------- extract
     var ex = PD.extract(nodes, o);
     console.log('');
