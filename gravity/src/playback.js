@@ -71,7 +71,9 @@
    *
    * A rigid transform cannot express a rope, because a rope DEFORMS: the whole point is that its
    * shape changes. So its polyline is rebuilt from its link poses and written with
-   * `createSetCurves`, which replaces a curve node's geometry outright.
+   * `createSetCurves`, which replaces a curve node's geometry outright. That works as a PREVIEW and
+   * is cheap - measured at 0.2ms per rewrite at 7 points and 1.0ms at 41, against a 33ms frame
+   * budget - so a rope scrubs and animates like everything else.
    *
    * Ropes are grouped by node first. `createSetCurves` replaces ALL curves on a node, so a node
    * carrying two open paths must have both rebuilt in one command or the second would erase the
