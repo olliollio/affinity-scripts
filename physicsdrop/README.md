@@ -180,7 +180,9 @@ probe in `probes/`, not assumed.
   slab. `groupsAsOneBody` merges it when that is what you want.
 - Static geometry is marked by **both** routes: a locked node, or a name containing `wall`,
   `floor`, `ramp`, `static` or `ground` on a word boundary — `left-wall` is scenery, `Wallpaper`
-  is not.
+  is not. **Scenery is inherited**, so naming a *group* `wall` makes everything inside it scenery,
+  however deeply nested. Otherwise a container built from several shapes would need every one of
+  them renamed, and a group whose name plainly said "wall" would drop as loose debris.
 
 `test_extract.js` runs against mock nodes copying the shape the probes recorded. They prove the
 module behaves correctly given that shape; only a probe run inside Affinity proves the shape.

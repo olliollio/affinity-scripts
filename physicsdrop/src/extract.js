@@ -242,8 +242,11 @@
     var results = [];
     var refusals = [];
 
-    function visit(node, depth) {
+    function visit(node, depth, inheritedStatic) {
       var kind = classify(node);
+      // Scenery is inherited. Naming a GROUP "wall" has to make everything inside it scenery,
+      // because that is plainly what the name means - and the alternative is renaming every child.
+      var isStatic = inheritedStatic || isStaticNode(node);
 
       if (kind === 'group') {
         // A dropped word is usually a group of letters, and each letter should be its own body —
@@ -253,10 +256,10 @@
           eachDescendant(node, function (child) {
             if (classify(child) === 'vector') merged.push.apply(merged, ringsOf(child, o));
           });
-          if (merged.length) results.push(makeResult(node, merged, o));
+          if (merged.length) results.push(makeResult(node, merged, o, isStatic));
           return;
         }
-        eachDescendant(node, function (child) { visit(child, depth + 1); });
+        eachDescendant(node, function (child) { visit(child, depth + 1, isStatic); });
         return;
       }
 
@@ -286,11 +289,11 @@
         if (o.groupsAsOneBody) {
           var allGlyphs = [];
           for (var gi = 0; gi < glyphs.length; gi++) allGlyphs.push.apply(allGlyphs, glyphs[gi]);
-          results.push(makeResult(node, allGlyphs, o));
+          results.push(makeResult(node, allGlyphs, o, isStatic));
           return;
         }
         for (var gj = 0; gj < glyphs.length; gj++) {
-          var gr = makeResult(node, glyphs[gj], o);
+          var gr = makeResult(node, glyphs[gj], o, isStatic);
           gr.name = (gr.name || 'text') + ' [' + gj + ']';
           gr.glyphIndex = gj;
           results.push(gr);
@@ -305,7 +308,7 @@
         }
         var rect = imageRect(node, o);
         if (rect.length) {
-          var r = makeResult(node, rect, o);
+          var r = makeResult(node, rect, o, isStatic);
           r.approximate = 'placement rectangle';
           results.push(r);
         } else {
@@ -320,25 +323,25 @@
           refusals.push({ node: node, reason: 'no-closed-curves', message: describe(node) + ': no closed curves' });
           return;
         }
-        results.push(makeResult(node, rings, o));
+        results.push(makeResult(node, rings, o, isStatic));
         return;
       }
 
       refusals.push({ node: node, reason: 'unsupported', message: describe(node) + ': unsupported node type' });
     }
 
-    for (var i = 0; i < nodes.length; i++) visit(nodes[i], 0);
+    for (var i = 0; i < nodes.length; i++) visit(nodes[i], 0, false);
     return { objects: results, refusals: refusals };
   }
 
-  function makeResult(node, rings, o) {
+  function makeResult(node, rings, o, forcedStatic) {
     var faces = PD.buildFaces(rings, o);
     return {
       node: node,
       name: safeName(node),
       rings: rings,
       faces: faces,
-      isStatic: isStaticNode(node)
+      isStatic: !!forcedStatic || isStaticNode(node)
     };
   }
 

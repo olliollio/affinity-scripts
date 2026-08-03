@@ -279,6 +279,56 @@ module.exports = function (PD, h) {
   var loose = mockNode({ name: 'Curves', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
   h.assert('an ordinary node is dynamic', PD.extract([loose]).objects[0].isStatic === false);
 
+  // Naming a GROUP "wall" has to make everything inside it scenery. Otherwise the only way to
+  // build a container out of several shapes is renaming every one of them, and a group whose name
+  // plainly says "wall" would quietly drop as loose debris.
+  var wallGroup = mockNode({
+    tag: 'GroupNode',
+    name: 'wall',
+    children: [
+      mockNode({ name: 'left side', curves: [mockCurve(boxBeziers(0, 0, 20, 400))] }),
+      mockNode({ name: 'right side', curves: [mockCurve(boxBeziers(380, 0, 400, 400))] })
+    ]
+  });
+  var wg = PD.extract([wallGroup]);
+  h.assertEqual('a group named wall yields its children', wg.objects.length, 2);
+  h.assert('and every child is scenery',
+    wg.objects.every(function (x) { return x.isStatic === true; }),
+    wg.objects.map(function (x) { return x.name + '=' + x.isStatic; }).join(','));
+
+  // Inheritance must reach all the way down, not just one level.
+  var nested = mockNode({
+    tag: 'GroupNode',
+    name: 'floor',
+    children: [mockNode({
+      tag: 'GroupNode',
+      name: 'inner',
+      children: [mockNode({ name: 'slab', curves: [mockCurve(boxBeziers(0, 0, 500, 20))] })]
+    })]
+  });
+  var ng = PD.extract([nested]);
+  h.assertEqual('a nested child is found', ng.objects.length, 1);
+  h.assert('and inherits scenery from the grandparent group', ng.objects[0].isStatic === true);
+
+  // A plain group must not make its children static, or nothing would ever move.
+  var plainGroup = mockNode({
+    tag: 'GroupNode',
+    name: 'Group',
+    children: [mockNode({ name: 'thing', curves: [mockCurve(boxBeziers(0, 0, 40, 40))] })]
+  });
+  h.assert('an ordinary group leaves its children dynamic',
+    PD.extract([plainGroup]).objects[0].isStatic === false);
+
+  // A locked group counts too, and merging still respects it.
+  var lockedGroup = mockNode({
+    tag: 'GroupNode', name: 'Group', locked: true,
+    children: [mockNode({ name: 'thing', curves: [mockCurve(boxBeziers(0, 0, 40, 40))] })]
+  });
+  h.assert('a locked group makes its children scenery',
+    PD.extract([lockedGroup]).objects[0].isStatic === true);
+  h.assert('and merged into one body it is still scenery',
+    PD.extract([wallGroup], { groupsAsOneBody: true }).objects[0].isStatic === true);
+
   var img = mockNode({ tag: 'ImageNode', name: 'Image.png', curves: [mockCurve(boxBeziers(0, 0, 599, 301))] });
   var imgRes = PD.extract([img]);
   h.assertEqual('an image becomes its placement rectangle by default', imgRes.objects.length, 1);
