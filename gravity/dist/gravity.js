@@ -1251,6 +1251,77 @@ GR.planck = (function () {
   }
 
   /**
+   * The OPEN curves of a node, as polylines in SPREAD coordinates.
+   *
+   * A closed path encloses an area and becomes a rigid body; an open one encloses nothing and used
+   * to be skipped entirely. It becomes a rope instead, which needs no naming convention because
+   * the distinction is already unambiguous.
+   */
+  function polylinesOf(node, opts) {
+    var o = opts || {};
+    var out = [];
+    var ci;
+    try { ci = node.curvesInterface; } catch (e) { return out; }
+    if (!ci) return out;
+
+    var pc = null;
+    try { pc = ci.corneredPolyCurve || ci.polyCurve; } catch (e) { pc = null; }
+    if (!pc) return out;
+
+    var m = matrixOf(node);
+    var count = 0;
+    try { count = pc.curveCount; } catch (e) { return out; }
+
+    for (var i = 0; i < count; i++) {
+      var curve;
+      try { curve = pc.at(i); } catch (e) { continue; }
+      if (!curve) continue;
+      var closed = true;
+      try { closed = curve.isClosed !== false; } catch (e) { /* assume closed */ }
+      if (closed) continue;
+
+      var segments = [];
+      try {
+        for (var b of curve.beziers) {
+          segments.push({
+            start: { x: b.start.x, y: b.start.y },
+            c1: { x: b.c1.x, y: b.c1.y },
+            c2: { x: b.c2.x, y: b.c2.y },
+            end: { x: b.end.x, y: b.end.y }
+          });
+        }
+      } catch (e) { continue; }
+      if (!segments.length) continue;
+
+      // flattenSegments drops a trailing point that repeats the first, which is right for a ring
+      // and wrong for a line, so the open case is rebuilt from the segment ends directly.
+      var poly = [segments[0].start.x, segments[0].start.y];
+      for (var sIdx = 0; sIdx < segments.length; sIdx++) {
+        var seg = segments[sIdx];
+        GR.flattenCubic(poly, seg.start.x, seg.start.y, seg.c1.x, seg.c1.y,
+          seg.c2.x, seg.c2.y, seg.end.x, seg.end.y, o.flattenTol);
+      }
+      if (poly.length < 4) continue;
+      GR.transformRing(poly, m);
+      out.push(poly);
+    }
+    return out;
+  }
+
+  /** Stroke weight in points, which is how thick a rope should collide. */
+  function lineWeightOf(node) {
+    try {
+      var w = node.lineWeight;
+      if (typeof w === 'number' && w > 0) return w;
+    } catch (e) { /* fall through */ }
+    try {
+      var w2 = node.lineStyleInterface && node.lineStyleInterface.lineWeight;
+      if (typeof w2 === 'number' && w2 > 0) return w2;
+    } catch (e) { /* none */ }
+    return 0;
+  }
+
+  /**
    * An image's true silhouette from its alpha channel, in SPREAD coordinates.
    *
    * The API is the one physicsdrop uses and is therefore known to work: `createCompatibleBitmap`
@@ -1423,11 +1494,26 @@ GR.planck = (function () {
 
       if (kind === 'vector') {
         var rings = ringsOf(node, o);
-        if (!rings.length) {
-          refusals.push({ node: node, reason: 'no-closed-curves', message: describe(node) + ': no closed curves' });
+        if (rings.length) {
+          results.push(makeResult(node, rings, o, isStatic));
           return;
         }
-        results.push(makeResult(node, rings, o, isStatic));
+
+        // No closed area, so it cannot be a rigid body. An open path becomes a rope.
+        if (o.ropes !== false) {
+          var polys = polylinesOf(node, o);
+          if (polys.length) {
+            var rr = makeResult(node, [], o, isStatic);
+            rr.isRope = true;
+            rr.polylines = polys;
+            rr.thickness = lineWeightOf(node);
+            rr.anchored = GR.isAnchoredName(rr.name);
+            results.push(rr);
+            return;
+          }
+        }
+
+        refusals.push({ node: node, reason: 'no-closed-curves', message: describe(node) + ': no closed curves' });
         return;
       }
 
@@ -1583,6 +1669,8 @@ GR.planck = (function () {
   GR.glyphRingsOf = glyphRingsOf;
   GR.ringsBBox = ringsBBox;
   GR.rasterRingsOf = rasterRingsOf;
+  GR.polylinesOf = polylinesOf;
+  GR.lineWeightOf = lineWeightOf;
   GR.extract = extract;
   GR.STATIC_WORDS = STATIC_WORDS;
 
@@ -1934,6 +2022,265 @@ GR.planck = (function () {
 })(GR);
 
 // -------------------------------------------------------------------------
+// src/rope.js
+/**
+ * rope.js — open paths become ropes: a chain of small bodies joined end to end.
+ *
+ * `extract.js` skips open paths, because a path with no interior cannot be a rigid body. Making
+ * them ropes costs nothing in ambiguity — a closed path is an object, an open one is a rope — and
+ * needs no naming convention.
+ *
+ * The pure parts live here and are tested headlessly: resampling a polyline to even segments, and
+ * rebuilding a polyline from segment poses. `addRope` is the only function that touches planck.
+ *
+ * Ends fall free unless the path is named "hang" or "pin", which anchors them. A line dropped over
+ * a shape should drape and slide; a washing line should stay up. Naming is how the user says which.
+ */
+
+(function (GR) {
+  'use strict';
+
+  // Enough links to bend smoothly without turning one rope into a hundred bodies.
+  var MAX_SEGMENTS = 32;
+  var MIN_SEGMENTS = 3;
+
+  // A link shorter than this in SIM units is solving against linearSlop (0.005), and a long chain
+  // of such links compounds the error every step until the rope tears itself apart. Measured on a
+  // 400pt rope pinned at both ends: 0.125 sim units per link holds and sags 41pt, 0.083 explodes
+  // to y=24300. Thickness alone is not the predictor - a short fat link is fine, a long chain of
+  // thin short ones is not.
+  var MIN_LINK_SIM = 0.12;
+
+  // A link much thinner than this jitters, because Box2D resolves contacts to linearSlop and a
+  // link comparable to that tolerance is fighting the solver's own noise.
+  var MIN_THICKNESS = 1.5;
+
+  var ANCHOR_WORDS = ['hang', 'pin', 'anchor'];
+
+  /** Is this path pinned at its ends? Pure, so it is unit-tested like the scenery names. */
+  function isAnchoredName(name) {
+    if (!name) return false;
+    var s = String(name).toLowerCase();
+    for (var i = 0; i < ANCHOR_WORDS.length; i++) {
+      var w = ANCHOR_WORDS[i];
+      var at = s.indexOf(w);
+      while (at >= 0) {
+        var before = at === 0 ? '' : s.charAt(at - 1);
+        var after = s.charAt(at + w.length);
+        if ((at === 0 || !/[a-z0-9]/.test(before)) && (!after || !/[a-z0-9]/.test(after))) return true;
+        at = s.indexOf(w, at + 1);
+      }
+    }
+    return false;
+  }
+
+  /** Total length of a polyline given as a flat `[x0, y0, x1, y1, ...]` array. */
+  function polylineLength(points) {
+    var total = 0;
+    for (var i = 2; i < points.length; i += 2) {
+      var dx = points[i] - points[i - 2];
+      var dy = points[i + 1] - points[i - 1];
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+    return total;
+  }
+
+  /**
+   * Resamples a polyline to evenly spaced points.
+   *
+   * Even spacing matters because every link becomes a body of the same length: uneven links give
+   * uneven mass and the rope hangs wrong. Sampling walks by arc length rather than by index, so a
+   * path with one long segment and twenty short ones still yields a uniform chain.
+   */
+  function resample(points, count) {
+    if (!points || points.length < 4) return points ? points.slice() : [];
+    var n = Math.max(2, Math.floor(count));
+    var total = polylineLength(points);
+    if (!(total > 0)) return [points[0], points[1], points[2], points[3]];
+
+    var step = total / (n - 1);
+    var out = [points[0], points[1]];
+    var travelled = 0;
+    var target = step;
+    var i = 2;
+
+    while (i < points.length && out.length / 2 < n) {
+      var x0 = points[i - 2], y0 = points[i - 1];
+      var x1 = points[i], y1 = points[i + 1];
+      var dx = x1 - x0, dy = y1 - y0;
+      var segLen = Math.sqrt(dx * dx + dy * dy);
+
+      if (segLen <= 0) { i += 2; continue; }
+
+      // Emit every sample that falls inside this segment before moving to the next one.
+      while (travelled + segLen >= target && out.length / 2 < n) {
+        var t = (target - travelled) / segLen;
+        out.push(x0 + dx * t, y0 + dy * t);
+        target += step;
+      }
+      travelled += segLen;
+      i += 2;
+    }
+
+    // Floating-point drift can leave the last sample short; the end point is exact by definition.
+    if (out.length / 2 < n) out.push(points[points.length - 2], points[points.length - 1]);
+    return out;
+  }
+
+  /**
+   * Rebuilds a rope's polyline from its segment poses.
+   *
+   * Each pose is `{x, y, angle}` in SOURCE units, as `bodyState` reports it, and `halfLength` is
+   * half a link in source units. A link's local +X axis maps to `(cos a, sin a)` in source space:
+   * the y-flip mirrors the plane, which negates the angle, and `bodyState` has already done that —
+   * so no further sign correction belongs here.
+   */
+  function polylineFromPoses(poses, halfLength) {
+    var out = [];
+    if (!poses || !poses.length) return out;
+
+    for (var i = 0; i < poses.length; i++) {
+      var p = poses[i];
+      var dx = Math.cos(p.angle) * halfLength;
+      var dy = Math.sin(p.angle) * halfLength;
+      if (i === 0) out.push(p.x - dx, p.y - dy);
+      out.push(p.x + dx, p.y + dy);
+    }
+    return out;
+  }
+
+  /**
+   * How many links a path of this length should have.
+   *
+   * Two limits apply. Thickness sets the ideal - links about twice as long as they are thick bend
+   * smoothly - and the world scale sets a hard ceiling, because links too short in sim units make
+   * the chain unstable however good they look on the page.
+   */
+  function segmentCount(length, thickness, opts, scale) {
+    var o = opts || {};
+    var s = scale || GR.WORLD_SCALE;
+
+    var stable = Math.floor((length / s) / MIN_LINK_SIM);
+    var ceiling = Math.max(MIN_SEGMENTS, Math.min(MAX_SEGMENTS, stable));
+
+    if (o.segments) return Math.max(MIN_SEGMENTS, Math.min(ceiling, Math.floor(o.segments)));
+
+    var t = Math.max(MIN_THICKNESS, thickness || MIN_THICKNESS);
+    var byThickness = Math.round(length / (t * 2));
+    return Math.max(MIN_SEGMENTS, Math.min(ceiling, byThickness));
+  }
+
+  /**
+   * Builds a rope in the world from a polyline in SOURCE coordinates.
+   *
+   * Neighbouring links are joined by a revolute joint at the point they share, with
+   * `collideConnected` off — links that touch by construction must not also collide, or the rope
+   * spends every step pushing itself apart.
+   *
+   * Anchoring uses a static body and a joint rather than making the end link static, so a hanging
+   * rope can still swivel about its pin instead of being welded rigid.
+   */
+  function addRope(W, points, opts) {
+    var o = opts || {};
+    var pl = W.planck;
+    if (!points || points.length < 4) return null;
+
+    var thickness = Math.max(MIN_THICKNESS, o.thickness || MIN_THICKNESS);
+    var length = polylineLength(points);
+    if (!(length > 0)) return null;
+
+    var scale = W.scale;
+    var n = segmentCount(length, thickness, o, scale);
+    var sampled = resample(points, n + 1);
+    var linkCount = sampled.length / 2 - 1;
+    if (linkCount < 1) return null;
+
+    var halfLen = (length / linkCount) / 2;
+    var halfThick = thickness / 2;
+
+    var links = [];
+    for (var i = 0; i < linkCount; i++) {
+      var ax = sampled[i * 2], ay = sampled[i * 2 + 1];
+      var bx = sampled[i * 2 + 2], by = sampled[i * 2 + 3];
+      var midX = (ax + bx) / 2, midY = (ay + by) / 2;
+
+      // Source y grows downward and sim y grows upward, so the angle negates on the way in — the
+      // same mirror bodies.js applies to winding.
+      var angleSrc = Math.atan2(by - ay, bx - ax);
+      var angleSim = -angleSrc;
+
+      var body = W.world.createDynamicBody({
+        position: GR.toSim(W, midX, midY),
+        angle: angleSim,
+        angularDamping: o.angularDamping === undefined ? 0.05 : o.angularDamping
+      });
+      body.createFixture(
+        new pl.Box(halfLen / scale, halfThick / scale),
+        {
+          density: o.density === undefined ? 1 : o.density,
+          friction: o.friction === undefined ? 0.4 : o.friction,
+          restitution: o.restitution === undefined ? 0 : o.restitution
+        });
+
+      var rec = {
+        body: body,
+        ox: midX,
+        oy: midY,
+        angle0: 0,
+        halfLength: halfLen,
+        simRadius: halfLen / scale,
+        fixtures: 1,
+        rejected: [],
+        bullet: false,
+        name: (o.name || 'rope') + ' [' + i + ']',
+        node: o.node || null,
+        isRopeLink: true
+      };
+      W.dynamics.push(rec);
+      links.push(rec);
+    }
+
+    // Pin neighbours together at the point they share.
+    for (var j = 1; j < links.length; j++) {
+      var sharedX = sampled[j * 2], sharedY = sampled[j * 2 + 1];
+      W.world.createJoint(new pl.RevoluteJoint(
+        { collideConnected: false },
+        links[j - 1].body,
+        links[j].body,
+        GR.toSim(W, sharedX, sharedY)));
+    }
+
+    if (o.anchored && links.length) {
+      var anchorBody = W.world.createBody();
+      var sx = sampled[0], sy = sampled[1];
+      var ex = sampled[sampled.length - 2], ey = sampled[sampled.length - 1];
+      W.world.createJoint(new pl.RevoluteJoint(
+        { collideConnected: false }, anchorBody, links[0].body, GR.toSim(W, sx, sy)));
+      W.world.createJoint(new pl.RevoluteJoint(
+        { collideConnected: false }, anchorBody, links[links.length - 1].body, GR.toSim(W, ex, ey)));
+    }
+
+    return {
+      links: links,
+      halfLength: halfLen,
+      thickness: thickness,
+      anchored: !!o.anchored,
+      node: o.node || null,
+      name: o.name || 'rope'
+    };
+  }
+
+  GR.isAnchoredName = isAnchoredName;
+  GR.polylineLength = polylineLength;
+  GR.resamplePolyline = resample;
+  GR.polylineFromPoses = polylineFromPoses;
+  GR.ropeSegmentCount = segmentCount;
+  GR.addRope = addRope;
+  GR.ROPE_ANCHOR_WORDS = ANCHOR_WORDS;
+
+})(GR);
+
+// -------------------------------------------------------------------------
 // src/sim.js
 /**
  * sim.js — stepping, settling and frame recording.
@@ -2194,6 +2541,12 @@ GR.planck = (function () {
       cc.addCommand(g.DocumentCommand.createTransform(b.selection, xf, { mergeable: false }));
       any = true;
     }
+
+    // Ropes are rewritten rather than transformed, but ride the same compound command so the whole
+    // frame stays one preview and one undo step.
+    var ropeCmds = ropeCommands(ctx, frameIndex);
+    for (var r = 0; r < ropeCmds.length; r++) { cc.addCommand(ropeCmds[r]); any = true; }
+
     return any ? cc.createCommand() : null;
   }
 
@@ -2204,6 +2557,8 @@ GR.planck = (function () {
     var selections = require('/selections');
     return {
       Transform: geometry.Transform,
+      PolyCurve: geometry.PolyCurve,
+      CurveBuilder: geometry.CurveBuilder,
       DocumentCommand: commands.DocumentCommand,
       CompoundCommandBuilder: commands.CompoundCommandBuilder,
       Selection: selections.Selection
@@ -2211,20 +2566,89 @@ GR.planck = (function () {
   }
 
   /**
+   * Commands that rewrite each rope's geometry for a frame.
+   *
+   * A rigid transform cannot express a rope, because a rope DEFORMS: the whole point is that its
+   * shape changes. So its polyline is rebuilt from its link poses and written with
+   * `createSetCurves`, which replaces a curve node's geometry outright.
+   *
+   * Ropes are grouped by node first. `createSetCurves` replaces ALL curves on a node, so a node
+   * carrying two open paths must have both rebuilt in one command or the second would erase the
+   * first.
+   */
+  function ropeCommands(ctx, frameIndex) {
+    var out = [];
+    if (!ctx.ropesByNode) return out;
+    var g = ctx.sdk;
+
+    for (var n = 0; n < ctx.ropesByNode.length; n++) {
+      var entry = ctx.ropesByNode[n];
+      var poly = g.PolyCurve.create();
+      var built = 0;
+
+      for (var r = 0; r < entry.ropes.length; r++) {
+        var rope = entry.ropes[r];
+        var poses = [];
+        for (var l = 0; l < rope.links.length; l++) {
+          poses.push(GR.poseAt(ctx.frames, frameIndex, rope.links[l].frameIndex));
+        }
+        var pts = GR.polylineFromPoses(poses, rope.halfLength);
+        if (pts.length < 4) continue;
+
+        var cb = g.CurveBuilder.create();
+        cb.beginXY(pts[0], pts[1]);
+        for (var k = 2; k < pts.length; k += 2) cb.lineToXY(pts[k], pts[k + 1]);
+        poly.addCurve(cb.createCurve());
+        built++;
+      }
+
+      if (!built) continue;
+      try {
+        out.push(g.DocumentCommand.createSetCurves(entry.node.curvesInterface, poly));
+      } catch (e) { /* a rope that will not rebuild must not stop the rest */ }
+    }
+    return out;
+  }
+
+  /**
    * Prepares playback for a finished simulation.
    *
    * `bodies` must be in the SAME order as the recording, because poses are addressed by index.
    */
-  function prepare(doc, bodies, frames) {
+  function prepare(doc, bodies, frames, ropes) {
     var sdk = loadSdk();
+
     for (var i = 0; i < bodies.length; i++) {
-      var node = bodies[i].node || (bodies[i].object && bodies[i].object.node);
+      // Poses are addressed by index into the recording, and a rope's links are in there too.
+      bodies[i].frameIndex = i;
+
+      // A rope link must NOT get a selection: it is drawn by rewriting its node's geometry, and
+      // transforming that node as well would move the rope twice.
+      var node = bodies[i].isRopeLink ? null : (bodies[i].node || (bodies[i].object && bodies[i].object.node));
       if (!node) { bodies[i].selection = null; continue; }
       var sel = sdk.Selection.createEmpty(doc);
       sel.addNode(node);
       bodies[i].selection = sel;
     }
-    return { doc: doc, sdk: sdk, bodies: bodies, frames: frames, lastIndex: frames.frameCount - 1 };
+
+    // createSetCurves replaces every curve on a node, so ropes sharing a node rebuild together.
+    var byNode = [];
+    for (var r = 0; r < (ropes || []).length; r++) {
+      var rope = ropes[r];
+      if (!rope || !rope.node) continue;
+      var entry = null;
+      for (var e = 0; e < byNode.length; e++) {
+        if (byNode[e].node === rope.node) { entry = byNode[e]; break; }
+      }
+      if (!entry) { entry = { node: rope.node, ropes: [] }; byNode.push(entry); }
+      entry.ropes.push(rope);
+    }
+
+    return {
+      doc: doc, sdk: sdk, bodies: bodies, frames: frames,
+      ropesByNode: byNode,
+      lastIndex: frames.frameCount - 1
+    };
   }
 
   /** Shows one frame as a preview. Previews replace one another, so scrubbing costs nothing. */
@@ -2944,6 +3368,7 @@ GR.planck = (function () {
     console.log('');
     console.log('== bodies ==');
     var made = [];
+    var ropes = [];
     for (var k = 0; k < ex.objects.length; k++) {
       var obj = ex.objects[k];
 
@@ -2952,6 +3377,35 @@ GR.planck = (function () {
           GR.addStaticChain(W, obj.rings[s], { name: obj.name });
         }
         console.log('  static  ' + (obj.name || '(unnamed)') + '  chains=' + obj.rings.length);
+        continue;
+      }
+
+      if (obj.isRope) {
+        // An open path has no interior, so it becomes a chain of linked bodies rather than one
+        // rigid body. Its geometry is rewritten during playback instead of being transformed.
+        var madeRope = null;
+        for (var rp = 0; rp < obj.polylines.length; rp++) {
+          madeRope = GR.addRope(W, obj.polylines[rp], {
+            thickness: obj.thickness,
+            anchored: obj.anchored,
+            friction: o.friction === undefined ? 0.4 : o.friction,
+            restitution: o.restitution === undefined ? 0.15 : o.restitution,
+            density: o.density === undefined ? 1 : o.density,
+            name: obj.name,
+            node: obj.node
+          });
+          if (madeRope) {
+            madeRope.object = obj;
+            madeRope.curveIndex = rp;
+            ropes.push(madeRope);
+            for (var li = 0; li < madeRope.links.length; li++) made.push(madeRope.links[li]);
+          }
+        }
+        console.log('  rope    ' + (obj.name || '(unnamed)') +
+          '  paths=' + obj.polylines.length +
+          ' links=' + (madeRope ? madeRope.links.length : 0) +
+          ' thickness=' + fmt(obj.thickness || 0, 1) + 'pt' +
+          (obj.anchored ? ' PINNED' : ''));
         continue;
       }
 
@@ -3060,7 +3514,7 @@ GR.planck = (function () {
 
     var ctx;
     try {
-      ctx = GR.playbackPrepare(doc, made, frames);
+      ctx = GR.playbackPrepare(doc, made, frames, ropes);
     } catch (e) {
       console.log('');
       console.log('gravity: playback unavailable (' + e + '); document untouched.');

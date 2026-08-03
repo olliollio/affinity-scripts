@@ -42,6 +42,12 @@
       cc.addCommand(g.DocumentCommand.createTransform(b.selection, xf, { mergeable: false }));
       any = true;
     }
+
+    // Ropes are rewritten rather than transformed, but ride the same compound command so the whole
+    // frame stays one preview and one undo step.
+    var ropeCmds = ropeCommands(ctx, frameIndex);
+    for (var r = 0; r < ropeCmds.length; r++) { cc.addCommand(ropeCmds[r]); any = true; }
+
     return any ? cc.createCommand() : null;
   }
 
@@ -52,6 +58,8 @@
     var selections = require('/selections');
     return {
       Transform: geometry.Transform,
+      PolyCurve: geometry.PolyCurve,
+      CurveBuilder: geometry.CurveBuilder,
       DocumentCommand: commands.DocumentCommand,
       CompoundCommandBuilder: commands.CompoundCommandBuilder,
       Selection: selections.Selection
@@ -59,20 +67,89 @@
   }
 
   /**
+   * Commands that rewrite each rope's geometry for a frame.
+   *
+   * A rigid transform cannot express a rope, because a rope DEFORMS: the whole point is that its
+   * shape changes. So its polyline is rebuilt from its link poses and written with
+   * `createSetCurves`, which replaces a curve node's geometry outright.
+   *
+   * Ropes are grouped by node first. `createSetCurves` replaces ALL curves on a node, so a node
+   * carrying two open paths must have both rebuilt in one command or the second would erase the
+   * first.
+   */
+  function ropeCommands(ctx, frameIndex) {
+    var out = [];
+    if (!ctx.ropesByNode) return out;
+    var g = ctx.sdk;
+
+    for (var n = 0; n < ctx.ropesByNode.length; n++) {
+      var entry = ctx.ropesByNode[n];
+      var poly = g.PolyCurve.create();
+      var built = 0;
+
+      for (var r = 0; r < entry.ropes.length; r++) {
+        var rope = entry.ropes[r];
+        var poses = [];
+        for (var l = 0; l < rope.links.length; l++) {
+          poses.push(GR.poseAt(ctx.frames, frameIndex, rope.links[l].frameIndex));
+        }
+        var pts = GR.polylineFromPoses(poses, rope.halfLength);
+        if (pts.length < 4) continue;
+
+        var cb = g.CurveBuilder.create();
+        cb.beginXY(pts[0], pts[1]);
+        for (var k = 2; k < pts.length; k += 2) cb.lineToXY(pts[k], pts[k + 1]);
+        poly.addCurve(cb.createCurve());
+        built++;
+      }
+
+      if (!built) continue;
+      try {
+        out.push(g.DocumentCommand.createSetCurves(entry.node.curvesInterface, poly));
+      } catch (e) { /* a rope that will not rebuild must not stop the rest */ }
+    }
+    return out;
+  }
+
+  /**
    * Prepares playback for a finished simulation.
    *
    * `bodies` must be in the SAME order as the recording, because poses are addressed by index.
    */
-  function prepare(doc, bodies, frames) {
+  function prepare(doc, bodies, frames, ropes) {
     var sdk = loadSdk();
+
     for (var i = 0; i < bodies.length; i++) {
-      var node = bodies[i].node || (bodies[i].object && bodies[i].object.node);
+      // Poses are addressed by index into the recording, and a rope's links are in there too.
+      bodies[i].frameIndex = i;
+
+      // A rope link must NOT get a selection: it is drawn by rewriting its node's geometry, and
+      // transforming that node as well would move the rope twice.
+      var node = bodies[i].isRopeLink ? null : (bodies[i].node || (bodies[i].object && bodies[i].object.node));
       if (!node) { bodies[i].selection = null; continue; }
       var sel = sdk.Selection.createEmpty(doc);
       sel.addNode(node);
       bodies[i].selection = sel;
     }
-    return { doc: doc, sdk: sdk, bodies: bodies, frames: frames, lastIndex: frames.frameCount - 1 };
+
+    // createSetCurves replaces every curve on a node, so ropes sharing a node rebuild together.
+    var byNode = [];
+    for (var r = 0; r < (ropes || []).length; r++) {
+      var rope = ropes[r];
+      if (!rope || !rope.node) continue;
+      var entry = null;
+      for (var e = 0; e < byNode.length; e++) {
+        if (byNode[e].node === rope.node) { entry = byNode[e]; break; }
+      }
+      if (!entry) { entry = { node: rope.node, ropes: [] }; byNode.push(entry); }
+      entry.ropes.push(rope);
+    }
+
+    return {
+      doc: doc, sdk: sdk, bodies: bodies, frames: frames,
+      ropesByNode: byNode,
+      lastIndex: frames.frameCount - 1
+    };
   }
 
   /** Shows one frame as a preview. Previews replace one another, so scrubbing costs nothing. */

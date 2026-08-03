@@ -21,6 +21,7 @@ var SRC = [
   'extract.js',
   'world.js',
   'bodies.js',
+  'rope.js',
   'sim.js',
   'export.js',
   'ui.js'
@@ -37,7 +38,8 @@ var SUITES = [
   require('./test_raster'),
   require('./test_extract'),
   require('./test_export'),
-  require('./test_engine')
+  require('./test_engine'),
+  require('./test_rope')
 ];
 
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);

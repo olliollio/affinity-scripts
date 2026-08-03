@@ -19,6 +19,7 @@ sanitize.js   face  -> face       dedupe, collinear cull, Douglas-Peucker, windi
 decompose.js  face  -> parts[]    earcut (holes native) -> Hertel-Mehlhorn -> convex parts <= 12 verts
 flatten.js    beziers -> ring     adaptive subdivision on flatness, then the base->spread matrix
 raster.js     alpha -> rings      marching squares over the alpha mask, holes included
+rope.js       polyline -> chain   even resampling, linked bodies, polyline rebuilt from poses
 extract.js    nodes -> rings      the ONLY module that touches the Affinity API
 world.js      -> world           planck world, scale, y-flip, static Chain geometry
 bodies.js     parts -> body      centroid offset, winding reversal, one body with N fixtures
@@ -129,6 +130,34 @@ winding half of this, which is exactly why the tests assert that no vertex is dr
 
 Because holes are real, mass and rotational inertia come out right for free: a hollow "O" weighs
 less than the disc containing it, and spins more readily.
+
+## Ropes
+
+**An open path becomes a rope.** A closed path encloses an area and becomes a rigid body; an open
+one encloses nothing, so it used to be skipped entirely. The distinction is already unambiguous,
+so no naming convention is needed — draw a line above a shape, run, and it drapes over it.
+
+The path is resampled to evenly spaced links (uneven links have uneven mass and hang wrong), each
+link becomes a small box body, and neighbours are joined by a revolute joint with
+`collideConnected` off — links that touch by construction must not also collide, or the rope spends
+every step pushing itself apart. Thickness comes from the stroke weight.
+
+Ends fall free, so a rope slides off a shape it is unbalanced on. Name the path **`hang`**, `pin`
+or `anchor` to pin both ends and get a washing line that sags in the middle. Pinning uses a static
+body and a joint rather than a static end link, so a hanging rope can still swivel about its pin.
+
+> **Link count is a stability limit, not a quality dial.** A link shorter than about **0.12 sim
+> units** is solving against `linearSlop` (0.005), and a long chain of them compounds the error
+> every step. Measured on a 400pt rope pinned at both ends: 33 links hold and sag 41pt, 48 links
+> tear it apart and fling the middle to y=24300. Thickness alone does not predict it — a short fat
+> link is fine. So `segmentCount` derives a ceiling from the world scale and clamps to it, even
+> when a count is passed explicitly.
+
+Playback cannot transform a rope, because a rope **deforms**. Its polyline is rebuilt from the link
+poses each frame and written with `createSetCurves`, riding the same compound command as everything
+else so a frame is still one preview and one undo step. Ropes sharing a node rebuild together,
+since `createSetCurves` replaces every curve on a node at once, and rope links deliberately get no
+selection — transforming their node as well would move the rope twice.
 
 ## Settling
 
@@ -288,8 +317,14 @@ Preset names are exact and case-sensitive. `PNG` exists bare; there is **no** pr
 `FileExportOptions.allPresetNames` rather than guessed. Frame numbers are zero-padded to four
 digits, or a sequence sorts 1, 10, 11, 2 and imports scrambled.
 
-## Not here yet
+## Least proven
 
-Reading live text outlines non-destructively — the latter needs
-`NodeRenderingEngine` from `/rasterobject` and `PixelReaderRGBA8` from `/pixelaccessor`, both of
-which physicsdrop already uses. Images currently collide as their placement rectangle.
+Live text now drops without conversion, and images collide as their traced alpha silhouette
+rather than their placement rectangle — both shipped.
+
+The raster path is the thinnest ice. `createCompatibleBitmap` and `PixelReaderRGBA8` from
+`/pixelaccessor` are the APIs physicsdrop uses, so they are known to work, but they are the one
+part of extraction with **no headless test behind them** — `raster.js` itself is tested against
+synthetic masks through an injected sampler, which proves the tracer and not the plumbing. A
+fully opaque image legitimately *is* its rectangle, so the rectangle stays the fallback both for
+that case and for any failure reaching pixels.
