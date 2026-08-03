@@ -302,7 +302,7 @@
         function (res) {
           if (res.ok) {
             console.log('physicsdrop: exported ' + res.written + ' frame(s) to ' + res.where +
-                        (res.preset ? '  [preset "' + res.preset + '"]' : ''));
+                        (res.preset ? '  [preset "' + res.preset + '", from ' + res.module + ']' : ''));
             if (!res.folder) {
               console.log('  (no output folder could be created — /fs is denied in this sandbox — ' +
                           'so the files are on the Desktop with a shared prefix)');
