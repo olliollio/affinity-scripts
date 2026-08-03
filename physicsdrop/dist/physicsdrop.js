@@ -1267,6 +1267,45 @@ PD.planck = (function () {
     return { converted: 0, error: lastErr };
   }
 
+  /**
+   * Are these two references the same document node?
+   *
+   * `isSameNode` is the SDK's own answer and is preferred; `handle` and identity are fallbacks,
+   * because a plain `===` is not reliable when the SDK hands back a fresh wrapper each time.
+   */
+  function sameNode(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    try { if (typeof a.isSameNode === 'function') return !!a.isSameNode(b); } catch (e) { /* fall through */ }
+    try { if (a.handle !== undefined && b.handle !== undefined) return a.handle === b.handle; } catch (e) { /* fall through */ }
+    return false;
+  }
+
+  /**
+   * Concatenates two node lists without duplicates.
+   *
+   * Needed because converting text REPLACES the app selection with just the new nodes, so the
+   * surviving objects have to be carried across by hand — and the replacement list may or may not
+   * also contain them, depending on what the command does.
+   */
+  function mergeNodeLists(a, b) {
+    var out = [];
+    function add(list) {
+      for (var i = 0; i < list.length; i++) {
+        var node = list[i];
+        if (!node) continue;
+        var seen = false;
+        for (var k = 0; k < out.length && !seen; k++) seen = sameNode(out[k], node);
+        if (!seen) out.push(node);
+      }
+    }
+    add(a || []);
+    add(b || []);
+    return out;
+  }
+
+  PD.sameNode = sameNode;
+  PD.mergeNodeLists = mergeNodeLists;
   PD.convertTextToCurves = convertTextToCurves;
   PD.isStaticName = isStaticName;
   PD.classifyNode = classify;
@@ -2222,15 +2261,25 @@ PD.planck = (function () {
     // Conversion happens before extraction, and the selection is re-read afterwards because the
     // text nodes are replaced by new curve nodes - the old references would be stale.
     if (o.convertText && !o.dryRun) {
+      // Only the text nodes are replaced by the command; every other reference stays valid. They
+      // have to be kept explicitly, because createConvertToCurves REPLACES the app selection with
+      // just the nodes it made - re-reading the selection wholesale would drop everything else.
+      var survivors = [];
+      for (var sv = 0; sv < nodes.length; sv++) {
+        if (PD.classifyNode(nodes[sv]) !== 'text') survivors.push(nodes[sv]);
+      }
+
       var conv = PD.convertTextToCurves(doc, nodes);
       if (conv.error) {
         console.log('  could not convert text to curves: ' + conv.error);
       } else if (conv.converted) {
-        console.log('  converted ' + conv.converted + ' text object(s) to curves (undoable)');
-        nodes = [];
-        try { for (var n2 of doc.selection.nodes) nodes.push(n2); }
-        catch (e) { console.log('  could not re-read the selection after converting: ' + e); return null; }
-        console.log('  selection is now ' + nodes.length + ' node(s)');
+        var fresh = [];
+        try { for (var n2 of doc.selection.nodes) fresh.push(n2); }
+        catch (e) { console.log('  could not read the selection after converting: ' + e); return null; }
+
+        nodes = PD.mergeNodeLists(survivors, fresh);
+        console.log('  converted ' + conv.converted + ' text object(s) to curves (undoable); ' +
+                    survivors.length + ' other object(s) kept, ' + nodes.length + ' total');
       }
     }
 

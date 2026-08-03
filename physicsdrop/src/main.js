@@ -54,15 +54,25 @@
     // Conversion happens before extraction, and the selection is re-read afterwards because the
     // text nodes are replaced by new curve nodes - the old references would be stale.
     if (o.convertText && !o.dryRun) {
+      // Only the text nodes are replaced by the command; every other reference stays valid. They
+      // have to be kept explicitly, because createConvertToCurves REPLACES the app selection with
+      // just the nodes it made - re-reading the selection wholesale would drop everything else.
+      var survivors = [];
+      for (var sv = 0; sv < nodes.length; sv++) {
+        if (PD.classifyNode(nodes[sv]) !== 'text') survivors.push(nodes[sv]);
+      }
+
       var conv = PD.convertTextToCurves(doc, nodes);
       if (conv.error) {
         console.log('  could not convert text to curves: ' + conv.error);
       } else if (conv.converted) {
-        console.log('  converted ' + conv.converted + ' text object(s) to curves (undoable)');
-        nodes = [];
-        try { for (var n2 of doc.selection.nodes) nodes.push(n2); }
-        catch (e) { console.log('  could not re-read the selection after converting: ' + e); return null; }
-        console.log('  selection is now ' + nodes.length + ' node(s)');
+        var fresh = [];
+        try { for (var n2 of doc.selection.nodes) fresh.push(n2); }
+        catch (e) { console.log('  could not read the selection after converting: ' + e); return null; }
+
+        nodes = PD.mergeNodeLists(survivors, fresh);
+        console.log('  converted ' + conv.converted + ' text object(s) to curves (undoable); ' +
+                    survivors.length + ' other object(s) kept, ' + nodes.length + ' total');
       }
     }
 

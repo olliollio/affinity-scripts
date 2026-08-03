@@ -429,6 +429,45 @@
     return { converted: 0, error: lastErr };
   }
 
+  /**
+   * Are these two references the same document node?
+   *
+   * `isSameNode` is the SDK's own answer and is preferred; `handle` and identity are fallbacks,
+   * because a plain `===` is not reliable when the SDK hands back a fresh wrapper each time.
+   */
+  function sameNode(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    try { if (typeof a.isSameNode === 'function') return !!a.isSameNode(b); } catch (e) { /* fall through */ }
+    try { if (a.handle !== undefined && b.handle !== undefined) return a.handle === b.handle; } catch (e) { /* fall through */ }
+    return false;
+  }
+
+  /**
+   * Concatenates two node lists without duplicates.
+   *
+   * Needed because converting text REPLACES the app selection with just the new nodes, so the
+   * surviving objects have to be carried across by hand — and the replacement list may or may not
+   * also contain them, depending on what the command does.
+   */
+  function mergeNodeLists(a, b) {
+    var out = [];
+    function add(list) {
+      for (var i = 0; i < list.length; i++) {
+        var node = list[i];
+        if (!node) continue;
+        var seen = false;
+        for (var k = 0; k < out.length && !seen; k++) seen = sameNode(out[k], node);
+        if (!seen) out.push(node);
+      }
+    }
+    add(a || []);
+    add(b || []);
+    return out;
+  }
+
+  PD.sameNode = sameNode;
+  PD.mergeNodeLists = mergeNodeLists;
   PD.convertTextToCurves = convertTextToCurves;
   PD.isStaticName = isStaticName;
   PD.classifyNode = classify;
