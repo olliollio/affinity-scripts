@@ -19,12 +19,20 @@
   var MAX_SEGMENTS = 32;
   var MIN_SEGMENTS = 3;
 
-  // A link shorter than this in SIM units is solving against linearSlop (0.005), and a long chain
-  // of such links compounds the error every step until the rope tears itself apart. Measured on a
-  // 400pt rope pinned at both ends: 0.125 sim units per link holds and sags 41pt, 0.083 explodes
-  // to y=24300. Thickness alone is not the predictor - a short fat link is fine, a long chain of
-  // thin short ones is not.
+  // Two independent stability limits, both found by measurement rather than derived.
+  //
+  // A link shorter than this in SIM units solves against linearSlop (0.005) and a chain of them
+  // compounds the error every step: a 400pt rope at 0.083 sim per link tore itself apart and flung
+  // its middle to y=24300, while 0.121 held and sagged 41pt.
   var MIN_LINK_SIM = 0.12;
+  //
+  // Separately, a TAUT chain has a link-count limit that no size rule predicts, because Box2D
+  // propagates constraints iteratively along the chain. Measured stretch factors for ropes pinned
+  // at both ends: 600pt tore apart at 40 links, 1000pt at 48, 1500pt was fine at 48. The boundary
+  // is chaotic, so MAX_SEGMENTS takes margin instead of chasing it - 32 links held on every length
+  // tested, at worst 1.02x stretch. A draped rope has slack and is far more forgiving; taut is the
+  // worst case. Appearance does not suffer, because smoothPolyline draws far more points than the
+  // solver simulates.
 
   // A link much thinner than this jitters, because Box2D resolves contacts to linearSlop and a
   // link comparable to that tolerance is fighting the solver's own noise.
@@ -245,6 +253,50 @@
     };
   }
 
+  /**
+   * Smooths a polyline by Catmull-Rom interpolation, passing through every original point.
+   *
+   * Physics link count is capped by stability — links below about 0.12 sim units tear the chain
+   * apart — but that has nothing to do with how the rope should LOOK. Drawing straight lines
+   * between joint centres makes a perfectly good simulation look faceted and cheap, so the drawn
+   * curve is subdivided independently of the links driving it.
+   *
+   * Catmull-Rom is used because it interpolates rather than approximates: every joint stays exactly
+   * where the solver put it, and only the space between joints is invented.
+   */
+  function smoothPolyline(points, perSegment) {
+    var n = points ? points.length / 2 : 0;
+    if (n < 3) return points ? points.slice() : [];
+
+    var sub = Math.max(1, Math.floor(perSegment || 4));
+    if (sub === 1) return points.slice();
+
+    function px(i) { return points[Math.max(0, Math.min(n - 1, i)) * 2]; }
+    function py(i) { return points[Math.max(0, Math.min(n - 1, i)) * 2 + 1]; }
+
+    var out = [px(0), py(0)];
+    for (var i = 0; i < n - 1; i++) {
+      // The clamped ends duplicate the first and last point, which keeps the curve from
+      // overshooting where there is no neighbour to take a tangent from.
+      var x0 = px(i - 1), y0 = py(i - 1);
+      var x1 = px(i), y1 = py(i);
+      var x2 = px(i + 1), y2 = py(i + 1);
+      var x3 = px(i + 2), y3 = py(i + 2);
+
+      for (var k = 1; k <= sub; k++) {
+        var t = k / sub;
+        var t2 = t * t;
+        var t3 = t2 * t;
+        out.push(
+          0.5 * ((2 * x1) + (-x0 + x2) * t + (2 * x0 - 5 * x1 + 4 * x2 - x3) * t2 + (-x0 + 3 * x1 - 3 * x2 + x3) * t3),
+          0.5 * ((2 * y1) + (-y0 + y2) * t + (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 + (-y0 + 3 * y1 - 3 * y2 + y3) * t3)
+        );
+      }
+    }
+    return out;
+  }
+
+  GR.smoothPolyline = smoothPolyline;
   GR.isAnchoredName = isAnchoredName;
   GR.polylineLength = polylineLength;
   GR.resamplePolyline = resample;
