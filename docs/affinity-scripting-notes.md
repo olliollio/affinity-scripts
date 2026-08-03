@@ -75,6 +75,24 @@ dialog opens otherwise aborts silently, and the script appears to do nothing.
 
 ---
 
+## The testing environment is not the same runtime
+
+**`/fs` and `doc.export` work in an INSTALLED script and are denied in the Script
+Manager's testing environment.** The same file, unchanged, exports frames once
+installed and is `PERMISSION_DENIED` every time it is run from the testing
+environment.
+
+So when a filesystem or export call is refused: **install the script and run it
+again before changing a single line.** Plausible-looking theories that all fitted
+the evidence and were all wrong — path separators, call timing, script size,
+export preset names, a per-script grant, a blanket capability gate — came out of
+never varying the one variable that mattered.
+
+Access can also lapse mid-session and return after restarting Affinity, so
+confirm the current state with a known-good script before concluding anything.
+
+---
+
 ## Verified API facts
 
 ### Document
@@ -168,7 +186,33 @@ bottomRight, centre, area, offset, moveTo, clone, ...`.
   linked fields need a re-entrancy guard or they ping-pong.
 - Labels do not reflow the layout: a label wider than its column is clipped, and
   one that wraps to a second line is clipped vertically because the group's
-  height doesn't grow. Treat label length as a layout constraint.
+  height doesn't grow. Treat label length as a layout constraint. Checkbox
+  labels in particular must fit **one line** — roughly "Keep groups as one
+  object" is the ceiling.
+- **Height is the scarce resource.** OK/Cancel sit below the content, and the
+  dialog neither scrolls nor resizes, so a dialog that grows too tall puts its
+  own buttons out of reach. Merge help text into fewer, longer full-width
+  paragraphs (`ctrl.setIsFullWidth(true)` — a method) rather than one line per
+  thought.
+- `UnitType` is re-exported from `/dialog`, so a dialog module needn't require
+  `/units` separately. For a plain numeric slider:
+  `addUnitValueEditor(label, UnitType.Number, UnitType.Number, v, min, max)`,
+  then `.setShowPopupSlider(true)` and `.precision = 0`.
+
+### Geometry, text & images
+
+- **Every** node exposes `curvesInterface` — live `ShapeNode` and `ImageNode`
+  included. Curve coordinates are in **BASE** space; `node.transform` maps them
+  to the spread. ⚠️ `node.localToSpreadTransform` is **identity on every node**
+  and is not the accessor its name suggests.
+- Live text: `polyCurve` reports `curveCount === 1` for a whole string (one
+  glyph). Per-glyph outlines, counters included, come from
+  `curvesInterface.polyPolyCurves` → `getTransformedPolyCurve(i)`, which is in
+  base space. No conversion to curves is needed to *read* them.
+- An `ImageNode`'s curves are only its placement rectangle. Real pixels:
+  `node.createCompatibleBitmap(true)` then
+  `require('/pixelaccessor').PixelReaderRGBA8.create(bm)` →
+  `readPixel(x, y).alpha`. Call `reader.dispose()` — it holds native memory.
 
 ---
 

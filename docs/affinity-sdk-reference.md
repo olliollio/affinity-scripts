@@ -35,9 +35,12 @@ AI/MCP-enabled Affinity. (Classic Affinity V2 has **no** scripting.)
 15. [Units](#15-units)
 16. [Dialog UI controls](#16-dialog-ui-controls)
 17. [Commands, preview & undo](#17-commands-preview--undo)
-18. [Known bugs & gotchas](#18-known-bugs--gotchas)
-19. [Publishing to the community directory](#19-publishing-to-the-community-directory)
-20. [Appendix: raw member dumps](#20-appendix-raw-member-dumps)
+18. [Raster & pixel access](#18-raster--pixel-access)
+19. [Filesystem & export](#19-filesystem--export)
+20. [Timers](#20-timers)
+21. [Known bugs & gotchas](#21-known-bugs--gotchas)
+22. [Publishing to the community directory](#22-publishing-to-the-community-directory)
+23. [Appendix: raw member dumps](#23-appendix-raw-member-dumps)
 
 ---
 
@@ -149,7 +152,14 @@ Affinity's `require` uses **virtual module paths** (leading `/`). A trailing
 | `/glyphatts` | `GlyphAttDoubleType`, `LeadingOverrideType` |
 | `/paragraphatts` | `ParagraphAttStringType`, `ParagraphAttDoubleType`, `ParagraphLeadingType` |
 | `affinity:story` | `StoryRange` |
-| `/fs` | `File` |
+| `/fs` | `File`, `createDirectories`, `isDirectory`, `exists`, `getFileSize`, `PathType` |
+| `/timers` | `setInterval`, `Timer` |
+| `/document` | also `FileExportOptions`, `FileExportArea` (export lives here, not in an `/export` module) |
+| `/rasterobject` | `NodeRenderingEngine`, `RasterFormat` |
+| `/pixelaccessor` | `PixelReaderRGBA8` |
+
+`/dialog` also re-exports `UnitType`, so a dialog module need not require `/units`
+separately.
 
 ---
 
@@ -161,7 +171,9 @@ Affinity's `require` uses **virtual module paths** (leading `/`). A trailing
 | `app.documents.current` | Active document (or null). |
 | `Document.current` | Also the active document. Both wrappers see the same selection in practice. |
 | `app.alert(msg, title?)` | Modal alert. |
-| `app.chooseFile()`, `app.getUserDesktopPath` | File pickers / paths. |
+| `app.userDesktopPath` | Property (no `get` prefix). Windows path, e.g. `E:\USER\Desktop`. |
+| `app.chooseFile()` | Opens an **Open** dialog and returns an existing file's path. Grants **no** write access to that file or its folder. |
+| `doc.export(path, options, area[, size])` | See [Filesystem & export](#19-filesystem--export). |
 | `doc.dpi` | Document DPI. |
 | `doc.widthPixels`, `doc.heightPixels` | Whole-spread size in px (**not** any single artboard on multi-artboard docs). |
 | `doc.units` | Display unit as a string, e.g. `"Pixel"`. |
@@ -238,9 +250,25 @@ or iterate. When trying multiple accessors, guard each **separately**; one share
 ```js
 const { Selection } = require('/selections');
 const sel = Selection.createEmpty(doc);
-for (const n of nodes) sel.add(n);
+for (const n of nodes) sel.addNode(n);   // addNode is the verified member name
 doc.selection = sel;                 // commits as the app's live selection
 ```
+
+`DocumentCommand.createSetSelection(selection)` does the same as an undoable
+command — `createSetSelection(Selection.createEmpty(doc))` deselects everything.
+
+**Node identity:** the SDK hands back a **fresh wrapper** for the same document
+node, so `a === b` is not reliable. Use `a.isSameNode(b)`, falling back to
+`a.handle === b.handle`. This matters whenever a command replaces the selection
+and you need to tell the new nodes from the ones you were already holding.
+
+Shortcuts worth knowing:
+
+- **`Selection.create(doc, nodeOrArray)`** accepts an **array** of nodes, not
+  just one.
+- **`node.selfSelection`** is a ready-made selection for that node — no need to
+  build one.
+- **`node.getSpreadBaseBox(false)`** returns a spread-space box.
 
 Build a selection over one node / a text range:
 
@@ -334,10 +362,65 @@ builder.addShapeNode(ShapeNodeDefinition.create(shape, rect,
   FillDescriptor.createSolid(SVG11.black)));
 ```
 
-**Curves** (`node.curvesInterface`, present on `PolyCurveNode` / editable vector
-shapes): members `polyCurve` `[PolyCurve]`, `corneredPolyCurve` `[PolyCurve]`,
-`polyPolyCurves`, `windingOrder`, `domainTransform`, `isMutable`, `node`,
-`handle`.
+**Curves** — `node.curvesInterface`: members `polyCurve` `[PolyCurve]`,
+`corneredPolyCurve` `[PolyCurve]`, `polyPolyCurves`, `windingOrder`,
+`domainTransform`, `isMutable`, `node`, `handle`.
+
+> **Every node type exposes `curvesInterface`** — `PolyCurveNode`, live
+> `ShapeNode`, `ArtTextNode` and `ImageNode` alike. There is no such thing as a
+> live shape with no curves: a live rounded rectangle hands over 8 beziers with
+> the rounding already baked into `polyCurve`, so no bounding-box fallback is
+> needed. `curvesInterface.isMutable` is what separates genuinely editable
+> geometry (`PolyCurveNode` → `true`) from generated geometry (live `ShapeNode`,
+> `ArtTextNode`, `ImageNode` → `false`).
+
+### Coordinate space — curve coords are BASE space
+
+The matrix mapping curve coordinates to spread space is **`node.transform`**,
+which equals `node.baseToSpreadTransform` and equals
+`curvesInterface.domainTransform`.
+
+> ⚠️ **`node.localToSpreadTransform` is identity on every node**, including ones
+> that are demonstrably offset — a grouped child sitting at +220.0/+228.6 still
+> reports identity. Using it silently places every grouped object at the wrong
+> position. It is not the accessor its name suggests.
+
+Cross-checks: a grouped child's `baseBox.x` 251.99 → `spreadBaseBox.x` 471.99
+(= 251.99 + 220.0034); an image's 599×301 base box → 357.93×179.86 spread box
+under a 0.5976 scale.
+
+### Glyph outlines from live text
+
+`polyCurve` reports **`curveCount === 1` for an entire string** — that is one
+glyph, and reading it is what makes live text look unsupported. The real
+container is **`curvesInterface.polyPolyCurves`**: one `PolyCurve` per glyph,
+counters included ("o" and "e" report two curves, outer plus hole).
+
+| Member | Notes |
+|---|---|
+| `polyPolyCurves.polyCurveCount` | Glyph count. |
+| `getTransformedPolyCurve(i)` | Glyph outline in the node's **BASE** space — verified on a rotated, offset text node, it reproduces `baseBox` exactly and `node.transform` then lands it on `spreadBaseBox`. **Use this one.** |
+| `getPolyCurve(i)` | Em space, near the origin. Not directly usable. |
+
+Reading these leaves the text **editable** — no conversion needed.
+`DocumentCommand.createConvertToCurves(selection)` exists as the destructive
+alternative, and is the only way to get glyphs that can move *independently*,
+because it produces one `PolyCurveNode` per letter. Note it **replaces the app
+selection** with just the new nodes, so anything else you were holding must be
+carried across by hand (see [Selection](#6-selection-read--write) on node
+identity).
+
+> ⚠️ A live text node is **one node**. Any scheme that derives several
+> independently-moving objects from it will apply several conflicting transforms
+> to that single node — the artwork lurches while the geometry is perfectly
+> correct and never visible.
+
+**Affinity's own flattener** is `curve.generatePolygon(tolerance)`, which returns
+a **`PolygonHandle` whose members do not enumerate**; no accessor for its points
+has been found. Flattening `curve.beziers` yourself — by **arc length**, not by
+parameter `t` — is the working route. Useful classifiers on `Curve`:
+`isRectangleTolerance`, `isEllipseTolerance`, `isPolylineTolerance`,
+`isStraightLineTolerance`.
 
 **Read** the geometry:
 - `pc = ci.polyCurve`; `pc.curveCount`; `pc.at(i)` → a `Curve`.
@@ -560,6 +643,10 @@ Create fills / colours: `FillDescriptor.createSolid(colour)`; named colours via
 
 A text frame node satisfies:
 `node.isFrameTextNode && node.storyInterface && node.storyInterface.story`.
+
+> This section is about text **content and formatting**. For the *geometry* of
+> the letters — glyph outlines usable as paths or collision shapes — see
+> [Glyph outlines from live text](#glyph-outlines-from-live-text).
 
 - `story = node.storyInterface.story`
 - `story.length` — glyph count (valid positions `0 … length-1`)
@@ -794,6 +881,30 @@ Observed: `ShapeType.value === 0` for a rectangle.
 - **Bug:** when `max` is `null`, the initial value resets to `0`. Workaround: set
   `.value` explicitly right after creating the editor.
 
+**A plain numeric slider** — the shape that renders correctly for unitless
+values:
+
+```js
+const { Dialog, DialogResult, UnitType } = require('/dialog');   // UnitType comes from /dialog too
+const ctl = grp.addUnitValueEditor('Gravity', UnitType.Number, UnitType.Number, 1000, 100, 10000);
+ctl.setShowPopupSlider(true);
+ctl.precision = 0;
+```
+
+**Height is the scarce resource.** The dialog neither scrolls nor resizes, and
+the OK/Cancel buttons sit *below* the content — so a dialog that grows too tall
+does not clip harmlessly, it puts its own buttons out of reach. Budget for it:
+
+- Each full-width `addStaticText` costs real height. Merge help text into fewer,
+  longer paragraphs rather than one line per thought.
+- **Checkbox labels must fit one line.** The control sits in a narrow column and
+  the row height is fixed, so a label that wraps is clipped and cannot be read at
+  all. Roughly "Keep groups as one object" is the ceiling; anything longer
+  belongs in full-width help text, which does wrap properly.
+- `ctrl.setIsFullWidth(true)` is a **method** (the `isFullWidth` property is
+  listed, but the setter is the form that works). `addStaticText` returns the
+  control, so it is normally called straight off that.
+
 ---
 
 ## 17. Commands, preview & undo
@@ -804,6 +915,9 @@ Observed: `ShapeType.value === 0` for a rectangle.
 | `DocumentCommand.createFormatText(selection, delta)` | Text formatting. |
 | `DocumentCommand.createSetText(selection, text)` | Replace a frame's whole text. `selection` = `Selection.create(doc, frameNode)`; `'\n'` = paragraph break. |
 | `DocumentCommand.createSetCurves(curvesInterface, polyCurve)` | Replace a curve node's geometry (see [Shape nodes → Curves](#9-shape-nodes)). |
+| `DocumentCommand.createSetSelection(selection)` | Set the selection as an undoable command. `Selection.createEmpty(doc)` deselects all. |
+| `DocumentCommand.createConvertToCurves(selection)` | Convert live text / shapes to `PolyCurveNode`s. Destructive; **replaces the app selection** with the new nodes. |
+| `DocumentCommand.createTransform(sel, xf, { mergeable: false })` | The options bag is **unvalidated** (see [Transform](#10-transform--rotation)); `{ mergeable: false }` is what working animation code passes, but its effect has not been isolated. |
 | `DocumentCommand.createSetDescription(...)`, `createSetOpacity(...)`, `createSetCurveNodeStyle(...)`, `createSetDocumentProperties(...)` | Many `createSet*` setters exist (opacity, description, effects, adjustments, …) — enumerate `members(DocumentCommand)` to discover. |
 | `CompoundCommandBuilder.create()` → `.addCommand(cmd)` → `.createCommand()` | Batch many commands into one undo step. |
 | `AddChildNodesCommandBuilder.create()` → `.setInsertionTarget(node)` / `.addNode(def)` / `.addShapeNode(def)` → `.createCommand(true, NodeChildType.Main)` | Insert nodes. |
@@ -811,9 +925,178 @@ Observed: `ShapeType.value === 0` for a rectangle.
 | `doc.clearPreviews()` | Clear previews. |
 | `doc.undo()` | Undo. |
 
+### Commands that create nodes
+
+**A command exposes the nodes it created** — execute it, then read `cmd.newNodes`:
+
+```js
+const cmd = DocumentCommand.createKnifeCut(cutCurve, Selection.create(doc, node));
+doc.executeCommand(cmd);
+const pieces = cmd.newNodes;      // >= 2 when the cut actually split the node
+```
+
+| Call | Notes |
+|---|---|
+| `createKnifeCut(curve, selection)` | Splits nodes along a curve into **real separate nodes**. Build the curve with `new CurveBuilder().beginXY(x,y).lineToXY(x,y).createCurve()` and extend it well past the shape's bounds. Feeding each pass the pieces from the last is how one shape becomes many. |
+| `createTransform(selection, null, { duplicateNodes: true })` | Duplicates. A **null transform is legal** here, and `newNodes[0]` is the copy. Fails on groups — shape, image or text only. |
+| `createSetVisibility(selection, bool)` | — |
+| `createMoveNodes(selection, target, NodeMoveType.After, NodeChildType.Main)` | `NodeMoveType` and `NodeChildType` both come from `/commands`. |
+
+Separate nodes are the only way to move things independently — one node can
+carry only one transform (see [Glyph outlines](#glyph-outlines-from-live-text)).
+
+*(Verified from `examples/crack_and_explode.js` by rbonelli, a shipping script,
+rather than from a probe.)*
+
+### The preview / commit model
+
+This is what makes live scrubbing cheap, and it is worth stating exactly:
+
+- `executeCommand(cmd, true)` renders a **preview that supersedes the previous
+  preview**. Dragging a slider therefore costs one preview per move, not an undo
+  stack to unwind afterwards.
+- `executeCommand(cmd, false)` **commits** one undoable step.
+- `clearPreviews()` drops anything uncommitted, returning the document to its
+  last committed state.
+
+Because a preview is not guaranteed to render into an **export**, an export loop
+must commit each frame, export, then `undo()` — it cannot reuse the cheap preview
+path.
+
 ---
 
-## 18. Known bugs & gotchas
+## 18. Raster & pixel access
+
+An `ImageNode`'s **curves are only its placement rectangle**, in local pixel
+coordinates (e.g. `0,0–599,301`), positioned by `node.transform`. To reach real
+pixels — for a true silhouette, an alpha mask, colour sampling — you need the
+raster path.
+
+`ImageNode` raster members: `rasterInterface`, `rasterWidth`, `rasterHeight`,
+`rasterFormat`, `pixelSize`, `createCompatibleBuffer`, `createCompatibleBitmap`,
+`copyTo`, `imageFilePath`.
+
+```js
+// Preferred: the node makes its own bitmap.
+let bm = node.createCompatibleBitmap(true);
+
+// Fallback: render the node explicitly.
+if (!bm) {
+  const ro = require('/rasterobject');
+  bm = ro.NodeRenderingEngine.createDefault(node, ro.RasterFormat.RGBA8)
+         .createCompatibleBitmap(true);
+}
+
+const reader = require('/pixelaccessor').PixelReaderRGBA8.create(bm);
+const p = reader.readPixel(px, py);      // { r, g, b, alpha }, 0..255
+reader.dispose();                        // holds native memory — release it
+```
+
+- `bm.width` / `bm.height` are the bitmap's pixel dimensions.
+- **`PixelReaderRGBA8` lives in `/pixelaccessor`.** There is no `/image`,
+  `/images`, `/pixels` or `/raster` module — those were invented names and do not
+  exist.
+- Map pixel space to base space by the ratio of `node.baseBox` to the bitmap
+  (`sx = box.width / bm.width`), then apply `node.transform` as for any vector
+  node.
+
+---
+
+## 19. Filesystem & export
+
+> ## ⚠️ Read this before debugging any permission denial
+>
+> **`/fs` and `doc.export` work in an INSTALLED script and are denied in the
+> Script Manager's testing environment.** The same file, unchanged, exports
+> frames once installed and is `PERMISSION_DENIED` every time it is run from the
+> testing environment.
+>
+> **So: never debug an `/fs` or `doc.export` denial in code — install the script
+> and try again first.** A long chain of plausible theories came out of not
+> knowing this: path separators, call timing, script size, export preset names,
+> a per-script grant, a blanket capability gate. Every one of them fitted the
+> evidence, because the real variable was never varied. If a filesystem call is
+> denied while a known-good script succeeds, the difference is *how the script is
+> being run*.
+>
+> Denials can also come and go within a session — an installed script exported
+> successfully, failed an hour later, and was restored by restarting Affinity.
+> Confirm the current state with a known-good script before drawing conclusions.
+
+### `/fs`
+
+| Call | Notes |
+|---|---|
+| `fsys.createDirectories(path)` | Creates a directory chain. |
+| `fsys.isDirectory(path)` | ⚠️ Test for **truthiness, not `=== true`**: `/fs` exports a `PathType` enum (`Directory = 3`), so a strict boolean comparison reads a perfectly good folder as a failure. |
+| `fsys.exists(path)`, `fsys.getFileSize(path)` | — |
+| `File` | `File.prototype` carries the primitives: `open`, `read`, `write`, `writeStringAsUtf8`, `seek`, `getLength`. |
+
+**`File.readAll` returns a Buffer, not a string.** `String(File.readAll)` leaks
+the shim — `new File(path,'rb')` → `Buffer.create(f.length)` → `f.read(buf, …)` —
+so a `typeof v === 'string'` check rejects a perfectly successful read.
+
+`FileOrigin` is a red herring: its values are `Begin/Current/End`, i.e. seek
+origin. `FilePermissions` is POSIX mode bits for `setFilePermissions`. **Neither
+grants anything** — there is no in-script mechanism to request access.
+
+### Paths
+
+- `app.userDesktopPath` is the root to build from; on Windows it returns a
+  backslash path (`E:\USER\Desktop`).
+- The form proven to work is that **backslash root with forward slashes
+  appended**: `E:\USER\Desktop/MyFolder/frame_0000.png`. Whether a fully
+  backslashed path also works is untested — the denials that once suggested
+  otherwise turned out to be the installed-vs-testing problem above.
+- **Write into a folder the script created itself.** The Desktop root was
+  refused in testing, so folder creation is not a nicety and a "write flat
+  instead" fallback only converts a clear failure into a confusing later one.
+- `app.chooseFile()` opens an **Open** dialog and returns an existing file's
+  path. It does **not** confer write access to that file or its folder.
+
+### Export
+
+`FileExportOptions` and `FileExportArea` are exported from **`/document`** —
+there is no `/export` module.
+
+```js
+const { FileExportOptions, FileExportArea } = require('/document');
+const opts = FileExportOptions.createWithPresetName('PNG');
+const area = FileExportArea.createForCurrentSpread();   // also createForDocument / createForSelection
+doc.export(path, opts, area);                           // 4th arg: size
+```
+
+**Preset names are exact and case-sensitive**, and guessing them is the wrong
+approach: `FileExportOptions.allPresetNames` is a **property** listing all 64 on
+a live install. `PNG` exists bare, but every JPEG preset is qualified — `JPEG
+(Best quality)`, `JPEG (High quality)` — so there is **no** preset called just
+`JPEG`, and `png` in lower case is rejected. Ask for the list and match against
+it.
+
+---
+
+## 20. Timers
+
+`require('/timers')` gives `setInterval` and `Timer`. The callback receives an
+**error first**, so a long-running loop can stop cleanly instead of wedging
+Affinity:
+
+```js
+const { setInterval, Timer } = require('/timers');
+setInterval(33, (err) => {
+  if (err) { Timer.cancelAll(); return; }
+  // … one frame of work …
+  if (done) Timer.cancelAll();
+});
+```
+
+`Timer.cancelAll()` is the stop. Driving a long job from a timer rather than a
+`for` loop is what keeps the UI responsive for its duration — and modal dialogs
+can be raised from inside the callback.
+
+---
+
+## 21. Known bugs & gotchas
 
 | # | Gotcha | Detail / workaround |
 |---|---|---|
@@ -836,10 +1119,19 @@ Observed: `ShapeType.value === 0` for a rectangle.
 | 17 | Dialog not scrollable | Cap control count; chunk long output. |
 | 18 | `lineWeight > 0` ≠ has a stroke | Removing a stroke's colour leaves the weight and dash pattern stored. Writing a `LineStyleDescriptor` to such a node creates a visible stroke from nothing. Gate on `lineStyleInterface.isLineStyleVisible === true` and `isNoFill !== true`. `hasPenFill` means "has a pen fill slot" and is `true` even on strokeless groups. |
 | 19 | Dialog labels don't reflow | A label wider than its column is clipped; one that wraps to a second line is clipped vertically. Treat label length as a layout constraint. |
+| 20 | `/fs` and `doc.export` denied | Almost always because the script is being run from the **Script Manager's testing environment**. Install it and try again *before* changing any code. See [Filesystem & export](#19-filesystem--export). |
+| 21 | `isDirectory(path) === true` fails | `/fs` returns a `PathType` enum (`Directory = 3`), not a boolean. Test truthiness. |
+| 22 | `File.readAll` returns a Buffer | A `typeof === 'string'` check rejects a successful read. |
+| 23 | `localToSpreadTransform` is identity | On **every** node, including offset ones. Use `node.transform` to map curve coordinates into spread space. |
+| 24 | `polyCurve.curveCount === 1` on text | That is one glyph, not the string. Per-glyph outlines live in `polyPolyCurves` via `getTransformedPolyCurve(i)`. |
+| 25 | Export preset names are case-sensitive | `PNG` works, `png` does not, and there is no bare `JPEG`. Read `FileExportOptions.allPresetNames` instead of guessing. |
+| 26 | `generatePolygon()` output is unreadable | Returns a `PolygonHandle` whose members don't enumerate. Flatten `curve.beziers` yourself, by arc length. |
+| 27 | Tall dialogs hide their own buttons | The dialog neither scrolls nor resizes and OK/Cancel sit below the content, so excess height puts them out of reach — not merely clipping cosmetic text. |
+| 28 | One node can only hold one transform | Deriving several independently-moving objects from a single node (e.g. per-glyph bodies from a live text node) applies conflicting transforms to it; the artwork lurches while the geometry is correct and invisible. |
 
 ---
 
-## 19. Publishing to the community directory
+## 22. Publishing to the community directory
 
 - Community site: <https://jirikrblich.github.io/Affinity-Community-Scripts/>
 - Central repo: `github.com/JiriKrblich/Affinity-Community-Scripts`
@@ -889,7 +1181,7 @@ the central `registry.json` after review.
 
 ---
 
-## 20. Appendix: raw member dumps
+## 23. Appendix: raw member dumps
 
 Verbatim member lists captured from probes (v3.2), for reference.
 
