@@ -1080,8 +1080,11 @@ PD.planck = (function () {
     var results = [];
     var refusals = [];
 
-    function visit(node, depth) {
+    function visit(node, depth, inheritedStatic) {
       var kind = classify(node);
+      // Scenery is inherited. Naming a GROUP "wall" has to make everything inside it scenery,
+      // because that is plainly what the name means - and the alternative is renaming every child.
+      var isStatic = inheritedStatic || isStaticNode(node);
 
       if (kind === 'group') {
         // A dropped word is usually a group of letters, and each letter should be its own body —
@@ -1091,10 +1094,10 @@ PD.planck = (function () {
           eachDescendant(node, function (child) {
             if (classify(child) === 'vector') merged.push.apply(merged, ringsOf(child, o));
           });
-          if (merged.length) results.push(makeResult(node, merged, o));
+          if (merged.length) results.push(makeResult(node, merged, o, isStatic));
           return;
         }
-        eachDescendant(node, function (child) { visit(child, depth + 1); });
+        eachDescendant(node, function (child) { visit(child, depth + 1, isStatic); });
         return;
       }
 
@@ -1124,11 +1127,11 @@ PD.planck = (function () {
         if (o.groupsAsOneBody) {
           var allGlyphs = [];
           for (var gi = 0; gi < glyphs.length; gi++) allGlyphs.push.apply(allGlyphs, glyphs[gi]);
-          results.push(makeResult(node, allGlyphs, o));
+          results.push(makeResult(node, allGlyphs, o, isStatic));
           return;
         }
         for (var gj = 0; gj < glyphs.length; gj++) {
-          var gr = makeResult(node, glyphs[gj], o);
+          var gr = makeResult(node, glyphs[gj], o, isStatic);
           gr.name = (gr.name || 'text') + ' [' + gj + ']';
           gr.glyphIndex = gj;
           results.push(gr);
@@ -1143,7 +1146,7 @@ PD.planck = (function () {
         }
         var rect = imageRect(node, o);
         if (rect.length) {
-          var r = makeResult(node, rect, o);
+          var r = makeResult(node, rect, o, isStatic);
           r.approximate = 'placement rectangle';
           results.push(r);
         } else {
@@ -1158,25 +1161,25 @@ PD.planck = (function () {
           refusals.push({ node: node, reason: 'no-closed-curves', message: describe(node) + ': no closed curves' });
           return;
         }
-        results.push(makeResult(node, rings, o));
+        results.push(makeResult(node, rings, o, isStatic));
         return;
       }
 
       refusals.push({ node: node, reason: 'unsupported', message: describe(node) + ': unsupported node type' });
     }
 
-    for (var i = 0; i < nodes.length; i++) visit(nodes[i], 0);
+    for (var i = 0; i < nodes.length; i++) visit(nodes[i], 0, false);
     return { objects: results, refusals: refusals };
   }
 
-  function makeResult(node, rings, o) {
+  function makeResult(node, rings, o, forcedStatic) {
     var faces = PD.buildFaces(rings, o);
     return {
       node: node,
       name: safeName(node),
       rings: rings,
       faces: faces,
-      isStatic: isStaticNode(node)
+      isStatic: !!forcedStatic || isStaticNode(node)
     };
   }
 
@@ -2168,8 +2171,9 @@ PD.planck = (function () {
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Live text is skipped unless you tick "Convert ' +
       'text to curves" above.').setIsFullWidth(true);
-    help.addStaticText('', 'Name an object "wall", "floor", "ramp" or "ground", or lock its layer, to make it ' +
-      'solid scenery that never moves. Objects follow their true outline, holes included.').setIsFullWidth(true);
+    help.addStaticText('', 'Name an object or a GROUP "wall", "floor", "ramp" or "ground", or lock it, ' +
+      'to make it solid scenery that never moves — everything inside a named group counts too. ' +
+      'Scenery follows its true outline, holes included.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays once on canvas, then a Finished dialog lets you scrub to any frame. ' +
       'The whole thing is a single undo step.').setIsFullWidth(true);
     help.addStaticText('', 'Seed makes a drop reproducible: the same seed and settings always give the same ' +
