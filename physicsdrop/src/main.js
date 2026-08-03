@@ -90,11 +90,26 @@
     try { ext = doc.currentSpread.getSpreadExtents(); }
     catch (e) { console.log('physicsdrop: could not read spread extents: ' + e); return null; }
 
-    var W = PD.makeWorld({
-      scale: o.scale || PD.WORLD_SCALE,
-      gravityX: o.gravityX === undefined ? 0 : o.gravityX,
-      gravityY: o.gravityY === undefined ? -10 : o.gravityY
-    });
+    // The world scale is chosen from the artwork rather than fixed. Box2D's linearSlop is a
+    // constant in SIM units, so a fixed scale that suits a 500pt letter leaves a 12pt glyph's stem
+    // only a few multiples of slop thick and it skitters instead of settling.
+    var sizes = [];
+    for (var si = 0; si < ex.objects.length; si++) {
+      if (ex.objects[si].isStatic) continue;
+      var sbb = PD.ringsBBox(ex.objects[si].rings);
+      if (sbb) sizes.push(Math.max(sbb.x1 - sbb.x0, sbb.y1 - sbb.y0));
+    }
+    var scale = o.scale || PD.suggestScale(sizes);
+
+    // Gravity is an acceleration in sim units, so it depends on the scale just chosen.
+    var grav = { x: 0, y: -10 };
+    if (o.gravityMagnitude !== undefined) {
+      grav = PD.gravityVector(o.gravityMagnitude, o.gravityAngle || 0, scale);
+    } else if (o.gravityX !== undefined || o.gravityY !== undefined) {
+      grav = { x: o.gravityX || 0, y: o.gravityY === undefined ? -10 : o.gravityY };
+    }
+
+    var W = PD.makeWorld({ scale: scale, gravityX: grav.x, gravityY: grav.y });
     // The box must contain the spread AND every piece of artwork, then stand off from both. Using
     // the spread alone is not enough: artwork routinely sits on or past the page edge, and any
     // body overlapping a wall at frame 0 keeps its island awake forever.
@@ -183,7 +198,16 @@
                 (worstDrift < 1e-6 ? '  OK' : '  <-- SUSPECT'));
 
     var scaleInfo = PD.checkScale(W);
+    console.log('  world scale: ' + fmt(W.scale, 2) + ' src units per sim unit' +
+                (o.scale ? ' (fixed)' : ' (chosen from the artwork)'));
     console.log('  scale: ' + scaleInfo.note);
+    // Thin features are what actually break: Box2D's linearSlop is a constant in sim units, so a
+    // glyph stem only a few multiples of slop thick skitters instead of settling.
+    try {
+      var slopPt = W.planck.Settings.linearSlop * W.scale;
+      console.log('  linearSlop is ' + fmt(slopPt, 3) + 'pt at this scale — features thinner than ' +
+                  'about ' + fmt(slopPt * 10, 1) + 'pt will be unstable');
+    } catch (e) { /* settings unavailable */ }
     console.log('  spread extents: x=' + fmt(ext.x) + ' y=' + fmt(ext.y) +
                 ' w=' + fmt(ext.width) + ' h=' + fmt(ext.height));
 

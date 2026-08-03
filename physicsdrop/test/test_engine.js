@@ -167,6 +167,24 @@ module.exports = function (PD, h) {
   h.assert('nor the final poses — which is why it is not a control', maxDiff < 1e-6,
     'worst difference ' + maxDiff.toFixed(9) + ' pt');
 
+  // --------------------------------------------------------------- auto scale
+  h.group('world: scale chosen from the artwork');
+
+  // A fixed scale cannot serve both a 500pt letter and a 12pt one, because linearSlop is a
+  // constant in SIM units: at scale 100 a 12pt glyph stem is barely three times the tolerance the
+  // contact solver works to, and it skitters instead of settling.
+  h.assertClose('a 300pt scene lands near 3 sim units', 300 / PD.suggestScale([300, 280, 320]), 3, 0.2);
+  h.assertClose('a 12pt scene does too', 12 / PD.suggestScale([12, 11, 13]), 3, 0.2);
+
+  // The median, not the mean, so one huge background object cannot drag the scene out of band.
+  var withOutlier = PD.suggestScale([20, 22, 24, 26, 5000]);
+  h.assert('one huge object does not dominate', withOutlier < 20,
+    'scale was ' + withOutlier.toFixed(2));
+
+  h.assertEqual('no sizes falls back to the default', PD.suggestScale([]), PD.WORLD_SCALE);
+  h.assertEqual('zero sizes fall back too', PD.suggestScale([0, 0]), PD.WORLD_SCALE);
+  h.assert('the result is clamped', PD.suggestScale([1e12]) <= 10000);
+
   // ---------------------------------------------------------------- scale check
   h.group('world: scale check');
 

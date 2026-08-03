@@ -92,18 +92,13 @@
     var result = dlg.runModal();
     if (!result || result.value !== DialogResult.Ok.value) return null;
 
-    var scale = o.scale || PD.WORLD_SCALE;
-    var g = gravityVector(
-      Math.max(100, gravityCtl.value || d.gravity),
-      angleCtl.value === undefined ? d.angle : angleCtl.value,
-      scale);
-
     var secs = Math.max(1, secsCtl.value || d.seconds);
 
+    // The magnitude and angle travel as-is. The world scale is not known yet - it is chosen from
+    // the artwork - and gravity divides by it, so the vector is built later, once.
     return {
-      scale: scale,
-      gravityX: g.x,
-      gravityY: g.y,
+      gravityMagnitude: Math.max(100, gravityCtl.value || d.gravity),
+      gravityAngle: angleCtl.value === undefined ? d.angle : angleCtl.value,
       restitution: Math.min(0.95, Math.max(0, (bounceCtl.value === undefined ? d.bounce : bounceCtl.value) / 100)),
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
       equaliseMass: !!equaliseCtl.value,

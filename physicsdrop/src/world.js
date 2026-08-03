@@ -123,7 +123,30 @@
     return { ok: ok, median: median, note: note, smallest: sizes[0], largest: sizes[sizes.length - 1] };
   }
 
+  /**
+   * A world scale that puts typical artwork in the band Box2D solves well.
+   *
+   * A fixed scale cannot serve both a 500pt letter and a 12pt one. The solver's `linearSlop` is
+   * 0.005 SIM units, so at a fixed scale of 100 a 12pt glyph's stem is barely three times the
+   * tolerance the contact solver works to, and it skitters. Measured: 12pt type at scale 100
+   * drifts about twice as far sideways as 300pt type does; matching the scale to the artwork makes
+   * the two behave identically.
+   *
+   * `sizes` are body extents in SOURCE units. The median is used rather than the mean so one large
+   * background object cannot drag the whole scene out of band.
+   */
+  function suggestScale(sizes, target) {
+    if (!sizes || !sizes.length) return DEFAULT_SCALE;
+    var t = target || 3;
+    var s = sizes.slice().sort(function (a, b) { return a - b; });
+    var median = s[s.length >> 1];
+    if (!(median > 0)) return DEFAULT_SCALE;
+    // Clamped so degenerate artwork cannot produce an absurd world.
+    return Math.min(10000, Math.max(0.01, median / t));
+  }
+
   PD.makeWorld = makeWorld;
+  PD.suggestScale = suggestScale;
   PD.toSim = toSim;
   PD.toSrc = toSrc;
   PD.addStaticChain = addStaticChain;
