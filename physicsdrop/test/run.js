@@ -21,6 +21,7 @@ var SRC = [
   'world.js',
   'bodies.js',
   'sim.js',
+  'export.js',
   'ui.js'
 ];
 
@@ -33,6 +34,7 @@ var SUITES = [
   require('./test_robustness'),
   require('./test_flatten'),
   require('./test_extract'),
+  require('./test_export'),
   require('./test_engine')
 ];
 

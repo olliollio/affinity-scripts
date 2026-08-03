@@ -231,8 +231,25 @@ to stop before anything touches the document; that is how the extraction layer w
 before playback existed, and the console report it prints is still the only view into the parts
 that leave no trace on canvas.
 
+## Exporting
+
+Tick "Export image sequence when finished" and the drop is written as a 30fps PNG or JPEG sequence
+from frame 0 up to the frame you keep — the range is only known after scrubbing, which is why the
+format choice lives in the Finished dialog rather than the settings one. Cancel never exports:
+it means "keep the settled result", not "write three hundred files".
+
+Each frame is **committed**, exported, then undone. A preview is not guaranteed to render into an
+export, so this cannot reuse the cheap preview path the scrubber uses. The loop runs on a timer so
+the UI is not frozen and a failure can stop cleanly rather than wedging Affinity.
+
+v1.1 created a timestamped output folder with `fsys.createDirectories`. `/fs` denies every path in
+this sandbox, so that call throws and folder creation is best-effort: when it fails, frames are
+written flat onto the Desktop sharing one timestamped prefix. `doc.export` is a document API rather
+than a filesystem one, so it is attempted regardless. Frame numbers are zero-padded to four digits
+either way, or a sequence sorts 1, 10, 11, 2 and imports scrambled.
+
 ## Not here yet
 
-Image-sequence export, and true silhouettes for placed images — the latter needs
+True silhouettes for placed images — the latter needs
 `NodeRenderingEngine` from `/rasterobject` and `PixelReaderRGBA8` from `/pixelaccessor`, both of
 which v1.1 already uses. Images currently collide as their placement rectangle.
