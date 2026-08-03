@@ -69,6 +69,11 @@
     var densityCtl = mat.addUnitValueEditor('Density', UnitType.Number, UnitType.Number, d.density, 0.1, 10);
     densityCtl.setShowPopupSlider(true); densityCtl.precision = 1;
 
+    var beh = col.addGroup('Objects');
+    var groupCtl = beh.addCheckBox('Keep groups as one object', false);
+    beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
+      'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
+
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Text must be converted to curves first — a live text ' +
       'frame is skipped, because Affinity only exposes one glyph of it.').setIsFullWidth(true);
@@ -99,6 +104,7 @@
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
       density: Math.max(0.1, densityCtl.value || d.density),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
+      groupsAsOneBody: !!groupCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
       maxFrames: Math.round(secs * 30)
     };

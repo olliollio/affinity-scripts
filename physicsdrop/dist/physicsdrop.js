@@ -1896,6 +1896,11 @@ PD.planck = (function () {
     var densityCtl = mat.addUnitValueEditor('Density', UnitType.Number, UnitType.Number, d.density, 0.1, 10);
     densityCtl.setShowPopupSlider(true); densityCtl.precision = 1;
 
+    var beh = col.addGroup('Objects');
+    var groupCtl = beh.addCheckBox('Keep groups as one object', false);
+    beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
+      'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
+
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Text must be converted to curves first — a live text ' +
       'frame is skipped, because Affinity only exposes one glyph of it.').setIsFullWidth(true);
@@ -1926,6 +1931,7 @@ PD.planck = (function () {
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
       density: Math.max(0.1, densityCtl.value || d.density),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
+      groupsAsOneBody: !!groupCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
       maxFrames: Math.round(secs * 30)
     };
@@ -1956,8 +1962,10 @@ PD.planck = (function () {
 (function (PD) {
   'use strict';
 
-  // Keeps bodies off the spread edge, so the boundary chain is visible in a preview later.
-  var MARGIN = 60;
+  // Breathing room OUTSIDE the artwork and the spread, never inside them. An inward margin looks
+  // tidier but puts a wall through anything sitting near the page edge, and a body that starts
+  // embedded in static geometry can never sleep - the run then burns to the frame cap every time.
+  var MARGIN = 40;
 
   function fmt(n, dp) { return Number(n).toFixed(dp === undefined ? 2 : dp); }
 
@@ -2018,9 +2026,26 @@ PD.planck = (function () {
       gravityX: o.gravityX === undefined ? 0 : o.gravityX,
       gravityY: o.gravityY === undefined ? -10 : o.gravityY
     });
+    // The box must contain the spread AND every piece of artwork, then stand off from both. Using
+    // the spread alone is not enough: artwork routinely sits on or past the page edge, and any
+    // body overlapping a wall at frame 0 keeps its island awake forever.
+    var box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
+    for (var bi = 0; bi < ex.objects.length; bi++) {
+      var rgs = ex.objects[bi].rings;
+      for (var ri = 0; ri < rgs.length; ri++) {
+        var rg = rgs[ri];
+        for (var vi = 0; vi < rg.length; vi += 2) {
+          if (rg[vi] < box.x0) box.x0 = rg[vi];
+          if (rg[vi] > box.x1) box.x1 = rg[vi];
+          if (rg[vi + 1] < box.y0) box.y0 = rg[vi + 1];
+          if (rg[vi + 1] > box.y1) box.y1 = rg[vi + 1];
+        }
+      }
+    }
     PD.addBounds(W, {
-      x: ext.x + MARGIN, y: ext.y + MARGIN,
-      width: ext.width - 2 * MARGIN, height: ext.height - 2 * MARGIN
+      x: box.x0 - MARGIN, y: box.y0 - MARGIN,
+      width: (box.x1 - box.x0) + 2 * MARGIN,
+      height: (box.y1 - box.y0) + 2 * MARGIN
     });
 
     // ----------------------------------------------------------------- bodies
