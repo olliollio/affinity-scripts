@@ -8,8 +8,8 @@
  * WRITES: attempts to create up to four empty folders on your Desktop, named PDCTX_*.
  *         Delete them afterwards; nothing else is touched.
  *
- * examples/physicsdrop.js creates `E:\USER\Desktop/PhysicsDrop_20260803_133101` and exports 78
- * frames into it. physicsdrop v2 builds a string of exactly the same shape and gets
+ * examples/physicsdrop.js creates `E:\USER\Desktop/Gravity_20260803_133101` and exports 78
+ * frames into it. gravity v2 builds a string of exactly the same shape and gets
  * PERMISSION_DENIED from `createDirectories`. The path is therefore NOT the difference, so
  * something about the CONTEXT of the call is.
  *

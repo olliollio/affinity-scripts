@@ -1,6 +1,6 @@
 // Minimal filesystem check. Paste this into a BRAND NEW script entry and run it.
 //
-// examples/physicsdrop.js can create a folder; physicsdrop v2 cannot, on the same machine in the
+// examples/physicsdrop.js can create a folder; gravity v2 cannot, on the same machine in the
 // same session, with the same path. This is the smallest possible script that asks the same
 // question, so that content, size and structure are all removed as variables: if a six-line
 // script in a new entry is also denied, then a NEW ENTRY is what is denied, not our code.

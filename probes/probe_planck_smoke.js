@@ -19,7 +19,7 @@
  * Sections 3-6 are skipped if the read fails; the root scan still reports, which is
  * what tells us how to fix it.
  *
- * Reads from a dev tree staged at Desktop\physicsdrop-dev\. Paths into the WSL share
+ * Reads from a dev tree staged at Desktop\gravity-dev\. Paths into the WSL share
  * (\\wsl.localhost\...) come back PERMISSION_DENIED - the sandbox resolves them and
  * then refuses, so this is policy about location, not a path-syntax problem.
  */
@@ -28,7 +28,7 @@
 // Path relative to the Desktop. The dev tree is staged there because UNC paths
 // into the WSL share come back PERMISSION_DENIED - the sandbox resolves them and
 // then refuses, so no path syntax fixes it.
-var DESKTOP_RELATIVE = 'physicsdrop-dev/vendor/planck.min.js';
+var DESKTOP_RELATIVE = 'gravity-dev/vendor/planck.min.js';
 
 // Extra absolute paths to try after the Desktop one. Leave empty for none.
 var CANDIDATE_PATHS = [];
@@ -90,7 +90,7 @@ function probeRoots(desktop) {
 
   var roots = [
     ['Desktop', desktop],
-    ['Desktop dev tree', desktop + '\\physicsdrop-dev'],
+    ['Desktop dev tree', desktop + '\\gravity-dev'],
     ['Documents', desktop.replace(/Desktop$/, 'Dokumente')],
     ['user home', desktop.replace(/\\Desktop$/, '')],
     ['E:\\', 'E:\\'],
