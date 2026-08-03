@@ -161,16 +161,15 @@
     var frameCtl = grp.addUnitValueEditor('Frame', UnitType.Number, UnitType.Number, last, 0, last);
     frameCtl.setShowPopupSlider(true);
     frameCtl.precision = 0;
-    grp.addStaticText('', (last + 1) + ' frames (' + secs + 's @ 30fps). Drag the Frame slider to ' +
-      'replay the drop on canvas. OK keeps the frame you are viewing; Cancel keeps the settled ' +
-      'result.').setIsFullWidth(true);
-
-    if (ctx.frames.settledBy !== 'sleep') {
-      grp.addStaticText('', ctx.frames.settledBy === 'quiescence'
-        ? 'Note: some artwork started inside static geometry, so the run ended once everything ' +
-          'stopped moving rather than by the solver going to sleep.'
-        : 'Note: the run hit its frame limit before settling.').setIsFullWidth(true);
-    }
+    // One line, not three. Each full-width static text costs real dialog height, and the panel had
+    // grown tall enough that the buttons at the bottom were hard to reach.
+    grp.addStaticText('', (last + 1) + ' frames, ' + secs + 's @ 30fps. OK keeps the frame shown; ' +
+      'Cancel keeps the settled result.' +
+      (ctx.frames.settledBy === 'quiescence'
+        ? ' Some artwork started inside scenery, so the run ended when everything stopped rather ' +
+          'than by sleeping.'
+        : ctx.frames.settledBy === 'cap' ? ' The run hit its time limit before settling.' : ''))
+      .setIsFullWidth(true);
 
     // Export is offered here rather than up front, because the sequence runs from the start of the
     // drop to the frame being viewed — which is not known until the user has scrubbed.
@@ -178,8 +177,8 @@
     if (o.offerExport) {
       var eg = col.addGroup('Export image sequence');
       fmtCtl = eg.addRadioGroup('Format', ['PNG', 'JPEG'], 0);
-      eg.addStaticText('', 'OK exports the drop from the start up to the frame you are viewing, ' +
-        'as a 30fps sequence on your Desktop. Do not touch the document while it runs.').setIsFullWidth(true);
+      eg.addStaticText('', 'OK exports frames 0-' + last + ' to your Desktop. Do not touch the ' +
+        'document while it runs.').setIsFullWidth(true);
     }
 
     var shown = last;

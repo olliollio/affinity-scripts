@@ -69,33 +69,22 @@
     // mass RATIO unchanged, and contact response depends only on ratios - so it is provably a
     // no-op. What actually bites is that mass grows with area, so a placed photo outweighs a
     // letter by around 90x and bulldozes it.
-    var equaliseCtl = mat.addCheckBox('Equalise mass', false);
-    mat.addStaticText('', 'On: every object weighs the same regardless of size, so big artwork ' +
-      'stops bulldozing small artwork. Off: real physics, where area decides weight.').setIsFullWidth(true);
+    //
+    // Every hint below lives in the LABEL rather than in a paragraph under it. Each full-width
+    // static text costs two lines of dialog height, and the panel had grown tall enough that the
+    // OK and Cancel buttons were hard to reach.
+    var equaliseCtl = mat.addCheckBox('Equalise mass (big objects stop bulldozing small ones)', false);
 
     var beh = col.addGroup('Objects');
-    var convertCtl = beh.addCheckBox('Convert text to curves', false);
-    beh.addStaticText('', 'Live text is skipped. Tick this to convert it to curves first so it ' +
-      'drops as letters. This changes the document, as its own undo step.').setIsFullWidth(true);
-    var exportCtl = beh.addCheckBox('Export image sequence when finished', false);
-    beh.addStaticText('', 'Writes a 30fps PNG or JPEG sequence to your Desktop, from the start of ' +
-      'the drop up to the frame you keep. Ready to import at 30fps.').setIsFullWidth(true);
+    var convertCtl = beh.addCheckBox('Convert text to curves (changes the document)', false);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
-    beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
-      'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
+    var exportCtl = beh.addCheckBox('Export image sequence to the Desktop when finished', false);
 
     var help = col.addGroup('How to use');
-    help.addStaticText('', 'Select objects and run. Live text is skipped unless you tick "Convert ' +
-      'text to curves" above.').setIsFullWidth(true);
-    help.addStaticText('', 'Name an object or a GROUP "collider", "wall", "floor", "ramp" or ' +
-      '"ground", or lock it, ' +
-      'to make it solid scenery that never moves — everything inside a named group counts too. ' +
-      'Scenery follows its true outline, holes included.').setIsFullWidth(true);
-    help.addStaticText('', 'The drop plays once on canvas, then a Finished dialog lets you scrub to any frame. ' +
-      'The whole thing is a single undo step.').setIsFullWidth(true);
-    help.addStaticText('', 'Seed makes a drop reproducible: the same seed and settings always give the same ' +
-      'result.').setIsFullWidth(true);
-    help.addStaticText('', ' ').setIsFullWidth(true);
+    help.addStaticText('', 'Select objects and run. Name an object or group "collider", "wall", ' +
+      '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
+    help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
+      'undo step. The same seed always gives the same result.').setIsFullWidth(true);
 
     var result = dlg.runModal();
     if (!result || result.value !== DialogResult.Ok.value) return null;
