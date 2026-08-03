@@ -60,6 +60,29 @@ module.exports = function (PD, h) {
   h.assertClose('toSrc round-trips x', back.x, 500, 1e-9);
   h.assertClose('toSrc round-trips y', back.y, 300, 1e-9);
 
+  // -------------------------------------------------------------- gravity dial
+  h.group('ui: gravity vector');
+
+  // Angle 0 is down the page. Affinity's y points down and planck's points up, so "down" must come
+  // out NEGATIVE in sim units — the same flip the geometry gets, applied to acceleration.
+  var down = PD.gravityVector(1000, 0, 100);
+  h.assertClose('angle 0 has no sideways component', down.x, 0, 1e-12);
+  h.assertClose('angle 0 pulls down the page', down.y, -10, 1e-12);
+
+  var right = PD.gravityVector(1000, 90, 100);
+  h.assertClose('angle 90 pulls right', right.x, 10, 1e-12);
+  h.assertClose('and not vertically', right.y, 0, 1e-12);
+
+  var up = PD.gravityVector(1000, 180, 100);
+  h.assertClose('angle 180 pulls up the page', up.y, 10, 1e-12);
+
+  var left = PD.gravityVector(1000, 270, 100);
+  h.assertClose('angle 270 pulls left', left.x, -10, 1e-12);
+
+  // The magnitude is in document units, so the world scale has to divide it exactly once.
+  h.assertClose('gravity divides by the world scale', PD.gravityVector(3000, 0, 100).y, -30, 1e-12);
+  h.assertClose('a different scale changes it', PD.gravityVector(1000, 0, 50).y, -20, 1e-12);
+
   // ------------------------------------------------------------------ fixtures
   h.group('bodies: fixtures');
 

@@ -20,7 +20,8 @@ var SRC = [
   'extract.js',
   'world.js',
   'bodies.js',
-  'sim.js'
+  'sim.js',
+  'ui.js'
 ];
 
 var PD = h.loadPD(SRC, { planck: true });
