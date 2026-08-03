@@ -114,6 +114,32 @@ module.exports = function (GR, h) {
   h.assertEqual('no poses gives no polyline', GR.polylineFromPoses([], 5).length, 0);
   h.assertEqual('missing poses are tolerated', GR.polylineFromPoses(null, 5).length, 0);
 
+  h.group('rope: smoothing');
+
+  var coarse = [0, 0, 100, 0, 200, 100, 300, 100];
+  var smooth = GR.smoothPolyline(coarse, 4);
+  h.assertEqual('smoothing multiplies the point count', smooth.length / 2, 3 * 4 + 1);
+
+  // Interpolating, not approximating: every original joint must survive exactly where the solver
+  // put it, or the drawn rope would drift away from the simulated one.
+  h.assertClose('the first point is untouched', smooth[0], 0, 1e-9);
+  h.assertClose('and the last', smooth[smooth.length - 2], 300, 1e-9);
+  var foundMid = false;
+  for (var si = 0; si < smooth.length; si += 2) {
+    if (Math.abs(smooth[si] - 100) < 1e-9 && Math.abs(smooth[si + 1] - 0) < 1e-9) foundMid = true;
+  }
+  h.assert('and every original joint is still on the curve', foundMid);
+
+  // A straight input must stay straight — no wobble invented where there is no curvature.
+  var straight = GR.smoothPolyline([0, 0, 50, 0, 100, 0], 4);
+  var maxDev = 0;
+  for (var q = 1; q < straight.length; q += 2) maxDev = Math.max(maxDev, Math.abs(straight[q]));
+  h.assert('a straight rope stays straight', maxDev < 1e-9, 'deviated by ' + maxDev);
+
+  h.assertEqual('two points are returned unchanged', GR.smoothPolyline([0, 0, 10, 10], 4).length, 4);
+  h.assertEqual('an empty polyline stays empty', GR.smoothPolyline([], 4).length, 0);
+  h.assertEqual('subdivision of one is a no-op', GR.smoothPolyline(coarse, 1).length, coarse.length);
+
   h.group('rope: simulated');
 
   // End to end: a horizontal line above a floor should sag and come to rest on it.
@@ -150,6 +176,27 @@ module.exports = function (GR, h) {
   // even on a rope that had torn itself to pieces, which is exactly what it failed to catch once.
   h.assert('the chain stayed joined', worstGap < rope.halfLength * 2.6,
     'worst neighbour distance ' + worstGap.toFixed(2) + ' vs link length ' + (rope.halfLength * 2).toFixed(2));
+
+  h.group('rope: a taut rope does not stretch');
+
+  // The regression that matters. A rope pinned at both ends with no slack is the worst case for an
+  // iterative solver, and past a certain link count it tears apart entirely - measured stretch went
+  // from 1.03x to 54x between 40 and 48 links on a 1000pt rope. The link cap exists for this.
+  [300, 600, 1000, 1800].forEach(function (len) {
+    var Wt = GR.makeWorld({ scale: 100, gravityY: -10 });
+    var taut = GR.addRope(Wt, line(-len / 2, 0, len / 2, 0, 8), { thickness: 4, anchored: true });
+    GR.run(Wt, { maxFrames: 600 });
+
+    var poses = taut.links.map(function (l) { return GR.bodyState(Wt, l); });
+    var chain = 0;
+    for (var i = 1; i < poses.length; i++) {
+      chain += Math.sqrt(Math.pow(poses[i].x - poses[i - 1].x, 2) + Math.pow(poses[i].y - poses[i - 1].y, 2));
+    }
+    var ideal = (poses.length - 1) * taut.halfLength * 2;
+    h.assert('a ' + len + 'pt taut rope keeps its length',
+      chain / ideal < 1.2,
+      taut.links.length + ' links stretched ' + (chain / ideal).toFixed(2) + 'x');
+  });
 
   h.group('rope: anchored');
 

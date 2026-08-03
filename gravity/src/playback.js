@@ -97,6 +97,9 @@
         }
         var pts = GR.polylineFromPoses(poses, rope.halfLength);
         if (pts.length < 4) continue;
+        // The solver's link count is capped for stability; the drawn curve is not, so the rope
+        // reads as a rope rather than as a faceted chain.
+        pts = GR.smoothPolyline(pts, ctx.ropeSmoothing || 6);
 
         var cb = g.CurveBuilder.create();
         cb.beginXY(pts[0], pts[1]);

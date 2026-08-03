@@ -146,12 +146,20 @@ Ends fall free, so a rope slides off a shape it is unbalanced on. Name the path 
 or `anchor` to pin both ends and get a washing line that sags in the middle. Pinning uses a static
 body and a joint rather than a static end link, so a hanging rope can still swivel about its pin.
 
-> **Link count is a stability limit, not a quality dial.** A link shorter than about **0.12 sim
-> units** is solving against `linearSlop` (0.005), and a long chain of them compounds the error
-> every step. Measured on a 400pt rope pinned at both ends: 33 links hold and sag 41pt, 48 links
-> tear it apart and fling the middle to y=24300. Thickness alone does not predict it — a short fat
-> link is fine. So `segmentCount` derives a ceiling from the world scale and clamps to it, even
-> when a count is passed explicitly.
+> **Link count is a stability limit, not a quality dial**, and two separate limits apply. A link
+> shorter than about **0.12 sim units** solves against `linearSlop` (0.005): a 400pt rope at 0.083
+> per link tore itself apart and flung its middle to y=24300, while 0.121 held and sagged 41pt.
+> Separately, a **taut** chain fails past a link count no size rule predicts, because Box2D
+> propagates constraints iteratively along it — measured, a 1000pt rope pinned at both ends
+> stretched 1.03x at 40 links and **54x** at 48, while 1500pt was fine at 48. That boundary is
+> chaotic, so `MAX_SEGMENTS` takes margin rather than chasing it: **32**, which held on every
+> length tested at worst 1.02x. A draped rope has slack and is far more forgiving.
+
+**Appearance is decoupled from the solver.** The drawn curve is Catmull-Rom interpolated through
+the link joints — `smoothPolyline`, 6 subdivisions by default — so a 32-link rope draws as roughly
+190 points and reads as a rope rather than a faceted chain. Catmull-Rom interpolates rather than
+approximates, so every joint stays exactly where the solver put it and only the space between
+joints is invented.
 
 Playback cannot transform a rope, because a rope **deforms**. Its polyline is rebuilt from the link
 poses each frame and written with `createSetCurves`, riding the same compound command as everything
