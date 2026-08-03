@@ -77,13 +77,36 @@
    */
   function exportSequence(ctx, opts, onDone) {
     var o = opts || {};
-    var app, timers, docMod;
+    var app, timers;
     try {
       app = require('/application').app;
       timers = require('/timers');
-      docMod = require('/document');
     } catch (e) {
       if (onDone) onDone({ ok: false, error: 'modules unavailable: ' + e });
+      return;
+    }
+
+    // v1.1 imports both classes from /document and calls them exactly as this does, so the failure
+    // is not a porting mistake and the classes may simply live elsewhere now. Cheaper to look than
+    // to assume.
+    var FileExportOptions = null, FileExportArea = null, foundIn = null;
+    var MODULES = ['/document', '/documents', '/export', '/exports', '/files', '/io'];
+    for (var mi = 0; mi < MODULES.length && !FileExportOptions; mi++) {
+      try {
+        var mod = require(MODULES[mi]);
+        if (mod && mod.FileExportOptions && mod.FileExportArea) {
+          FileExportOptions = mod.FileExportOptions;
+          FileExportArea = mod.FileExportArea;
+          foundIn = MODULES[mi];
+        }
+      } catch (e) { /* module absent */ }
+    }
+    if (!FileExportOptions) {
+      if (onDone) onDone({
+        ok: false,
+        error: 'FileExportOptions / FileExportArea were not found in ' + MODULES.join(', ') +
+               '. Run probes/probe_export.js to find where this Affinity build keeps them.'
+      });
       return;
     }
 
@@ -107,7 +130,7 @@
     var exportOpts = null, usedPreset = null, presetErr = null;
     for (var p = 0; p < names.length && !exportOpts; p++) {
       try {
-        var candidate = docMod.FileExportOptions.createWithPresetName(names[p]);
+        var candidate = FileExportOptions.createWithPresetName(names[p]);
         if (candidate) { exportOpts = candidate; usedPreset = names[p]; }
       } catch (e) {
         presetErr = (e && e.message) ? e.message : String(e);
@@ -124,9 +147,9 @@
 
     var exportArea = null;
     var areaAttempts = [
-      ['createForCurrentSpread', function () { return docMod.FileExportArea.createForCurrentSpread(); }],
-      ['createForDocument', function () { return docMod.FileExportArea.createForDocument(); }],
-      ['createForSelection', function () { return docMod.FileExportArea.createForSelection(); }]
+      ['createForCurrentSpread', function () { return FileExportArea.createForCurrentSpread(); }],
+      ['createForDocument', function () { return FileExportArea.createForDocument(); }],
+      ['createForSelection', function () { return FileExportArea.createForSelection(); }]
     ];
     var areaErr = null;
     for (var q = 0; q < areaAttempts.length && !exportArea; q++) {
@@ -169,7 +192,7 @@
         }
 
         if (frame > last) {
-          stop({ ok: true, written: written, where: target.where, folder: target.folder, preset: usedPreset });
+          stop({ ok: true, written: written, where: target.where, folder: target.folder, preset: usedPreset, module: foundIn });
           return;
         }
 

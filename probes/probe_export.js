@@ -70,6 +70,20 @@ function main() {
   // ------------------------------------------------------ 1. what is exported
   H('1. The /document module');
   L('  exports', safe(function () { return Object.keys(docMod).join(', '); }));
+
+  // v1.1 imports both classes from /document and calls them exactly as v2 does, so a porting
+  // mistake is ruled out - which raises the possibility that they have MOVED. Worth knowing before
+  // any amount of preset-name guessing.
+  console.log('  -- where do these classes actually live? --');
+  ['/document', '/documents', '/export', '/exports', '/exporting', '/files', '/io',
+   '/application', '/rasterobject', '/rendering'].forEach(function (m) {
+    var r = safe(function () {
+      var mod = require(m);
+      var hits = Object.keys(mod).filter(function (k) { return /export/i.test(k); });
+      return hits.length ? hits.join(', ') : '(no export-ish exports)';
+    });
+    if (r.indexOf('ERR:') !== 0) console.log('    ' + m + ' -> ' + r);
+  });
   L('  typeof FileExportOptions', safe(function () { return typeof docMod.FileExportOptions; }));
   L('  typeof FileExportArea', safe(function () { return typeof docMod.FileExportArea; }));
   L('  FileExportOptions members', safe(function () { return members(docMod.FileExportOptions).join(', '); }));
