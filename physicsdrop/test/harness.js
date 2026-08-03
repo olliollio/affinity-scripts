@@ -20,16 +20,22 @@ var ROOT = path.join(__dirname, '..');
 
 // ---------------------------------------------------------------- module loading
 
-// Loads the vendored earcut UMD build the same way the sandbox does: via the CommonJS branch.
-function loadEarcut() {
+/**
+ * Loads a vendored UMD build the same way the sandbox does: via the CommonJS branch.
+ *
+ * The globals have to be saved and restored around it, because each bundle assigns to whatever
+ * `module.exports` it finds — loading two of them without this, the second overwrites the first.
+ * `build.js` solves the same problem lexically, by giving each library its own wrapper.
+ */
+function loadUMD(file) {
   var shim = {};
   var savedModule = globalThis.module;
   var savedExports = globalThis.exports;
   globalThis.module = { exports: shim };
   globalThis.exports = shim;
   try {
-    var code = fs.readFileSync(path.join(ROOT, 'vendor', 'earcut.min.js'), 'utf8');
-    vm.runInThisContext(code, { filename: 'vendor/earcut.min.js' });
+    var code = fs.readFileSync(path.join(ROOT, 'vendor', file), 'utf8');
+    vm.runInThisContext(code, { filename: 'vendor/' + file });
   } finally {
     globalThis.module = savedModule;
     globalThis.exports = savedExports;
@@ -37,10 +43,18 @@ function loadEarcut() {
   return shim;
 }
 
+// planck is 297KB and only the engine tests need it, so it loads on demand.
+var _planck = null;
+function loadPlanck() {
+  if (!_planck) _planck = loadUMD('planck.min.js');
+  return _planck;
+}
+
 // Builds the PD namespace from src/, in concatenation order.
-function loadPD(files) {
-  var earcut = loadEarcut();
-  globalThis.PD = { earcut: earcut.default };
+function loadPD(files, opts) {
+  var o = opts || {};
+  globalThis.PD = { earcut: loadUMD('earcut.min.js').default };
+  if (o.planck) globalThis.PD.planck = loadPlanck();
   for (var i = 0; i < files.length; i++) {
     var file = path.join(ROOT, 'src', files[i]);
     vm.runInThisContext(fs.readFileSync(file, 'utf8'), { filename: 'src/' + files[i] });
@@ -102,6 +116,7 @@ function reportTests() {
 
 module.exports = {
   loadPD: loadPD,
+  loadPlanck: loadPlanck,
   group: group,
   assert: assert,
   assertClose: assertClose,

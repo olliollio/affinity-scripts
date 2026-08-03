@@ -15,16 +15,24 @@ var h = require('./harness');
 var SRC = [
   'contours.js',
   'sanitize.js',
-  'decompose.js'
+  'decompose.js',
+  'flatten.js',
+  'extract.js',
+  'world.js',
+  'bodies.js',
+  'sim.js'
 ];
 
-var PD = h.loadPD(SRC);
+var PD = h.loadPD(SRC, { planck: true });
 
 var SUITES = [
   require('./test_contours'),
   require('./test_sanitize'),
   require('./test_decompose'),
-  require('./test_robustness')
+  require('./test_robustness'),
+  require('./test_flatten'),
+  require('./test_extract'),
+  require('./test_engine')
 ];
 
 for (var i = 0; i < SUITES.length; i++) SUITES[i](PD, h);
