@@ -127,6 +127,7 @@
 
       var rec = PD.addBody(W, parts, {
         density: o.density === undefined ? 1 : o.density,
+        equaliseMass: !!o.equaliseMass,
         friction: o.friction === undefined ? 0.4 : o.friction,
         restitution: o.restitution === undefined ? 0.15 : o.restitution,
         name: obj.name,
