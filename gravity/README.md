@@ -176,13 +176,17 @@ probe in `probes/`, not assumed.
 - `curve.generatePolygon(tolerance)` returns a `PolygonHandle` with no readable members, so
   flattening is `flatten.js`'s job. Straight edges arrive as cubics with collapsed handles and are
   emitted as single segments rather than subdivided.
-- **Live text is skipped** unless "Convert text to curves" is ticked, which runs
-  `DocumentCommand.createConvertToCurves` as its own undo step and then extracts the resulting
-  `PolyCurveNode`s through the ordinary vector path. `curvesInterface.polyPolyCurves` does expose
-  one `PolyCurve` per glyph, counters included, and `textPolicy: 'glyphs'` reads them directly —
-  but the coordinate space `getTransformedPolyCurve(i)` returns is not established: in a real
-  document the letters fell correctly and collided with nothing, which is how a body far from
-  where it renders behaves. Conversion is the reliable route until that is probed.
+- **Live text drops as one rigid body**, read non-destructively and left editable.
+  `curvesInterface.polyCurve` reports `curveCount === 1` for a whole string — one glyph — but
+  `polyPolyCurves` holds one `PolyCurve` per glyph with counters included, and
+  `getTransformedPolyCurve(i)` returns them in **base space**: measured against a rotated, offset
+  text node, it reproduces `baseBox` exactly and `node.transform` lands it on `spreadBaseBox`.
+  > It is **one** body rather than one per glyph because a text node is a single node. Playback
+  > moves a body by transforming its node, so ten glyph bodies sharing one node would apply ten
+  > conflicting transforms to it every frame — the text lurches while the physics, which is
+  > correct, is never seen. Letters can only move independently if they are separate nodes, which
+  > is what "Split text into letters" produces via `DocumentCommand.createConvertToCurves`.
+  `textPolicy: 'refuse'` skips text entirely.
 - Classification order matters: an `ImageNode` also has `curvesInterface`, so the image test comes
   before the vector test.
 - **Images collide as their true silhouette**, traced from the alpha channel by `raster.js`.
