@@ -181,7 +181,31 @@ probe in `probes/`, not assumed.
 `test_extract.js` runs against mock nodes copying the shape the probes recorded. They prove the
 module behaves correctly given that shape; only a probe run inside Affinity proves the shape.
 
+## Playback
+
+`playback.js` writes the recording back to the canvas, ported from v1.1 whose preview/scrub/commit
+dance is known to work: `executeCommand(cmd, true)` previews and supersedes the previous preview,
+`executeCommand(cmd, false)` commits one undoable step, and `clearPreviews()` drops anything
+uncommitted. Scrubbing is therefore cheap — each slider move is one replacing preview rather than
+an undo stack to unwind.
+
+Every body is transformed as a delta about its **original centroid**, so the artwork never moves
+from its authored position as far as the document is concerned: replaying frame 0 restores it
+exactly, and the whole drop stays one undo step.
+
+> **Rotation sign.** v1.1 solved in Affinity's y-down space and applied its body angle straight to
+> `Transform.createRotate`. v2 solves in planck's y-up space and `bodyState` negates the angle on
+> the way out, so the value reaching `playback.js` is in the same convention v1.1 used — which is
+> why nothing negates it again. If objects ever counter-rotate against the simulation, that is the
+> only line to flip.
+
+`main.js` runs the whole pipeline and hands the recording to the scrubber. Pass `{ dryRun: true }`
+to stop before anything touches the document; that is how the extraction layer was validated
+before playback existed, and the console report it prints is still the only view into the parts
+that leave no trace on canvas.
+
 ## Not here yet
 
-`playback.js` — preview, scrubber and writing transforms back to the document. Everything else is
-written and tested headlessly.
+Image-sequence export, and true silhouettes for placed images — the latter needs
+`NodeRenderingEngine` from `/rasterobject` and `PixelReaderRGBA8` from `/pixelaccessor`, both of
+which v1.1 already uses. Images currently collide as their placement rectangle.

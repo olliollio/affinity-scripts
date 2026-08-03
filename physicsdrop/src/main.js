@@ -1,17 +1,15 @@
 /**
- * main.js — the entry point. READ-ONLY for now.
+ * main.js — the entry point.
  *
- * This runs the whole pipeline against a real selection and reports what happened, without
- * touching the document. Every module below it is verified headlessly or against mock nodes; this
- * is the first thing that meets actual Affinity nodes, so it exists to prove the SDK assumptions
- * before playback.js is built on top of them.
+ * Runs the whole pipeline against the current selection and reports what happened, then hands the
+ * recording to the scrubber. Pass `{ dryRun: true }` to stop before anything touches the document,
+ * which is how the extraction layer was validated before playback existed.
  *
- * What it is checking, in order of how badly a mistake would hurt:
- *   1. extract.js reads real nodes at all
- *   2. the base->spread transform is right — a body's start position must match the artwork's
- *      own centroid, and that is checkable without moving anything
- *   3. the world scale suits the artwork
- *   4. the simulation settles, and by which rule
+ * The console report is kept even in the full run, because it is the only view into the parts that
+ * leave no trace on canvas. In particular the transform check — a body's position before stepping
+ * must equal the artwork's own centroid — closes the loop through extract, flatten, transformRing
+ * and bodies. A wrong base-to-spread matrix would offset every body equally and still produce a
+ * simulation that looks entirely plausible while landing in the wrong place.
  */
 
 (function (PD) {
@@ -173,9 +171,31 @@
         '  turned ' + fmt(pose.angle * 180 / Math.PI, 1) + ' deg');
     }
 
+    // --------------------------------------------------------------- playback
+    if (o.dryRun) {
+      console.log('');
+      console.log('physicsdrop: dry run complete, document untouched.');
+      return { world: W, bodies: made, frames: frames, extracted: ex };
+    }
+
+    var ctx;
+    try {
+      ctx = PD.playbackPrepare(doc, made, frames);
+    } catch (e) {
+      console.log('');
+      console.log('physicsdrop: playback unavailable (' + e + '); document untouched.');
+      return { world: W, bodies: made, frames: frames, extracted: ex };
+    }
+
     console.log('');
-    console.log('physicsdrop: dry run complete, document untouched.');
-    return { world: W, bodies: made, frames: frames, extracted: ex };
+    console.log('physicsdrop: drag the Frame slider to replay. OK keeps the frame you are viewing,');
+    console.log('Cancel keeps the settled result. Either way it is one undo step.');
+
+    var chosen = PD.showScrubber(ctx, {});
+    console.log('physicsdrop: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
+                (chosen.accepted ? '' : ' (settled result)'));
+
+    return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx, chosen: chosen };
   }
 
   PD.main = main;
