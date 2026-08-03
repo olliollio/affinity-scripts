@@ -96,6 +96,47 @@
   }
 
   /**
+   * Plays the recording on canvas at 30fps, then calls `onDone`.
+   *
+   * v1.1 animated WHILE solving, so its frame rate was whatever the solver could manage and a
+   * heavy scene crawled. v2 solves the whole drop first — a few hundred milliseconds — and replays
+   * it from the recording, so playback runs at a steady 30fps no matter how expensive the physics
+   * was, and rewatching costs nothing.
+   *
+   * Nothing is committed here: every frame is a preview that supersedes the last, so the document
+   * is untouched until the Finished dialog resolves.
+   */
+  function play(ctx, opts, onDone) {
+    var o = opts || {};
+    var timers = require('/timers');
+    var frame = 0;
+    var stopped = false;
+    var step = o.frameStep || 1;
+
+    function finish() {
+      if (stopped) return;
+      stopped = true;
+      try { timers.Timer.cancelAll(); } catch (e) { /* already gone */ }
+      if (onDone) onDone();
+    }
+
+    timers.setInterval(o.intervalMs || 33, function (err) {
+      if (stopped) return;
+      if (err) { finish(); return; }
+      try {
+        preview(ctx, frame);
+        frame += step;
+        if (frame > ctx.lastIndex) finish();
+      } catch (e) {
+        // A failed frame must not leave a timer running forever.
+        finish();
+      }
+    });
+
+    return { cancel: finish };
+  }
+
+  /**
    * The finished dialog: a frame slider that scrubs the drop on canvas.
    *
    * OK keeps the frame being viewed, Cancel keeps the settled result — the same contract as v1.1,
@@ -147,6 +188,7 @@
     return { frame: keep, accepted: !!(result && result.value === DialogResult.Ok.value) };
   }
 
+  PD.playbackPlay = play;
   PD.playbackPrepare = prepare;
   PD.playbackCommandForFrame = commandForFrame;
   PD.playbackPreview = preview;

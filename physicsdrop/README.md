@@ -199,6 +199,27 @@ exactly, and the whole drop stays one undo step.
 > why nothing negates it again. If objects ever counter-rotate against the simulation, that is the
 > only line to flip.
 
+The drop **plays on canvas at a steady 30fps** before the scrubber opens. v1.1 animated while
+solving, so a heavy scene ran at whatever rate the solver managed; v2 solves the whole drop first
+— a few hundred milliseconds — and replays from the recording, so playback speed is independent of
+scene weight and rewatching costs nothing. The Finished dialog is raised from the timer callback,
+because `runModal` would otherwise block the timer driving playback.
+
+## Settings
+
+| Control | Maps to |
+|---|---|
+| Gravity | world gravity, entered in **document units** per second squared and divided by the world scale once |
+| Angle | 0 = down the page, 90 = right |
+| Max duration | frame cap, at 30fps |
+| Seed | initial tie-breaking jitter, so a drop can be reproduced |
+| Bounciness % | fixture `restitution` |
+| Friction % | fixture `friction` |
+| Density | fixture `density` |
+
+Gravity carries the same y-flip as the geometry, so "down the page" comes out negative in sim
+units. All four compass directions are unit-tested for that reason.
+
 `main.js` runs the whole pipeline and hands the recording to the scrubber. Pass `{ dryRun: true }`
 to stop before anything touches the document; that is how the extraction layer was validated
 before playback existed, and the console report it prints is still the only view into the parts

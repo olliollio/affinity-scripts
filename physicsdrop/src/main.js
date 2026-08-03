@@ -34,7 +34,19 @@
     catch (e) { console.log('physicsdrop: could not read the selection: ' + e); return null; }
     if (!nodes.length) { console.log('physicsdrop: select something first.'); return null; }
 
-    console.log('physicsdrop 2.0.0-dev — dry run, the document is not modified');
+    // Settings come from the dialog unless the caller supplied them, which is what lets a dry run
+    // skip the UI entirely.
+    if (!o.dryRun && !o.noDialog) {
+      var chosenOpts = PD.showSettings({ scale: o.scale });
+      if (!chosenOpts) { console.log('physicsdrop: cancelled.'); return null; }
+      for (var key in chosenOpts) {
+        if (Object.prototype.hasOwnProperty.call(chosenOpts, key) && o[key] === undefined) {
+          o[key] = chosenOpts[key];
+        }
+      }
+    }
+
+    console.log('physicsdrop 2.0.0-dev' + (o.dryRun ? ' — dry run, the document is not modified' : ''));
     console.log('selection: ' + nodes.length + ' node(s)');
 
     // ---------------------------------------------------------------- extract
@@ -188,14 +200,18 @@
     }
 
     console.log('');
-    console.log('physicsdrop: drag the Frame slider to replay. OK keeps the frame you are viewing,');
-    console.log('Cancel keeps the settled result. Either way it is one undo step.');
+    console.log('physicsdrop: playing ' + frames.frameCount + ' frames on canvas...');
 
-    var chosen = PD.showScrubber(ctx, {});
-    console.log('physicsdrop: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
-                (chosen.accepted ? '' : ' (settled result)'));
+    // The drop plays first so the behaviour can actually be judged, and the Finished dialog opens
+    // when it ends. The dialog has to be raised from the timer callback rather than after this
+    // call, because runModal would otherwise block the timer that drives playback.
+    PD.playbackPlay(ctx, { intervalMs: o.intervalMs || 33 }, function () {
+      var chosen = PD.showScrubber(ctx, {});
+      console.log('physicsdrop: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
+                  (chosen.accepted ? '' : ' (settled result)'));
+    });
 
-    return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx, chosen: chosen };
+    return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx };
   }
 
   PD.main = main;

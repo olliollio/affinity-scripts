@@ -41,6 +41,7 @@ var SRC = [
   'bodies.js',
   'sim.js',
   'playback.js',
+  'ui.js',
   'main.js'
   // Adding one is a one-line edit here; order matters, dependencies go above dependents.
 ];
