@@ -221,6 +221,77 @@
   }
 
   /**
+   * The OPEN curves of a node, as polylines in SPREAD coordinates.
+   *
+   * A closed path encloses an area and becomes a rigid body; an open one encloses nothing and used
+   * to be skipped entirely. It becomes a rope instead, which needs no naming convention because
+   * the distinction is already unambiguous.
+   */
+  function polylinesOf(node, opts) {
+    var o = opts || {};
+    var out = [];
+    var ci;
+    try { ci = node.curvesInterface; } catch (e) { return out; }
+    if (!ci) return out;
+
+    var pc = null;
+    try { pc = ci.corneredPolyCurve || ci.polyCurve; } catch (e) { pc = null; }
+    if (!pc) return out;
+
+    var m = matrixOf(node);
+    var count = 0;
+    try { count = pc.curveCount; } catch (e) { return out; }
+
+    for (var i = 0; i < count; i++) {
+      var curve;
+      try { curve = pc.at(i); } catch (e) { continue; }
+      if (!curve) continue;
+      var closed = true;
+      try { closed = curve.isClosed !== false; } catch (e) { /* assume closed */ }
+      if (closed) continue;
+
+      var segments = [];
+      try {
+        for (var b of curve.beziers) {
+          segments.push({
+            start: { x: b.start.x, y: b.start.y },
+            c1: { x: b.c1.x, y: b.c1.y },
+            c2: { x: b.c2.x, y: b.c2.y },
+            end: { x: b.end.x, y: b.end.y }
+          });
+        }
+      } catch (e) { continue; }
+      if (!segments.length) continue;
+
+      // flattenSegments drops a trailing point that repeats the first, which is right for a ring
+      // and wrong for a line, so the open case is rebuilt from the segment ends directly.
+      var poly = [segments[0].start.x, segments[0].start.y];
+      for (var sIdx = 0; sIdx < segments.length; sIdx++) {
+        var seg = segments[sIdx];
+        GR.flattenCubic(poly, seg.start.x, seg.start.y, seg.c1.x, seg.c1.y,
+          seg.c2.x, seg.c2.y, seg.end.x, seg.end.y, o.flattenTol);
+      }
+      if (poly.length < 4) continue;
+      GR.transformRing(poly, m);
+      out.push(poly);
+    }
+    return out;
+  }
+
+  /** Stroke weight in points, which is how thick a rope should collide. */
+  function lineWeightOf(node) {
+    try {
+      var w = node.lineWeight;
+      if (typeof w === 'number' && w > 0) return w;
+    } catch (e) { /* fall through */ }
+    try {
+      var w2 = node.lineStyleInterface && node.lineStyleInterface.lineWeight;
+      if (typeof w2 === 'number' && w2 > 0) return w2;
+    } catch (e) { /* none */ }
+    return 0;
+  }
+
+  /**
    * An image's true silhouette from its alpha channel, in SPREAD coordinates.
    *
    * The API is the one physicsdrop uses and is therefore known to work: `createCompatibleBitmap`
@@ -393,11 +464,26 @@
 
       if (kind === 'vector') {
         var rings = ringsOf(node, o);
-        if (!rings.length) {
-          refusals.push({ node: node, reason: 'no-closed-curves', message: describe(node) + ': no closed curves' });
+        if (rings.length) {
+          results.push(makeResult(node, rings, o, isStatic));
           return;
         }
-        results.push(makeResult(node, rings, o, isStatic));
+
+        // No closed area, so it cannot be a rigid body. An open path becomes a rope.
+        if (o.ropes !== false) {
+          var polys = polylinesOf(node, o);
+          if (polys.length) {
+            var rr = makeResult(node, [], o, isStatic);
+            rr.isRope = true;
+            rr.polylines = polys;
+            rr.thickness = lineWeightOf(node);
+            rr.anchored = GR.isAnchoredName(rr.name);
+            results.push(rr);
+            return;
+          }
+        }
+
+        refusals.push({ node: node, reason: 'no-closed-curves', message: describe(node) + ': no closed curves' });
         return;
       }
 
@@ -553,6 +639,8 @@
   GR.glyphRingsOf = glyphRingsOf;
   GR.ringsBBox = ringsBBox;
   GR.rasterRingsOf = rasterRingsOf;
+  GR.polylinesOf = polylinesOf;
+  GR.lineWeightOf = lineWeightOf;
   GR.extract = extract;
   GR.STATIC_WORDS = STATIC_WORDS;
 

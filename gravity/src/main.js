@@ -161,6 +161,7 @@
     console.log('');
     console.log('== bodies ==');
     var made = [];
+    var ropes = [];
     for (var k = 0; k < ex.objects.length; k++) {
       var obj = ex.objects[k];
 
@@ -169,6 +170,35 @@
           GR.addStaticChain(W, obj.rings[s], { name: obj.name });
         }
         console.log('  static  ' + (obj.name || '(unnamed)') + '  chains=' + obj.rings.length);
+        continue;
+      }
+
+      if (obj.isRope) {
+        // An open path has no interior, so it becomes a chain of linked bodies rather than one
+        // rigid body. Its geometry is rewritten during playback instead of being transformed.
+        var madeRope = null;
+        for (var rp = 0; rp < obj.polylines.length; rp++) {
+          madeRope = GR.addRope(W, obj.polylines[rp], {
+            thickness: obj.thickness,
+            anchored: obj.anchored,
+            friction: o.friction === undefined ? 0.4 : o.friction,
+            restitution: o.restitution === undefined ? 0.15 : o.restitution,
+            density: o.density === undefined ? 1 : o.density,
+            name: obj.name,
+            node: obj.node
+          });
+          if (madeRope) {
+            madeRope.object = obj;
+            madeRope.curveIndex = rp;
+            ropes.push(madeRope);
+            for (var li = 0; li < madeRope.links.length; li++) made.push(madeRope.links[li]);
+          }
+        }
+        console.log('  rope    ' + (obj.name || '(unnamed)') +
+          '  paths=' + obj.polylines.length +
+          ' links=' + (madeRope ? madeRope.links.length : 0) +
+          ' thickness=' + fmt(obj.thickness || 0, 1) + 'pt' +
+          (obj.anchored ? ' PINNED' : ''));
         continue;
       }
 
@@ -277,7 +307,7 @@
 
     var ctx;
     try {
-      ctx = GR.playbackPrepare(doc, made, frames);
+      ctx = GR.playbackPrepare(doc, made, frames, ropes);
     } catch (e) {
       console.log('');
       console.log('gravity: playback unavailable (' + e + '); document untouched.');

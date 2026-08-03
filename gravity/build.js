@@ -40,6 +40,7 @@ var SRC = [
   'extract.js',
   'world.js',
   'bodies.js',
+  'rope.js',
   'sim.js',
   'playback.js',
   'export.js',
