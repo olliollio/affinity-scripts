@@ -2276,7 +2276,9 @@ PD.planck = (function () {
       if (wanted.test(available[av])) names.push(available[av]);
     }
     // Whatever the install offers, in preference order, then the historical guesses.
-    names = names.concat(useJpeg ? ['JPEG', 'JPG', 'jpeg'] : ['PNG', 'png']);
+    // Real names from a live install: 'PNG' exists bare, but every JPEG preset is qualified -
+    // 'JPEG (Best quality)', '(High quality)' and so on. There is no preset called just 'JPEG'.
+    names = names.concat(useJpeg ? ['JPEG (Best quality)', 'JPEG (High quality)'] : ['PNG']);
 
     var exportOpts = null, usedPreset = null, presetErr = null;
     for (var p = 0; p < names.length && !exportOpts; p++) {
