@@ -15,7 +15,10 @@
  *     puts every grouped object in the wrong place.
  *   - `curve.generatePolygon(tolerance)` returns a PolygonHandle with NO readable members, so
  *     flattening is ours to do.
- *   - `ArtTextNode` reports curveCount === 1 for a whole string: one glyph. Text is refused.
+ *   - `curvesInterface.polyCurve` reports curveCount === 1 for an entire string — one glyph.
+ *     `curvesInterface.polyPolyCurves` is the real container: one PolyCurve per glyph, counters
+ *     included. Its glyphs sit in em space, so `getTransformedPolyCurve(i)` is what lands them in
+ *     the node's base space.
  */
 
 (function (PD) {
@@ -128,6 +131,93 @@
     return out;
   }
 
+  /**
+   * Every glyph of a text node, as one ring list per glyph, in SPREAD coordinates.
+   *
+   * `curvesInterface.polyCurve` reports a single curve for an entire string — one glyph — which is
+   * why text used to be refused. `polyPolyCurves` is the real container: one `PolyCurve` per
+   * glyph, counters included ("o" and "e" report two curves, outer plus hole).
+   *
+   * Each glyph's own `PolyCurve` is in em space, near the origin, so `getTransformedPolyCurve(i)`
+   * is used rather than `getPolyCurve(i)` — it applies the per-glyph placement and lands the
+   * outline in the node's base space, where `node.transform` finishes the job like any other node.
+   *
+   * Reading the outlines leaves the text editable. `DocumentCommand.createConvertToCurves` exists,
+   * but converting rewrites the user's document to work around a read we can simply do.
+   */
+  function glyphRingsOf(node, opts) {
+    var o = opts || {};
+    var out = [];
+    var ci;
+    try { ci = node.curvesInterface; } catch (e) { return out; }
+    if (!ci) return out;
+
+    var ppc;
+    try { ppc = ci.polyPolyCurves; } catch (e) { return out; }
+    if (!ppc) return out;
+
+    var count = 0;
+    try { count = ppc.polyCurveCount; } catch (e) { count = 0; }
+    if (!count) return out;
+
+    var m = matrixOf(node);
+
+    for (var g = 0; g < count; g++) {
+      var pc = null;
+      try { pc = ppc.getTransformedPolyCurve(g); } catch (e) { continue; }
+      if (!pc) continue;
+
+      var rings = [];
+      var curves = 0;
+      try { curves = pc.curveCount; } catch (e) { continue; }
+
+      for (var i = 0; i < curves; i++) {
+        var curve;
+        try { curve = pc.at(i); } catch (e) { continue; }
+        if (!curve) continue;
+        var closed = true;
+        try { closed = curve.isClosed !== false; } catch (e) { /* assume closed */ }
+        if (!closed && !o.includeOpen) continue;
+
+        var segments = [];
+        try {
+          for (var b of curve.beziers) {
+            segments.push({
+              start: { x: b.start.x, y: b.start.y },
+              c1: { x: b.c1.x, y: b.c1.y },
+              c2: { x: b.c2.x, y: b.c2.y },
+              end: { x: b.end.x, y: b.end.y }
+            });
+          }
+        } catch (e) { continue; }
+        if (!segments.length) continue;
+
+        var ring = PD.flattenSegments(segments, o);
+        if (ring.length < 6) continue;
+        PD.transformRing(ring, m);
+        rings.push(ring);
+      }
+      if (rings.length) out.push(rings);
+    }
+    return out;
+  }
+
+  /** Bounding box of a ring list, for sanity-checking that geometry landed in the right space. */
+  function ringsBBox(rings) {
+    var b = null;
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i];
+      for (var k = 0; k < r.length; k += 2) {
+        if (!b) b = { x0: r[k], y0: r[k + 1], x1: r[k], y1: r[k + 1] };
+        if (r[k] < b.x0) b.x0 = r[k];
+        if (r[k] > b.x1) b.x1 = r[k];
+        if (r[k + 1] < b.y0) b.y0 = r[k + 1];
+        if (r[k + 1] > b.y1) b.y1 = r[k + 1];
+      }
+    }
+    return b;
+  }
+
   /** The image's placement rectangle, in spread coordinates. */
   function imageRect(node, opts) {
     // An ImageNode's curves ARE its placement rectangle, in local pixel coordinates, positioned
@@ -145,6 +235,7 @@
   function extract(nodes, opts) {
     var o = opts || {};
     var imagePolicy = o.imagePolicy || 'rectangle'; // 'rectangle' | 'refuse'
+    var textPolicy = o.textPolicy || 'glyphs';      // 'glyphs' | 'refuse'
     var results = [];
     var refusals = [];
 
@@ -167,9 +258,32 @@
       }
 
       if (kind === 'text') {
-        // ArtTextNode exposes curves, but only ONE curve for an entire string. Using them would
-        // silently build a body from a single glyph, which is worse than refusing.
-        refusals.push({ node: node, reason: 'text', message: describe(node) + ': convert to curves first' });
+        if (textPolicy === 'refuse') {
+          refusals.push({ node: node, reason: 'text', message: describe(node) + ': text is not supported' });
+          return;
+        }
+        // One body per glyph, so a word tumbles as letters rather than as a rigid slab — the same
+        // reasoning that makes a group yield one body per child.
+        var glyphs = glyphRingsOf(node, o);
+        if (!glyphs.length) {
+          refusals.push({
+            node: node, reason: 'text',
+            message: describe(node) + ': no glyph outlines available, convert to curves first'
+          });
+          return;
+        }
+        if (o.groupsAsOneBody) {
+          var allGlyphs = [];
+          for (var gi = 0; gi < glyphs.length; gi++) allGlyphs.push.apply(allGlyphs, glyphs[gi]);
+          results.push(makeResult(node, allGlyphs, o));
+          return;
+        }
+        for (var gj = 0; gj < glyphs.length; gj++) {
+          var gr = makeResult(node, glyphs[gj], o);
+          gr.name = (gr.name || 'text') + ' [' + gj + ']';
+          gr.glyphIndex = gj;
+          results.push(gr);
+        }
         return;
       }
 
@@ -257,6 +371,8 @@
   PD.classifyNode = classify;
   PD.matrixOf = matrixOf;
   PD.ringsOf = ringsOf;
+  PD.glyphRingsOf = glyphRingsOf;
+  PD.ringsBBox = ringsBBox;
   PD.extract = extract;
   PD.STATIC_WORDS = STATIC_WORDS;
 

@@ -79,8 +79,8 @@
       'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
 
     var help = col.addGroup('How to use');
-    help.addStaticText('', 'Select objects and run. Text must be converted to curves first — a live text ' +
-      'frame is skipped, because Affinity only exposes one glyph of it.').setIsFullWidth(true);
+    help.addStaticText('', 'Select objects and run. Live text drops as individual letters and stays ' +
+      'editable — no need to convert it to curves.').setIsFullWidth(true);
     help.addStaticText('', 'Name an object "wall", "floor", "ramp" or "ground", or lock its layer, to make it ' +
       'solid scenery that never moves. Objects follow their true outline, holes included.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays once on canvas, then a Finished dialog lets you scrub to any frame. ' +
