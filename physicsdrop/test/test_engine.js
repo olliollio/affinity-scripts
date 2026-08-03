@@ -117,6 +117,56 @@ module.exports = function (PD, h) {
   h.assertClose('body position starts at the centroid (x)', st.x, recO.ox, 1e-6);
   h.assertClose('body position starts at the centroid (y)', st.y, recO.oy, 1e-6);
 
+  // ------------------------------------------------------------- equalise mass
+  h.group('bodies: equalise mass');
+
+  function discOfRadius(W2, r) {
+    return PD.addBody(W2, PD.decompose({ outer: ring(0, 0, r, 48, true), holes: [] }),
+      { equaliseMass: arguments[2], targetMass: 1 });
+  }
+
+  var Wm = PD.makeWorld({ scale: 100 });
+  var small = discOfRadius(Wm, 40, false);
+  var big = discOfRadius(Wm, 400, false);
+  var ratio = big.body.getMass() / small.body.getMass();
+  // Mass is area x density, so a 10x radius is a 100x mass. This is the problem being solved:
+  // a placed photo simply bulldozes a letter.
+  h.assert('by default a 10x larger object is ~100x heavier', ratio > 50 && ratio < 200,
+    'ratio was ' + ratio.toFixed(1));
+
+  var We = PD.makeWorld({ scale: 100 });
+  var smallEq = discOfRadius(We, 40, true);
+  var bigEq = discOfRadius(We, 400, true);
+  h.assertClose('equalised, the small one hits the target mass', smallEq.body.getMass(), 1, 0.02);
+  h.assertClose('equalised, the large one hits it too', bigEq.body.getMass(), 1, 0.02);
+
+  // Rotational inertia must still grow with size, or a huge object would spin like a small one.
+  h.assert('but a larger body still resists rotation more',
+    bigEq.body.getInertia() > smallEq.body.getInertia() * 10,
+    'inertia ' + bigEq.body.getInertia().toFixed(4) + ' vs ' + smallEq.body.getInertia().toFixed(4));
+
+  // The reason the old Density control was dropped: one global density leaves every mass RATIO
+  // unchanged, and contact response depends only on ratios, so nothing about the run can differ.
+  function pileWithDensity(density) {
+    var Wd = PD.makeWorld({ scale: 100, gravityY: -10 });
+    PD.addBounds(Wd, { x: -700, y: -700, width: 1400, height: 1400 });
+    for (var q = 0; q < 4; q++) {
+      var pts = PD.decompose({ outer: box(-90 + q * 40, -500 + q * 200, 90 + q * 40, -420 + q * 200), holes: [] });
+      PD.addBody(Wd, pts, { density: density, friction: 0.4, restitution: 0.15 });
+    }
+    return PD.run(Wd, { maxFrames: 600, seed: 7 });
+  }
+  var dA = pileWithDensity(1), dB = pileWithDensity(25);
+  h.assertEqual('a global density change does not alter the frame count', dA.frameCount, dB.frameCount);
+  var maxDiff = 0;
+  for (var bi2 = 0; bi2 < dA.bodyCount; bi2++) {
+    var pa = PD.poseAt(dA, dA.frameCount - 1, bi2);
+    var pb = PD.poseAt(dB, dB.frameCount - 1, bi2);
+    maxDiff = Math.max(maxDiff, Math.abs(pa.x - pb.x), Math.abs(pa.y - pb.y));
+  }
+  h.assert('nor the final poses — which is why it is not a control', maxDiff < 1e-6,
+    'worst difference ' + maxDiff.toFixed(9) + ' pt');
+
   // ---------------------------------------------------------------- scale check
   h.group('world: scale check');
 

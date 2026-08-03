@@ -1335,8 +1335,23 @@ PD.planck = (function () {
     var bullet = o.bullet === undefined ? (simRadius < BULLET_RADIUS) : o.bullet;
     if (bullet) body.setBullet(true);
 
+    // Mass is area x density, so a placed photo outweighs a letter by orders of magnitude and
+    // simply bulldozes it. That is correct physics and often the wrong result for artwork, where
+    // the objects are all "the same kind of thing" regardless of size. Equalising picks a density
+    // per body that lands every mass on the same target, leaving rotational inertia to still grow
+    // with size - a big object stays harder to spin, it just stops being a wrecking ball.
+    var density = o.density === undefined ? 1 : o.density;
+    if (o.equaliseMass) {
+      var simArea = c.area / (W.scale * W.scale);
+      var target = o.targetMass === undefined ? 1 : o.targetMass;
+      // Degenerate areas would otherwise produce an infinite or zero density and planck would
+      // reject every fixture on the body.
+      density = simArea > 1e-12 ? target / simArea : 1;
+      density = Math.min(1e6, Math.max(1e-6, density));
+    }
+
     var fixtureOpts = {
-      density: o.density === undefined ? 1 : o.density,
+      density: density,
       friction: o.friction === undefined ? 0.4 : o.friction,
       restitution: o.restitution === undefined ? 0.1 : o.restitution
     };
@@ -1375,6 +1390,7 @@ PD.planck = (function () {
       radius: radius,
       simRadius: simRadius,
       bullet: bullet,
+      density: density,
       fixtures: made,
       rejected: rejected,
       name: o.name || '',
@@ -1844,7 +1860,6 @@ PD.planck = (function () {
     angle: 0,          // 0 = down, 90 = right, matching v1.1
     bounce: 15,        // %
     friction: 40,      // %
-    density: 1,
     seconds: 10,
     seed: 1
   };
@@ -1893,8 +1908,13 @@ PD.planck = (function () {
     bounceCtl.setShowPopupSlider(true); bounceCtl.precision = 0;
     var frictionCtl = mat.addUnitValueEditor('Friction %', UnitType.Number, UnitType.Number, d.friction, 0, 150);
     frictionCtl.setShowPopupSlider(true); frictionCtl.precision = 0;
-    var densityCtl = mat.addUnitValueEditor('Density', UnitType.Number, UnitType.Number, d.density, 0.1, 10);
-    densityCtl.setShowPopupSlider(true); densityCtl.precision = 1;
+    // Not a density slider. One global density multiplies every mass equally, which leaves every
+    // mass RATIO unchanged, and contact response depends only on ratios - so it is provably a
+    // no-op. What actually bites is that mass grows with area, so a placed photo outweighs a
+    // letter by around 90x and bulldozes it.
+    var equaliseCtl = mat.addCheckBox('Equalise mass', false);
+    mat.addStaticText('', 'On: every object weighs the same regardless of size, so big artwork ' +
+      'stops bulldozing small artwork. Off: real physics, where area decides weight.').setIsFullWidth(true);
 
     var beh = col.addGroup('Objects');
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
@@ -1929,7 +1949,7 @@ PD.planck = (function () {
       gravityY: g.y,
       restitution: Math.min(0.95, Math.max(0, (bounceCtl.value === undefined ? d.bounce : bounceCtl.value) / 100)),
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
-      density: Math.max(0.1, densityCtl.value || d.density),
+      equaliseMass: !!equaliseCtl.value,
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
@@ -2074,6 +2094,7 @@ PD.planck = (function () {
 
       var rec = PD.addBody(W, parts, {
         density: o.density === undefined ? 1 : o.density,
+        equaliseMass: !!o.equaliseMass,
         friction: o.friction === undefined ? 0.4 : o.friction,
         restitution: o.restitution === undefined ? 0.15 : o.restitution,
         name: obj.name,

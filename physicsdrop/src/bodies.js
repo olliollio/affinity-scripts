@@ -94,8 +94,23 @@
     var bullet = o.bullet === undefined ? (simRadius < BULLET_RADIUS) : o.bullet;
     if (bullet) body.setBullet(true);
 
+    // Mass is area x density, so a placed photo outweighs a letter by orders of magnitude and
+    // simply bulldozes it. That is correct physics and often the wrong result for artwork, where
+    // the objects are all "the same kind of thing" regardless of size. Equalising picks a density
+    // per body that lands every mass on the same target, leaving rotational inertia to still grow
+    // with size - a big object stays harder to spin, it just stops being a wrecking ball.
+    var density = o.density === undefined ? 1 : o.density;
+    if (o.equaliseMass) {
+      var simArea = c.area / (W.scale * W.scale);
+      var target = o.targetMass === undefined ? 1 : o.targetMass;
+      // Degenerate areas would otherwise produce an infinite or zero density and planck would
+      // reject every fixture on the body.
+      density = simArea > 1e-12 ? target / simArea : 1;
+      density = Math.min(1e6, Math.max(1e-6, density));
+    }
+
     var fixtureOpts = {
-      density: o.density === undefined ? 1 : o.density,
+      density: density,
       friction: o.friction === undefined ? 0.4 : o.friction,
       restitution: o.restitution === undefined ? 0.1 : o.restitution
     };
@@ -134,6 +149,7 @@
       radius: radius,
       simRadius: simRadius,
       bullet: bullet,
+      density: density,
       fixtures: made,
       rejected: rejected,
       name: o.name || '',

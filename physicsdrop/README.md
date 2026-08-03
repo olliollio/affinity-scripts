@@ -215,7 +215,7 @@ because `runModal` would otherwise block the timer driving playback.
 | Seed | initial tie-breaking jitter, so a drop can be reproduced |
 | Bounciness % | fixture `restitution` |
 | Friction % | fixture `friction` |
-| Density | fixture `density` |
+| Equalise mass | scales each body's density inversely to its area |
 
 Gravity carries the same y-flip as the geometry, so "down the page" comes out negative in sim
 units. All four compass directions are unit-tested for that reason.
