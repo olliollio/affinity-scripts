@@ -36,6 +36,7 @@ var SRC = [
   'sanitize.js',
   'decompose.js',
   'flatten.js',
+  'raster.js',
   'extract.js',
   'world.js',
   'bodies.js',

@@ -18,6 +18,7 @@ contours.js   rings -> faces      signed area, containment, nesting depth (even 
 sanitize.js   face  -> face       dedupe, collinear cull, Douglas-Peucker, winding, area cull
 decompose.js  face  -> parts[]    earcut (holes native) -> Hertel-Mehlhorn -> convex parts <= 12 verts
 flatten.js    beziers -> ring     adaptive subdivision on flatness, then the base->spread matrix
+raster.js     alpha -> rings      marching squares over the alpha mask, holes included
 extract.js    nodes -> rings      the ONLY module that touches the Affinity API
 world.js      -> world           planck world, scale, y-flip, static Chain geometry
 bodies.js     parts -> body      centroid offset, winding reversal, one body with N fixtures
@@ -183,8 +184,15 @@ probe in `probes/`, not assumed.
   document the letters fell correctly and collided with nothing, which is how a body far from
   where it renders behaves. Conversion is the reliable route until that is probed.
 - Classification order matters: an `ImageNode` also has `curvesInterface`, so the image test comes
-  before the vector test. An image becomes its placement rectangle and is marked `approximate`;
-  `imagePolicy: 'refuse'` rejects it instead.
+  before the vector test.
+- **Images collide as their true silhouette**, traced from the alpha channel by `raster.js`.
+  physicsdrop samples a 48x48 grid and takes the convex hull, which fills in every concavity and
+  hole; marching squares walks the real boundary and returns the hole rings too, which the nesting
+  classifier then handles like any other contour. The bitmap comes from `createCompatibleBitmap`,
+  or `NodeRenderingEngine.createDefault` as a fallback, and is read with `PixelReaderRGBA8` from
+  `/pixelaccessor` — the same APIs physicsdrop uses, so they are known to work. A fully opaque
+  image legitimately is its rectangle, so that remains the fallback: `imagePolicy: 'rectangle'`
+  forces it, `'refuse'` skips images entirely.
 - A group yields **one body per child**, so a dropped word tumbles as letters rather than as a
   slab. `groupsAsOneBody` merges it when that is what you want.
 - Static geometry is marked by **both** routes: a locked node, or a name containing `wall`,
@@ -280,6 +288,6 @@ digits, or a sequence sorts 1, 10, 11, 2 and imports scrambled.
 
 ## Not here yet
 
-True silhouettes for placed images — the latter needs
+Reading live text outlines non-destructively — the latter needs
 `NodeRenderingEngine` from `/rasterobject` and `PixelReaderRGBA8` from `/pixelaccessor`, both of
 which physicsdrop already uses. Images currently collide as their placement rectangle.

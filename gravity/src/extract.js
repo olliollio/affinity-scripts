@@ -221,6 +221,72 @@
     return b;
   }
 
+  /**
+   * An image's true silhouette from its alpha channel, in SPREAD coordinates.
+   *
+   * The API is the one physicsdrop uses and is therefore known to work: `createCompatibleBitmap`
+   * on the node, or `NodeRenderingEngine.createDefault` as a fallback, then `PixelReaderRGBA8` to
+   * read pixels. What differs is what is done with them — physicsdrop takes the convex hull of a
+   * 48x48 grid, which fills in every concavity and hole, whereas `raster.js` traces the real
+   * boundary and returns the hole rings too.
+   *
+   * An ImageNode's own curves are its placement rectangle in local pixel coordinates, so pixel
+   * space maps to base space by the ratio of the node's box to the bitmap, and `node.transform`
+   * finishes the job as it does for vector nodes.
+   */
+  function rasterRingsOf(node, opts) {
+    var o = opts || {};
+
+    var bm = null;
+    try { if (typeof node.createCompatibleBitmap === 'function') bm = node.createCompatibleBitmap(true); }
+    catch (e) { bm = null; }
+    if (!bm) {
+      try {
+        var ro = require('/rasterobject');
+        var engine = ro.NodeRenderingEngine.createDefault(node, ro.RasterFormat.RGBA8);
+        bm = engine.createCompatibleBitmap(true);
+      } catch (e) { bm = null; }
+    }
+    if (!bm || !bm.width || !bm.height) return [];
+
+    var reader = null;
+    try { reader = require('/pixelaccessor').PixelReaderRGBA8.create(bm); }
+    catch (e) { return []; }
+
+    var rings;
+    try {
+      rings = GR.alphaContours(bm.width, bm.height, function (px, py) {
+        var p = reader.readPixel(px, py);
+        if (!p) return 0;
+        return p.alpha === undefined ? 255 : p.alpha;
+      }, o);
+    } catch (e) {
+      rings = [];
+    } finally {
+      // The reader holds native memory; leaking one per image would be a real cost on a big scene.
+      try { if (reader && typeof reader.dispose === 'function') reader.dispose(); } catch (e) { /* gone */ }
+    }
+    if (!rings.length) return [];
+
+    var box = null;
+    try { box = node.baseBox; } catch (e) { box = null; }
+    if (!box || !(box.width > 0) || !(box.height > 0)) return [];
+
+    var sx = box.width / bm.width;
+    var sy = box.height / bm.height;
+    var m = matrixOf(node);
+
+    for (var i = 0; i < rings.length; i++) {
+      var r = rings[i];
+      for (var k = 0; k < r.length; k += 2) {
+        r[k] = box.x + r[k] * sx;
+        r[k + 1] = box.y + r[k + 1] * sy;
+      }
+      GR.transformRing(r, m);
+    }
+    return rings;
+  }
+
   /** The image's placement rectangle, in spread coordinates. */
   function imageRect(node, opts) {
     // An ImageNode's curves ARE its placement rectangle, in local pixel coordinates, positioned
@@ -237,7 +303,7 @@
    */
   function extract(nodes, opts) {
     var o = opts || {};
-    var imagePolicy = o.imagePolicy || 'rectangle'; // 'rectangle' | 'refuse'
+    var imagePolicy = o.imagePolicy || 'silhouette'; // 'silhouette' | 'rectangle' | 'refuse'
     var textPolicy = o.textPolicy || 'refuse';      // 'refuse' | 'glyphs'
     var results = [];
     var refusals = [];
@@ -306,6 +372,20 @@
           refusals.push({ node: node, reason: 'image', message: describe(node) + ': images are not supported' });
           return;
         }
+        // The alpha silhouette is the default: a photo cut out on transparency should collide as
+        // its shape, not as the rectangle it happens to be stored in. The rectangle remains the
+        // fallback, because a fully opaque image legitimately IS its rectangle and because the
+        // raster APIs are the one part of extraction with no headless test behind them.
+        if (imagePolicy !== 'rectangle') {
+          var silhouette = rasterRingsOf(node, o);
+          if (silhouette.length) {
+            var sr = makeResult(node, silhouette, o, isStatic);
+            sr.approximate = null;
+            results.push(sr);
+            return;
+          }
+        }
+
         var rect = imageRect(node, o);
         if (rect.length) {
           var r = makeResult(node, rect, o, isStatic);
@@ -478,6 +558,7 @@
   GR.ringsOf = ringsOf;
   GR.glyphRingsOf = glyphRingsOf;
   GR.ringsBBox = ringsBBox;
+  GR.rasterRingsOf = rasterRingsOf;
   GR.extract = extract;
   GR.STATIC_WORDS = STATIC_WORDS;
 

@@ -17,6 +17,7 @@ var SRC = [
   'sanitize.js',
   'decompose.js',
   'flatten.js',
+  'raster.js',
   'extract.js',
   'world.js',
   'bodies.js',
@@ -33,6 +34,7 @@ var SUITES = [
   require('./test_decompose'),
   require('./test_robustness'),
   require('./test_flatten'),
+  require('./test_raster'),
   require('./test_extract'),
   require('./test_export'),
   require('./test_engine')
