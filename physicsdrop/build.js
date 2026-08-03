@@ -40,8 +40,8 @@ var SRC = [
   'world.js',
   'bodies.js',
   'sim.js',
+  'playback.js',
   'main.js'
-  // Not written yet: playback.js.
   // Adding one is a one-line edit here; order matters, dependencies go above dependents.
 ];
 
