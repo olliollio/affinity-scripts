@@ -6,7 +6,7 @@
  *
  * USAGE: open a SAVED document (one with a file on disk, not an unsaved new one).
  *        Before running, create a throwaway file on your Desktop named exactly:
- *            physicsdrop_overwrite_me.png
+ *            gravity_overwrite_me.png
  *        (right-click > New > ... or copy any png and rename it). It WILL be overwritten.
  *        Then run and copy the CONSOLE output.
  * WRITES: only to the document's own folder and to that one throwaway file.
@@ -88,7 +88,7 @@ function main() {
     var sep = docPath.lastIndexOf('\\') >= 0 ? '\\' : '/';
     var folder = docPath.slice(0, docPath.lastIndexOf(sep));
     L('  document folder', folder);
-    var beside = folder + sep + 'physicsdrop_probe_beside.png';
+    var beside = folder + sep + 'gravity_probe_beside.png';
     L('  path', beside);
     L('  doc.export  <-- best remaining hope', safe(function () {
       doc.export(beside, opts, area);
@@ -102,7 +102,7 @@ function main() {
   console.log('  sequence would need one dialog per frame.');
   var desk = safe(function () { return app.userDesktopPath; });
   if (desk.indexOf('ERR:') !== 0) {
-    var throwaway = desk + '\\physicsdrop_overwrite_me.png';
+    var throwaway = desk + '\\gravity_overwrite_me.png';
     L('  path (must already exist)', throwaway);
     L('  doc.export', safe(function () {
       doc.export(throwaway, opts, area);
@@ -118,7 +118,7 @@ function main() {
   }));
   if (desk.indexOf('ERR:') !== 0) {
     L('  exportAsync to Desktop', safe(function () {
-      doc.exportAsync(desk + '\\physicsdrop_probe_async.png', opts, area, function (err) {
+      doc.exportAsync(desk + '\\gravity_probe_async.png', opts, area, function (err) {
         console.log('    async callback: ' + (err ? ('ERR ' + err) : 'OK — async is permitted'));
       });
       return 'call accepted; watch for the callback line above';
@@ -126,7 +126,7 @@ function main() {
   }
 
   console.log('');
-  console.log('  Delete any physicsdrop_probe_* files afterwards.');
+  console.log('  Delete any gravity_probe_* files afterwards.');
   console.log('######## end ########');
 }
 

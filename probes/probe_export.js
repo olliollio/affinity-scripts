@@ -162,7 +162,7 @@ function main() {
   } else if (!accepted.length) {
     console.log('  skipped: no preset name was accepted, so there is nothing to export with.');
   } else {
-    var path = safe(function () { return app.userDesktopPath + '/physicsdrop_export_test.' +
+    var path = safe(function () { return app.userDesktopPath + '/gravity_export_test.' +
       (accepted[0].toLowerCase().indexOf('jp') >= 0 ? 'jpg' : 'png'); });
     L('  path', path);
     L('  export result', safe(function () {

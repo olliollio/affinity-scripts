@@ -102,7 +102,7 @@ function main() {
   console.log('  A picker should appear now. It is an OPEN dialog, so pick any EXISTING file that');
   console.log('  sits in the folder you would want frames written to.');
   console.log('');
-  console.log('  The file you pick is NEVER written to. Only new files named physicsdrop_probe_*');
+  console.log('  The file you pick is NEVER written to. Only new files named gravity_probe_*');
   console.log('  beside it are attempted — which is also the real question, since a sequence needs');
   console.log('  hundreds of files from a single prompt.');
 
@@ -150,7 +150,7 @@ function main() {
     return;
   }
 
-  var first = folder + sep + 'physicsdrop_probe_0001.png';
+  var first = folder + sep + 'gravity_probe_0001.png';
   L('  path', first);
   L('  doc.export  <-- THE QUESTION', safe(function () {
     doc.export(first, opts, area);
@@ -162,7 +162,7 @@ function main() {
   console.log('  If this also succeeds the grant covers the folder and a sequence is possible.');
   console.log('  If only the first worked, the grant is per-file and export is not worth shipping.');
 
-  var second = folder + sep + 'physicsdrop_probe_0002.png';
+  var second = folder + sep + 'gravity_probe_0002.png';
   L('  path', second);
   L('  doc.export', safe(function () {
     doc.export(second, opts, area);
@@ -170,7 +170,7 @@ function main() {
   }));
 
   console.log('');
-  console.log('  Delete physicsdrop_probe_0001.png / _0002.png afterwards; they are throwaway.');
+  console.log('  Delete gravity_probe_0001.png / _0002.png afterwards; they are throwaway.');
 
   console.log('');
   console.log('######## end ########');
