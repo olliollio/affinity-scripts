@@ -7,7 +7,12 @@ verified headlessly instead of by running the script.
 ```
 contours.js   rings -> faces      signed area, containment, nesting depth (even = solid, odd = void)
 sanitize.js   face  -> face       dedupe, collinear cull, Douglas-Peucker, winding, area cull
-decompose.js  face  -> parts[]    earcut (holes native) -> Hertel-Mehlhorn -> convex parts <= 8 verts
+decompose.js  face  -> parts[]    earcut (holes native) -> Hertel-Mehlhorn -> convex parts <= 12 verts
+flatten.js    beziers -> ring     adaptive subdivision on flatness, then the base->spread matrix
+extract.js    nodes -> rings      the ONLY module that touches the Affinity API
+world.js      -> world           planck world, scale, y-flip, static Chain geometry
+bodies.js     parts -> body      centroid offset, winding reversal, one body with N fixtures
+sim.js        world -> frames    step, settle, record [x, y, angle] per body per frame
 ```
 
 A **ring** is a flat, implicitly-closed coordinate array `[x0, y0, x1, y1, ...]`. A **face** is
@@ -21,7 +26,26 @@ instead of resting on its filled counter.
 
 ```sh
 node physicsdrop/test/run.js     # exit code is non-zero if anything fails
+node physicsdrop/test/bench.js   # regenerates the fixture-count table below
 ```
+
+## Building
+
+```sh
+node physicsdrop/build.js          # writes dist/physicsdrop.js
+node physicsdrop/build.js --check  # non-zero exit if dist/ is stale
+```
+
+`dist/physicsdrop.js` is **generated** — the reviewable diff is `src/`. It is committed anyway
+because it is the artefact that actually gets pasted into Affinity.
+
+Everything travels inline in one file. The sandbox's `/fs` module denies **every** path, so a
+script cannot load its own code from disk at runtime; a 433KB script is imported and parsed
+intact, so inlining is the supported route rather than a workaround.
+
+Each vendored library is wrapped in its own private `module` object. Both UMD bundles resolve to
+their CommonJS branch in the sandbox, so evaluated bare they would assign to the host script's
+`module.exports` and the second would clobber the first.
 
 Three invariants run on every decomposition case (`test/invariants.js`):
 
@@ -44,16 +68,28 @@ applied before the world-scale divide.
 | `SIMPLIFY_FRAC` / `SIMPLIFY_MIN` | `0.0015` / `0.25pt` | Douglas-Peucker tolerance, relative to the face's bbox diagonal with an absolute floor |
 | `SIMPLIFY_MAX_AREA_FRAC` | `0.01` | area a ring may lose to simplification; the tolerance halves until it fits |
 | `MIN_AREA` / `MIN_AREA_FRAC` | `0.01pt²` / `1e-4` | a hole must clear both to survive; an outer clears the absolute rule only |
-| `MAX_VERTS` | `8` | `planck.Settings.maxPolygonVertices` |
+| `MAX_VERTS` | `12` | `planck.Settings.maxPolygonVertices`, whose default is 12 in planck 1.x |
 
-Simplification is the dominant lever on fixture count, measured on a 250pt-radius "O" flattened
-to 120 segments per ring:
+Exceeding the vertex cap is not an error in planck — the polygon is **truncated**, silently
+dropping geometry. `decompose` therefore enforces the cap itself, and `PD.MAX_VERTS` is the one
+place it is written down.
 
-| Input | Parts without simplify | Parts with | Area cost |
-|---|---|---|---|
-| 250pt "O", 120-segment rings | 137 | **38** | 0.06% |
-| 2000-point raster contour | 899 | **44** | <0.5% |
-| raster contour + 3 holes | 761 | **108** | <0.5% |
+Simplification is the dominant lever on fixture count; the vertex cap is a minor one. Regenerate
+this table with `node physicsdrop/test/bench.js`:
+
+| Input | Input verts | Parts without simplify | Parts with | Area cost |
+|---|---|---|---|---|
+| 250pt "O", 120-segment rings | 120 | 130 | **35** | 0.063% |
+| traced raster contour | 1383 | 764 | **20** | 0.027% |
+| traced raster + 3 holes | 1383 | 1304 | **104** | 0.012% |
+
+Raising the cap past 12 buys nothing on any of these — 8 → 12 → 16 gives 38 → 35 → 35 parts on
+the "O" — because above 8 vertices it is convexity, not the cap, that refuses the next merge.
+
+A traced raster contour is modelled as a **staircase**, not as a noisy curve, because marching
+squares walks pixel edges and emits axis-aligned steps. The distinction dominates the result:
+Douglas-Peucker collapses a staircase almost entirely, since the error is correlated along each
+run, and barely touches random jitter at any tolerance.
 
 A chord tolerance is blind to feature thickness — 1.5pt of allowed deviation eats a 0.2pt
 hairline whole, or flattens the notch out of a thin stem and leaves a solid slab. So the
@@ -64,6 +100,45 @@ explicit area rules do.
 Sanitising is idempotent, which matters because `decompose()` sanitises its own input and the
 pipeline sanitises before calling it.
 
+## The engine boundary
+
+Two conversions happen between Affinity and planck, and both are easy to get wrong in ways that
+still produce a plausible-looking simulation.
+
+**Scale.** Box2D is tuned for bodies 0.1-10 units across; a dropped letter is ~500pt. Everything
+divides by `WORLD_SCALE` (100) going in and multiplies going out. `checkScale()` reports the
+median body size and warns when it leaves that band — it reports rather than corrects, because
+rescaling one body would break its contacts with every other body.
+
+**Axes.** Affinity's y points down, planck's points up. Flipping y at the boundary confines the
+disagreement to `toSim` / `toSrc`, but it also mirrors the plane, which **reverses winding and
+the sense of rotation**. `bodies.js` therefore reverses each part's vertex order and negates the
+reported angle. planck rebuilds a convex hull per fixture and would silently paper over the
+winding half of this, which is exactly why the tests assert that no vertex is dropped.
+
+Because holes are real, mass and rotational inertia come out right for free: a hollow "O" weighs
+less than the disc containing it, and spins more readily.
+
+## Settling
+
+`world.setAllowSleeping(true)` and "every body asleep" replace v1.1's `stillFrames` /
+`flatSupport` / `stuckFrames` / `slowFrames` / `touchedSleeper` heuristics and its hard stops.
+
+One backstop remains, for a case sleeping cannot handle. planck sleeps an island only when the
+position solver has converged too — `minSleepTime >= timeToSleep && positionSolved`. A **compound**
+body that starts deeply embedded in static geometry never converges: its fixtures penetrate the
+same wall and impose corrections that cannot all be satisfied at once, the wall cannot move
+aside, and per-step correction is capped. The body then sits at exactly zero velocity, awake,
+indefinitely. A single-fixture body does not reproduce this — it just pushes itself out.
+
+Artwork dropped already overlapping its container does exactly this, so `run()` also stops when
+every body has stayed under planck's own sleep velocity thresholds for `quietFrames` (30, one
+second) and reports the offending bodies in `staticOverlaps`. `settledBy` says which rule ended
+the run: `sleep`, `quiescence` or `cap`.
+
+Drops are reproducible: pass a `seed` and the initial tie-breaking jitter is deterministic.
+v1.1 seeded from `Date.now()`, so a result the user liked could never be recovered.
+
 `test_robustness.js` runs the full invariant set over the input the pipeline will actually meet:
 counters touching the outline, holes sharing an edge, 0.2pt hairlines, 4pt glyphs, 20 counters on
 one outline, coordinates a million points from the origin, duplicated points, and NaN/Infinity in
@@ -71,12 +146,42 @@ the contour.
 
 ## Vendored
 
-`vendor/earcut.min.js` — earcut 3.2.3, ISC. See `vendor/LICENSES.md`; note that v3 exports the
-triangulator as `exports.default`, and that the UMD build resolves to its CommonJS branch inside
-the Affinity sandbox.
+`vendor/earcut.min.js` — earcut 3.2.3, ISC.
+`vendor/planck.min.js` — planck.js 1.5.0, MIT.
+
+See `vendor/LICENSES.md`. Both are UMD builds that resolve to their **CommonJS branch** inside
+the Affinity sandbox. earcut v3 exports the triangulator as `exports.default`; planck has no DOM
+or host dependencies and needs no shims.
+
+## Reading Affinity geometry
+
+`extract.js` is the only module that touches the SDK, and it is deliberately thin: it pulls plain
+numbers out and hands them to the pure modules. Every SDK fact it relies on was verified by a
+probe in `probes/`, not assumed.
+
+- **Every node type exposes `curvesInterface`** — live `ShapeNode`, `ArtTextNode` and `ImageNode`
+  included. There is no live shape without curves, so no bounding-box fallback is needed.
+- Curve coordinates are in **base space**; `node.transform` maps them to spread space.
+  `node.localToSpreadTransform` reports identity even for offset nodes and must not be used.
+- `curve.generatePolygon(tolerance)` returns a `PolygonHandle` with no readable members, so
+  flattening is `flatten.js`'s job. Straight edges arrive as cubics with collapsed handles and are
+  emitted as single segments rather than subdivided.
+- **Text is refused** with "convert to curves first". `ArtTextNode` does expose curves, but
+  reports `curveCount === 1` for an entire string — a single glyph. Using it would silently build
+  a body from one letter.
+- Classification order matters: an `ImageNode` also has `curvesInterface`, so the image test comes
+  before the vector test. An image becomes its placement rectangle and is marked `approximate`;
+  `imagePolicy: 'refuse'` rejects it instead.
+- A group yields **one body per child**, so a dropped word tumbles as letters rather than as a
+  slab. `groupsAsOneBody` merges it when that is what you want.
+- Static geometry is marked by **both** routes: a locked node, or a name containing `wall`,
+  `floor`, `ramp`, `static` or `ground` on a word boundary — `left-wall` is scenery, `Wallpaper`
+  is not.
+
+`test_extract.js` runs against mock nodes copying the shape the probes recorded. They prove the
+module behaves correctly given that shape; only a probe run inside Affinity proves the shape.
 
 ## Not here yet
 
-`extract.js` (Affinity node -> contours), `world.js`, `bodies.js`, `sim.js`, `playback.js`,
-`build.js` and the planck vendoring. The pure layer was built first because it needs no probe
-cycles.
+`playback.js` — preview, scrubber and writing transforms back to the document. Everything else is
+written and tested headlessly.
