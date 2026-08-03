@@ -2175,6 +2175,47 @@ PD.planck = (function () {
   }
 
   /**
+   * The export presets this install actually offers.
+   *
+   * `FileExportOptions` exposes both `allPresetNames` and `enumeratePresetNames`, and the shape of
+   * neither is documented, so both are tried as property and as function. Preset names are exact
+   * and case-sensitive — "PNG" is accepted where "png" is not — which makes asking far more
+   * reliable than spelling guesses.
+   */
+  function presetNames(FileExportOptions) {
+    var out = [];
+
+    function absorb(v) {
+      if (!v) return;
+      if (typeof v === 'string') { out.push(v); return; }
+      try {
+        if (typeof v.length === 'number') {
+          for (var i = 0; i < v.length; i++) {
+            var item = (typeof v.at === 'function') ? v.at(i) : v[i];
+            if (typeof item === 'string') out.push(item);
+          }
+          return;
+        }
+      } catch (e) { /* not indexable */ }
+      try { for (var s of v) { if (typeof s === 'string') out.push(s); } } catch (e) { /* not iterable */ }
+    }
+
+    try { absorb(FileExportOptions.allPresetNames); } catch (e) { /* not a property */ }
+    if (!out.length) {
+      try { absorb(FileExportOptions.allPresetNames()); } catch (e) { /* not a function */ }
+    }
+    if (!out.length) {
+      try { absorb(FileExportOptions.enumeratePresetNames()); } catch (e) { /* not argless */ }
+    }
+    if (!out.length) {
+      // Callback form, which is how the SDK enumerates elsewhere.
+      try { FileExportOptions.enumeratePresetNames(function (n) { if (typeof n === 'string') out.push(n); }); }
+      catch (e) { /* give up; the caller falls back to guesses */ }
+    }
+    return out;
+  }
+
+  /**
    * Exports frames 0..lastFrame of a prepared playback context.
    *
    * `ctx` is what `PD.playbackPrepare` returns. The document is left showing `keepFrame`, which is
@@ -2223,14 +2264,19 @@ PD.planck = (function () {
       return;
     }
 
-    // Export presets appear to be LOCALISED - a preset literally named "PNG" need not exist in a
-    // non-English install, and Affinity localises other user-facing names. So several spellings are
-    // tried rather than one hardcoded guess, and the two calls are caught separately: reporting
-    // "export options unavailable: ERROR" for either was useless for working out which broke.
-    var names = useJpeg
-      ? ['JPEG', 'JPG', 'jpeg', 'JPEG (best quality)', 'JPEG (Beste Qualität)']
-      : ['PNG', 'png', 'PNG-24', 'PNG 24', 'PNG (Flatten)'];
-    if (o.presetName) names.unshift(o.presetName);
+    // Preset names are exact and case-sensitive: "PNG" is accepted while "png", "JPEG" and every
+    // other spelling probed is rejected. Guessing them was the wrong approach - FileExportOptions
+    // can list its own, so ask it and match, and fall back to guesses only if it will not say.
+    var available = presetNames(FileExportOptions);
+    var wanted = useJpeg ? /jpe?g/i : /png/i;
+
+    var names = [];
+    if (o.presetName) names.push(o.presetName);
+    for (var av = 0; av < available.length; av++) {
+      if (wanted.test(available[av])) names.push(available[av]);
+    }
+    // Whatever the install offers, in preference order, then the historical guesses.
+    names = names.concat(useJpeg ? ['JPEG', 'JPG', 'jpeg'] : ['PNG', 'png']);
 
     var exportOpts = null, usedPreset = null, presetErr = null;
     for (var p = 0; p < names.length && !exportOpts; p++) {
