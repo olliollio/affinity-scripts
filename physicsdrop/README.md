@@ -242,16 +242,24 @@ Each frame is **committed**, exported, then undone. A preview is not guaranteed 
 export, so this cannot reuse the cheap preview path the scrubber uses. The loop runs on a timer so
 the UI is not frozen and a failure can stop cleanly rather than wedging Affinity.
 
+> **Export needs a script entry that already has filesystem permission.** Access is granted per
+> Script Manager entry, and a **new entry does not get it** — a six-line script doing nothing but
+> `createDirectories` is denied from a fresh entry in the same session where an older script
+> exports successfully. Content, size, path form, call timing and the metadata header make no
+> difference. Paste the build into an entry that already works. Access can also lapse mid-session
+> and come back after restarting Affinity, so confirm with a known-good script before concluding
+> anything about a failure.
+
 Two sandbox rules govern where files can go, and both are easy to get wrong silently:
 
-**Separators.** A path joined with backslashes is refused by every `/fs` call and by `doc.export`.
-The backslash root Affinity hands out, with **forward slashes** appended, works —
-`E:\USER\Desktop/PhysicsDrop_20260803_133101/drop_0000.png`.
+**Separators.** Paths are built as the backslash root Affinity hands out with **forward slashes**
+appended — `E:\USER\Desktop/PhysicsDrop_20260803_133101/drop_0000.png` — matching the form the
+working v1.1 export uses. Whether backslashes would also work is untested: the denials that
+suggested otherwise turned out to be the permission problem above, not the separator.
 
-**Write where you created.** Frames land in a folder the script made itself. The Desktop root, an
-existing folder and an existing file are all refused even with forward slashes. Folder creation is
-therefore not optional and there is no writing-flat fallback — without the folder there is nowhere
-permitted to write.
+**Write where you created.** Frames land in a folder the script made itself. There is no
+writing-flat fallback, because the Desktop root was refused in testing and a fallback there would
+turn a clear failure into a confusing later one.
 
 `isDirectory` must be tested for truthiness rather than `=== true`: `/fs` exports a `PathType` enum
 (`Directory = 3`), so a strict comparison reads a perfectly good folder as a failure.
