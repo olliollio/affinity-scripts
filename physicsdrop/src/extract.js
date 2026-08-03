@@ -16,9 +16,12 @@
  *   - `curve.generatePolygon(tolerance)` returns a PolygonHandle with NO readable members, so
  *     flattening is ours to do.
  *   - `curvesInterface.polyCurve` reports curveCount === 1 for an entire string — one glyph.
- *     `curvesInterface.polyPolyCurves` is the real container: one PolyCurve per glyph, counters
- *     included. Its glyphs sit in em space, so `getTransformedPolyCurve(i)` is what lands them in
- *     the node's base space.
+ *     `curvesInterface.polyPolyCurves` holds one PolyCurve per glyph, counters included. What is
+ *     NOT established is the coordinate space `getTransformedPolyCurve(i)` returns: in a real
+ *     document the letters fell correctly and collided with nothing, which is how a body far from
+ *     where it renders behaves. Live text is therefore skipped by default and
+ *     `DocumentCommand.createConvertToCurves` is offered instead, which yields ordinary
+ *     PolyCurveNodes whose extraction is proven. `textPolicy: 'glyphs'` re-enables the direct read.
  */
 
 (function (PD) {
@@ -235,7 +238,7 @@
   function extract(nodes, opts) {
     var o = opts || {};
     var imagePolicy = o.imagePolicy || 'rectangle'; // 'rectangle' | 'refuse'
-    var textPolicy = o.textPolicy || 'glyphs';      // 'glyphs' | 'refuse'
+    var textPolicy = o.textPolicy || 'refuse';      // 'refuse' | 'glyphs'
     var results = [];
     var refusals = [];
 
@@ -259,7 +262,15 @@
 
       if (kind === 'text') {
         if (textPolicy === 'refuse') {
-          refusals.push({ node: node, reason: 'text', message: describe(node) + ': text is not supported' });
+          // Default. Glyph extraction via polyPolyCurves reads the outlines but has not been shown
+          // to land them in the right coordinate space - letters fall correctly and collide with
+          // nothing, which is what a body sitting far from where it renders looks like. Until that
+          // is probed rather than assumed, converting to curves is the honest route: it produces
+          // ordinary PolyCurveNodes that go through the path everything else already uses.
+          refusals.push({
+            node: node, reason: 'text',
+            message: describe(node) + ': text is skipped — tick "Convert text to curves" to include it'
+          });
           return;
         }
         // One body per glyph, so a word tumbles as letters rather than as a rigid slab — the same
@@ -367,6 +378,58 @@
     } catch (e2) { /* nothing to walk */ }
   }
 
+  /**
+   * Converts live text to curves in the document, so it goes through the ordinary vector path.
+   *
+   * Destructive and explicit: the user asks for it, and it lands in the undo stack as its own step.
+   * It is the reliable route because the result is ordinary `PolyCurveNode`s, whose extraction is
+   * already proven — as opposed to reading glyph outlines out of a live text node, where the
+   * coordinate space is not yet established.
+   *
+   * The command signature is unknown, so several shapes are tried. `DocumentCommand.create*` are
+   * pure factories: a wrong guess costs nothing and its error message names the expected type.
+   */
+  function convertTextToCurves(doc, nodes) {
+    var textNodes = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (classify(nodes[i]) === 'text') textNodes.push(nodes[i]);
+    }
+    if (!textNodes.length) return { converted: 0, error: null };
+
+    var Selection, DocumentCommand;
+    try {
+      Selection = require('/selections').Selection;
+      DocumentCommand = require('/commands').DocumentCommand;
+    } catch (e) {
+      return { converted: 0, error: 'modules unavailable: ' + e };
+    }
+    if (typeof DocumentCommand.createConvertToCurves !== 'function') {
+      return { converted: 0, error: 'this Affinity build has no createConvertToCurves' };
+    }
+
+    var sel = Selection.createEmpty(doc);
+    for (var k = 0; k < textNodes.length; k++) sel.addNode(textNodes[k]);
+
+    var attempts = [
+      function () { return DocumentCommand.createConvertToCurves(sel); },
+      function () { return DocumentCommand.createConvertToCurves(sel, {}); },
+      function () { return DocumentCommand.createConvertToCurves(sel, true); }
+    ];
+    var lastErr = null;
+    for (var a = 0; a < attempts.length; a++) {
+      try {
+        var cmd = attempts[a]();
+        if (!cmd) { lastErr = 'factory returned ' + cmd; continue; }
+        doc.executeCommand(cmd, false);
+        return { converted: textNodes.length, error: null };
+      } catch (e) {
+        lastErr = (e && e.message) ? e.message : String(e);
+      }
+    }
+    return { converted: 0, error: lastErr };
+  }
+
+  PD.convertTextToCurves = convertTextToCurves;
   PD.isStaticName = isStaticName;
   PD.classifyNode = classify;
   PD.matrixOf = matrixOf;

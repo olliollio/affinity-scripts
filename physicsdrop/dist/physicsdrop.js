@@ -854,9 +854,12 @@ PD.planck = (function () {
  *   - `curve.generatePolygon(tolerance)` returns a PolygonHandle with NO readable members, so
  *     flattening is ours to do.
  *   - `curvesInterface.polyCurve` reports curveCount === 1 for an entire string — one glyph.
- *     `curvesInterface.polyPolyCurves` is the real container: one PolyCurve per glyph, counters
- *     included. Its glyphs sit in em space, so `getTransformedPolyCurve(i)` is what lands them in
- *     the node's base space.
+ *     `curvesInterface.polyPolyCurves` holds one PolyCurve per glyph, counters included. What is
+ *     NOT established is the coordinate space `getTransformedPolyCurve(i)` returns: in a real
+ *     document the letters fell correctly and collided with nothing, which is how a body far from
+ *     where it renders behaves. Live text is therefore skipped by default and
+ *     `DocumentCommand.createConvertToCurves` is offered instead, which yields ordinary
+ *     PolyCurveNodes whose extraction is proven. `textPolicy: 'glyphs'` re-enables the direct read.
  */
 
 (function (PD) {
@@ -1073,7 +1076,7 @@ PD.planck = (function () {
   function extract(nodes, opts) {
     var o = opts || {};
     var imagePolicy = o.imagePolicy || 'rectangle'; // 'rectangle' | 'refuse'
-    var textPolicy = o.textPolicy || 'glyphs';      // 'glyphs' | 'refuse'
+    var textPolicy = o.textPolicy || 'refuse';      // 'refuse' | 'glyphs'
     var results = [];
     var refusals = [];
 
@@ -1097,7 +1100,15 @@ PD.planck = (function () {
 
       if (kind === 'text') {
         if (textPolicy === 'refuse') {
-          refusals.push({ node: node, reason: 'text', message: describe(node) + ': text is not supported' });
+          // Default. Glyph extraction via polyPolyCurves reads the outlines but has not been shown
+          // to land them in the right coordinate space - letters fall correctly and collide with
+          // nothing, which is what a body sitting far from where it renders looks like. Until that
+          // is probed rather than assumed, converting to curves is the honest route: it produces
+          // ordinary PolyCurveNodes that go through the path everything else already uses.
+          refusals.push({
+            node: node, reason: 'text',
+            message: describe(node) + ': text is skipped — tick "Convert text to curves" to include it'
+          });
           return;
         }
         // One body per glyph, so a word tumbles as letters rather than as a rigid slab — the same
@@ -1205,6 +1216,58 @@ PD.planck = (function () {
     } catch (e2) { /* nothing to walk */ }
   }
 
+  /**
+   * Converts live text to curves in the document, so it goes through the ordinary vector path.
+   *
+   * Destructive and explicit: the user asks for it, and it lands in the undo stack as its own step.
+   * It is the reliable route because the result is ordinary `PolyCurveNode`s, whose extraction is
+   * already proven — as opposed to reading glyph outlines out of a live text node, where the
+   * coordinate space is not yet established.
+   *
+   * The command signature is unknown, so several shapes are tried. `DocumentCommand.create*` are
+   * pure factories: a wrong guess costs nothing and its error message names the expected type.
+   */
+  function convertTextToCurves(doc, nodes) {
+    var textNodes = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (classify(nodes[i]) === 'text') textNodes.push(nodes[i]);
+    }
+    if (!textNodes.length) return { converted: 0, error: null };
+
+    var Selection, DocumentCommand;
+    try {
+      Selection = require('/selections').Selection;
+      DocumentCommand = require('/commands').DocumentCommand;
+    } catch (e) {
+      return { converted: 0, error: 'modules unavailable: ' + e };
+    }
+    if (typeof DocumentCommand.createConvertToCurves !== 'function') {
+      return { converted: 0, error: 'this Affinity build has no createConvertToCurves' };
+    }
+
+    var sel = Selection.createEmpty(doc);
+    for (var k = 0; k < textNodes.length; k++) sel.addNode(textNodes[k]);
+
+    var attempts = [
+      function () { return DocumentCommand.createConvertToCurves(sel); },
+      function () { return DocumentCommand.createConvertToCurves(sel, {}); },
+      function () { return DocumentCommand.createConvertToCurves(sel, true); }
+    ];
+    var lastErr = null;
+    for (var a = 0; a < attempts.length; a++) {
+      try {
+        var cmd = attempts[a]();
+        if (!cmd) { lastErr = 'factory returned ' + cmd; continue; }
+        doc.executeCommand(cmd, false);
+        return { converted: textNodes.length, error: null };
+      } catch (e) {
+        lastErr = (e && e.message) ? e.message : String(e);
+      }
+    }
+    return { converted: 0, error: lastErr };
+  }
+
+  PD.convertTextToCurves = convertTextToCurves;
   PD.isStaticName = isStaticName;
   PD.classifyNode = classify;
   PD.matrixOf = matrixOf;
@@ -2056,13 +2119,16 @@ PD.planck = (function () {
       'stops bulldozing small artwork. Off: real physics, where area decides weight.').setIsFullWidth(true);
 
     var beh = col.addGroup('Objects');
+    var convertCtl = beh.addCheckBox('Convert text to curves', false);
+    beh.addStaticText('', 'Live text is skipped. Tick this to convert it to curves first so it ' +
+      'drops as letters. This changes the document, as its own undo step.').setIsFullWidth(true);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
       'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
 
     var help = col.addGroup('How to use');
-    help.addStaticText('', 'Select objects and run. Live text drops as individual letters and stays ' +
-      'editable — no need to convert it to curves.').setIsFullWidth(true);
+    help.addStaticText('', 'Select objects and run. Live text is skipped unless you tick "Convert ' +
+      'text to curves" above.').setIsFullWidth(true);
     help.addStaticText('', 'Name an object "wall", "floor", "ramp" or "ground", or lock its layer, to make it ' +
       'solid scenery that never moves. Objects follow their true outline, holes included.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays once on canvas, then a Finished dialog lets you scrub to any frame. ' +
@@ -2086,6 +2152,7 @@ PD.planck = (function () {
       equaliseMass: !!equaliseCtl.value,
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
+      convertText: !!convertCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
       maxFrames: Math.round(secs * 30)
     };
@@ -2151,6 +2218,21 @@ PD.planck = (function () {
 
     console.log('physicsdrop 2.0.0-dev' + (o.dryRun ? ' — dry run, the document is not modified' : ''));
     console.log('selection: ' + nodes.length + ' node(s)');
+
+    // Conversion happens before extraction, and the selection is re-read afterwards because the
+    // text nodes are replaced by new curve nodes - the old references would be stale.
+    if (o.convertText && !o.dryRun) {
+      var conv = PD.convertTextToCurves(doc, nodes);
+      if (conv.error) {
+        console.log('  could not convert text to curves: ' + conv.error);
+      } else if (conv.converted) {
+        console.log('  converted ' + conv.converted + ' text object(s) to curves (undoable)');
+        nodes = [];
+        try { for (var n2 of doc.selection.nodes) nodes.push(n2); }
+        catch (e) { console.log('  could not re-read the selection after converting: ' + e); return null; }
+        console.log('  selection is now ' + nodes.length + ' node(s)');
+      }
+    }
 
     // ---------------------------------------------------------------- extract
     var ex = PD.extract(nodes, o);
