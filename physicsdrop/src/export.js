@@ -1,11 +1,19 @@
 /**
  * export.js — writes the drop out as a 30fps image sequence.
  *
- * Ported from v1.1, with one change forced by the sandbox: v1.1 created a timestamped output
- * folder with `fsys.createDirectories`, and `/fs` denies every path here (see
- * probes/probe_fs_permissions.js), so that call throws. `doc.export` is a DOCUMENT API rather than
- * a filesystem one, so it is tried regardless — and if the folder cannot be made, files are
- * written flat into the Desktop with a timestamped prefix instead of failing outright.
+ * Ported from v1.1, which exports successfully — so anything failing here is ours, not the SDK's.
+ *
+ * Two rules make the difference, both learned the hard way:
+ *
+ *   1. **Path separators.** A path joined with backslashes is refused by every `/fs` call and by
+ *      `doc.export`. The backslash root Affinity hands out, with FORWARD slashes appended, works:
+ *      `E:\USER\Desktop/PhysicsDrop_x/drop_0000.png`. Earlier probes concluded `/fs` was denied
+ *      outright; they had simply joined with backslashes throughout.
+ *   2. **Write where you created.** Export lands in a folder the script made itself. The Desktop
+ *      root, an existing folder and an existing file are all refused even with forward slashes.
+ *
+ * So folder creation is not optional and there is no writing-flat fallback: without the folder
+ * there is nowhere permitted to write, and pretending otherwise only produces a later failure.
  *
  * Each frame is COMMITTED, exported, then undone. A preview is not guaranteed to render into an
  * export, which is why this cannot reuse the cheap preview path the scrubber uses.
@@ -30,12 +38,15 @@
            pad(d.getHours(), 2) + pad(d.getMinutes(), 2) + pad(d.getSeconds(), 2);
   }
 
+  /** The filename for one frame. Zero padded, or a sequence sorts 1, 10, 11, 2 and imports wrong. */
+  function frameName(f, ext) { return 'drop_' + pad(f, 4) + '.' + ext; }
+
   /**
    * Works out where files can actually be written.
    *
-   * Returns a function that maps a frame number to a path, plus a description of what was chosen.
-   * The subfolder is preferred because a sequence is much easier to import when it is alone in a
-   * directory; the flat fallback exists because folder creation needs `/fs`, which is denied.
+   * Returns a function mapping a frame number to a path, or an `error` explaining why nowhere is
+   * writable. The subfolder is not a nicety: it is the only location the sandbox permits writing
+   * to, and it also keeps the sequence alone in a directory, which is how it wants importing.
    */
   function resolveTarget(app, ext) {
     var desk;
@@ -43,29 +54,39 @@
     catch (e) { return { error: 'no Desktop path: ' + e }; }
     if (!desk) return { error: 'no Desktop path' };
 
+    // Forward slashes, appended to a backslash Windows root. That mixed form is what works here -
+    // `E:\USER\Desktop/PhysicsDrop_.../drop_0000.png` - while fully backslashed paths come back
+    // PERMISSION_DENIED.
     var name = 'PhysicsDrop_' + stamp();
     var dir = desk + '/' + name;
 
+    var note = '';
     var madeDir = false;
     try {
       var fsys = require('/fs');
       fsys.createDirectories(dir);
-      madeDir = fsys.isDirectory(dir) === true;
+      // TRUTHY, not === true. /fs exports a PathType enum (Directory = 3), so isDirectory may well
+      // answer with an enum or a number rather than a boolean, and a strict comparison then reads
+      // a perfectly good folder as a failure.
+      var isDir = fsys.isDirectory(dir);
+      madeDir = !!isDir;
+      note = 'isDirectory returned ' + (typeof isDir) + ' ' + String(isDir);
     } catch (e) {
-      madeDir = false;   // /fs is denied; fall through to writing flat
+      note = 'threw: ' + ((e && e.message) ? e.message : String(e));
+      madeDir = false;
     }
 
-    if (madeDir) {
-      return {
-        path: function (f) { return dir + '/drop_' + pad(f, 4) + '.' + ext; },
-        where: dir,
-        folder: true
-      };
+    // No flat fallback. The Desktop ROOT is denied for export, so writing there is a guaranteed
+    // failure dressed up as a graceful degradation - better to say the folder could not be made.
+    if (!madeDir) {
+      return { error: 'could not create the export folder ' + dir + ' (' + note + ')' };
     }
+
     return {
-      path: function (f) { return desk + '/' + name + '_' + pad(f, 4) + '.' + ext; },
-      where: desk + '/' + name + '_####.' + ext,
-      folder: false
+      path: function (f) { return dir + '/' + frameName(f, ext); },
+      where: dir,
+      folder: true,
+      note: note
     };
   }
 
@@ -263,5 +284,6 @@
   PD.exportSequence = exportSequence;
   PD.exportStamp = stamp;
   PD.exportResolveTarget = resolveTarget;
+  PD.exportFrameName = frameName;
 
 })(PD);

@@ -242,11 +242,24 @@ Each frame is **committed**, exported, then undone. A preview is not guaranteed 
 export, so this cannot reuse the cheap preview path the scrubber uses. The loop runs on a timer so
 the UI is not frozen and a failure can stop cleanly rather than wedging Affinity.
 
-v1.1 created a timestamped output folder with `fsys.createDirectories`. `/fs` denies every path in
-this sandbox, so that call throws and folder creation is best-effort: when it fails, frames are
-written flat onto the Desktop sharing one timestamped prefix. `doc.export` is a document API rather
-than a filesystem one, so it is attempted regardless. Frame numbers are zero-padded to four digits
-either way, or a sequence sorts 1, 10, 11, 2 and imports scrambled.
+Two sandbox rules govern where files can go, and both are easy to get wrong silently:
+
+**Separators.** A path joined with backslashes is refused by every `/fs` call and by `doc.export`.
+The backslash root Affinity hands out, with **forward slashes** appended, works —
+`E:\USER\Desktop/PhysicsDrop_20260803_133101/drop_0000.png`.
+
+**Write where you created.** Frames land in a folder the script made itself. The Desktop root, an
+existing folder and an existing file are all refused even with forward slashes. Folder creation is
+therefore not optional and there is no writing-flat fallback — without the folder there is nowhere
+permitted to write.
+
+`isDirectory` must be tested for truthiness rather than `=== true`: `/fs` exports a `PathType` enum
+(`Directory = 3`), so a strict comparison reads a perfectly good folder as a failure.
+
+Preset names are exact and case-sensitive. `PNG` exists bare; there is **no** preset called just
+`JPEG` — they are all qualified, `JPEG (Best quality)` and so on — so the names are read from
+`FileExportOptions.allPresetNames` rather than guessed. Frame numbers are zero-padded to four
+digits, or a sequence sorts 1, 10, 11, 2 and imports scrambled.
 
 ## Not here yet
 
