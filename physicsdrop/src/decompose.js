@@ -9,8 +9,10 @@
 (function (PD) {
   'use strict';
 
-  // planck's Settings.maxPolygonVertices. Fixtures above this are rejected by the engine.
-  var MAX_VERTS = 8;
+  // planck's Settings.maxPolygonVertices, which defaults to 12 in planck 1.x (Box2D 2.3 used 8).
+  // A polygon with more vertices than this is silently TRUNCATED by planck, not rejected, so the
+  // cap has to be enforced here or fixtures quietly lose geometry.
+  var MAX_VERTS = 12;
 
   // Triangles below this are earcut slivers on degenerate input: no mass, but they poison the
   // convexity tests downstream.
@@ -170,5 +172,7 @@
   }
 
   PD.decompose = decompose;
+  // Single source of truth for the cap, so tests and the engine layer cannot drift from it.
+  PD.MAX_VERTS = MAX_VERTS;
 
 })(PD);

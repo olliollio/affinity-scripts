@@ -135,7 +135,7 @@ function checkHoleExclusion(PD, face, parts, opts) {
  */
 function assertInvariants(PD, h, label, face, parts, opts) {
   var o = opts || {};
-  var maxVerts = o.maxVerts || 8;
+  var maxVerts = o.maxVerts || PD.MAX_VERTS;
   var tol = o.areaTol || 1e-3; // 0.1% relative
 
   var want = faceArea(PD, face);
