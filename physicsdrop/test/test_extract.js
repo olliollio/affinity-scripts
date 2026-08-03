@@ -216,6 +216,38 @@ module.exports = function (PD, h) {
   h.assertEqual('with no text nodes it is a no-op',
     PD.convertTextToCurves(null, [mockNode({ curves: [mockCurve(boxBeziers(0, 0, 10, 10))] })]).converted, 0);
 
+  h.group('extract: merging node lists after conversion');
+
+  // createConvertToCurves REPLACES the app selection with just the nodes it produced, so the
+  // objects it did not touch have to be carried across by hand. Losing them is what made a run
+  // simulate only the converted text.
+  var keepA = mockNode({ name: 'A', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
+  var keepB = mockNode({ name: 'B', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
+  var newC = mockNode({ name: 'C', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
+
+  var merged3 = PD.mergeNodeLists([keepA, keepB], [newC]);
+  h.assertEqual('survivors and new nodes are both kept', merged3.length, 3);
+  h.assertEqual('survivors come first',
+    merged3.map(function (x) { return x.description; }).join(','), 'A,B,C');
+
+  // The replacement list may or may not also contain the untouched nodes, so duplicates must go.
+  h.assertEqual('a node present in both lists appears once',
+    PD.mergeNodeLists([keepA, keepB], [keepB, newC]).length, 3);
+
+  // Identity is not reliable across SDK calls, so handles decide when they are present.
+  var wrapper1 = { handle: 'h7', description: 'same' };
+  var wrapper2 = { handle: 'h7', description: 'same again' };
+  h.assert('two wrappers with one handle are one node', PD.sameNode(wrapper1, wrapper2) === true);
+  h.assertEqual('and merge to a single entry', PD.mergeNodeLists([wrapper1], [wrapper2]).length, 1);
+  h.assert('different handles stay distinct',
+    PD.sameNode({ handle: 'h7' }, { handle: 'h8' }) === false);
+  h.assert('isSameNode wins when present',
+    PD.sameNode({ handle: 'a', isSameNode: function () { return true; } }, { handle: 'b' }) === true);
+
+  h.assertEqual('empty lists merge to nothing', PD.mergeNodeLists([], []).length, 0);
+  h.assertEqual('missing lists are tolerated', PD.mergeNodeLists(null, null).length, 0);
+  h.assertEqual('nulls inside a list are dropped', PD.mergeNodeLists([null, keepA], [null]).length, 1);
+
   h.group('extract: groups');
 
   // A dropped word is a group of letters, and each letter must be its own body — otherwise the
