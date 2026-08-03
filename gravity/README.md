@@ -49,9 +49,10 @@ node gravity/build.js --check  # non-zero exit if dist/ is stale
 `dist/gravity.js` is **generated** — the reviewable diff is `src/`. It is committed anyway
 because it is the artefact that actually gets pasted into Affinity.
 
-Everything travels inline in one file. The sandbox's `/fs` module denies **every** path, so a
-script cannot load its own code from disk at runtime; a 433KB script is imported and parsed
-intact, so inlining is the supported route rather than a workaround.
+Everything travels inline in one file. A script cannot reliably load its own code from disk at
+runtime — `/fs` is unavailable in the testing environment, where most iteration happens — and a
+433KB script is imported and parsed intact, so inlining is the supported route rather than a
+workaround.
 
 Each vendored library is wrapped in its own private `module` object. Both UMD bundles resolve to
 their CommonJS branch in the sandbox, so evaluated bare they would assign to the host script's
@@ -263,13 +264,10 @@ Each frame is **committed**, exported, then undone. A preview is not guaranteed 
 export, so this cannot reuse the cheap preview path the scrubber uses. The loop runs on a timer so
 the UI is not frozen and a failure can stop cleanly rather than wedging Affinity.
 
-> **Export needs a script entry that already has filesystem permission.** Access is granted per
-> Script Manager entry, and a **new entry does not get it** — a six-line script doing nothing but
-> `createDirectories` is denied from a fresh entry in the same session where an older script
-> exports successfully. Content, size, path form, call timing and the metadata header make no
-> difference. Paste the build into an entry that already works. Access can also lapse mid-session
-> and come back after restarting Affinity, so confirm with a known-good script before concluding
-> anything about a failure.
+> **Export only works from an INSTALLED script.** Run from the Script Manager's testing
+> environment, `/fs` and `doc.export` return `PERMISSION_DENIED`; install the same file as a script
+> and it exports normally. Nothing about the code changes. If an export fails, install it and try
+> again before looking anywhere else.
 
 Two sandbox rules govern where files can go, and both are easy to get wrong silently:
 
