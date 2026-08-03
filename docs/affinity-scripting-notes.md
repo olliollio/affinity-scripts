@@ -93,6 +93,20 @@ confirm the current state with a known-good script before concluding anything.
 
 ---
 
+## Deforming geometry can be animated
+
+`DocumentCommand.createSetCurves(curvesInterface, polyCurve)` works as a **preview** —
+`executeCommand(cmd, true)` — and is cheap: measured at 0.2ms per rewrite at 7 points and 1.0ms at
+41, against a 33ms frame budget, with `clearPreviews()` restoring the original.
+
+That matters because a rigid `createTransform` can only move a node, not reshape it. Rewriting the
+curve each frame is what makes ropes, cloth or any soft body possible at 30fps.
+
+It replaces **every** curve on the node, so several paths on one node must be rebuilt together in a
+single command.
+
+---
+
 ## Verified API facts
 
 ### Document
