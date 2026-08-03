@@ -95,12 +95,47 @@
       return;
     }
 
-    var exportOpts, exportArea;
-    try {
-      exportOpts = docMod.FileExportOptions.createWithPresetName(useJpeg ? 'JPEG' : 'PNG');
-      exportArea = docMod.FileExportArea.createForCurrentSpread();
-    } catch (e) {
-      if (onDone) onDone({ ok: false, error: 'export options unavailable: ' + e });
+    // Export presets appear to be LOCALISED - a preset literally named "PNG" need not exist in a
+    // non-English install, and Affinity localises other user-facing names. So several spellings are
+    // tried rather than one hardcoded guess, and the two calls are caught separately: reporting
+    // "export options unavailable: ERROR" for either was useless for working out which broke.
+    var names = useJpeg
+      ? ['JPEG', 'JPG', 'jpeg', 'JPEG (best quality)', 'JPEG (Beste Qualität)']
+      : ['PNG', 'png', 'PNG-24', 'PNG 24', 'PNG (Flatten)'];
+    if (o.presetName) names.unshift(o.presetName);
+
+    var exportOpts = null, usedPreset = null, presetErr = null;
+    for (var p = 0; p < names.length && !exportOpts; p++) {
+      try {
+        var candidate = docMod.FileExportOptions.createWithPresetName(names[p]);
+        if (candidate) { exportOpts = candidate; usedPreset = names[p]; }
+      } catch (e) {
+        presetErr = (e && e.message) ? e.message : String(e);
+      }
+    }
+    if (!exportOpts) {
+      if (onDone) onDone({
+        ok: false,
+        error: 'no export preset was accepted (tried ' + names.join(', ') + '); last error: ' + presetErr +
+               '. Run probes/probe_export.js to discover the preset names this install uses.'
+      });
+      return;
+    }
+
+    var exportArea = null;
+    var areaAttempts = [
+      ['createForCurrentSpread', function () { return docMod.FileExportArea.createForCurrentSpread(); }],
+      ['createForDocument', function () { return docMod.FileExportArea.createForDocument(); }],
+      ['createForSelection', function () { return docMod.FileExportArea.createForSelection(); }]
+    ];
+    var areaErr = null;
+    for (var q = 0; q < areaAttempts.length && !exportArea; q++) {
+      try { exportArea = areaAttempts[q][1](); } catch (e) {
+        areaErr = areaAttempts[q][0] + ': ' + ((e && e.message) ? e.message : String(e));
+      }
+    }
+    if (!exportArea) {
+      if (onDone) onDone({ ok: false, error: 'no export area could be made (' + areaErr + ')' });
       return;
     }
 
@@ -134,7 +169,7 @@
         }
 
         if (frame > last) {
-          stop({ ok: true, written: written, where: target.where, folder: target.folder });
+          stop({ ok: true, written: written, where: target.where, folder: target.folder, preset: usedPreset });
           return;
         }
 
