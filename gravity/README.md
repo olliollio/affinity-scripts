@@ -157,9 +157,14 @@ body and a joint rather than a static end link, so a hanging rope can still swiv
 
 **Appearance is decoupled from the solver.** The drawn curve is Catmull-Rom interpolated through
 the link joints — `smoothPolyline`, 6 subdivisions by default — so a 32-link rope draws as roughly
-190 points and reads as a rope rather than a faceted chain. Catmull-Rom interpolates rather than
-approximates, so every joint stays exactly where the solver put it and only the space between
-joints is invented.
+190 points. Catmull-Rom interpolates rather than approximates, so every joint stays exactly where
+the solver put it and only the space between joints is invented.
+
+> **Known issue: ropes still look janky on canvas.** Adding the smoothing above made no visible
+> difference, tested with a fresh build, so the problem is **not** drawn resolution. The remaining
+> suspects are motion quality rather than geometry: the 30fps recording may alias badly for a shape
+> the eye tracks as a whole, the default 8/3 solver iterations are low for long joint chains, and
+> non-adjacent links currently collide with each other. Unresolved.
 
 Playback cannot transform a rope, because a rope **deforms**. Its polyline is rebuilt from the link
 poses each frame and written with `createSetCurves`, riding the same compound command as everything
