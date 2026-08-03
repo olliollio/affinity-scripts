@@ -179,7 +179,7 @@ probe in `probes/`, not assumed.
 - A group yields **one body per child**, so a dropped word tumbles as letters rather than as a
   slab. `groupsAsOneBody` merges it when that is what you want.
 - Static geometry is marked by **both** routes: a locked node, or a name containing `wall`,
-  `floor`, `ramp`, `static` or `ground` on a word boundary — `left-wall` is scenery, `Wallpaper`
+  `floor`, `ramp`, `static`, `ground` or `collider` on a word boundary — `left-wall` is scenery, `Wallpaper`
   is not. **Scenery is inherited**, so naming a *group* `wall` makes everything inside it scenery,
   however deeply nested. Otherwise a container built from several shapes would need every one of
   them renamed, and a group whose name plainly said "wall" would drop as loose debris.

@@ -866,7 +866,7 @@ PD.planck = (function () {
   'use strict';
 
   // A node whose name contains one of these is scenery: it collides but never moves.
-  var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground'];
+  var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground', 'collider'];
 
   /**
    * Static by name convention. Pure, so it is unit-tested rather than discovered in Affinity.
@@ -2171,7 +2171,8 @@ PD.planck = (function () {
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Live text is skipped unless you tick "Convert ' +
       'text to curves" above.').setIsFullWidth(true);
-    help.addStaticText('', 'Name an object or a GROUP "wall", "floor", "ramp" or "ground", or lock it, ' +
+    help.addStaticText('', 'Name an object or a GROUP "collider", "wall", "floor", "ramp" or ' +
+      '"ground", or lock it, ' +
       'to make it solid scenery that never moves — everything inside a named group counts too. ' +
       'Scenery follows its true outline, holes included.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays once on canvas, then a Finished dialog lets you scrub to any frame. ' +

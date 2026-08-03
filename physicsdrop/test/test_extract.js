@@ -79,11 +79,13 @@ module.exports = function (PD, h) {
 
   h.group('extract: static naming');
 
-  ['wall', 'Wall', 'FLOOR', 'left-wall', 'Wall 3', 'the ramp', 'static', 'ground'].forEach(function (n) {
+  ['wall', 'Wall', 'FLOOR', 'left-wall', 'Wall 3', 'the ramp', 'static', 'ground',
+   'collider', 'Collider', 'big collider', 'collider-2'].forEach(function (n) {
     h.assert('"' + n + '" is scenery', PD.isStaticName(n) === true);
   });
   // Word boundaries matter: a name that merely contains the letters must not become scenery.
-  ['Wallpaper', 'flooring', 'rampage', 'ecstatic', 'background', 'Walls0'].forEach(function (n) {
+  ['Wallpaper', 'flooring', 'rampage', 'ecstatic', 'background', 'Walls0', 'colliders',
+   'collide'].forEach(function (n) {
     h.assert('"' + n + '" is not scenery', PD.isStaticName(n) === false);
   });
   h.assert('an empty name is not scenery', PD.isStaticName('') === false);

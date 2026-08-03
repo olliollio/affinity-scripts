@@ -28,7 +28,7 @@
   'use strict';
 
   // A node whose name contains one of these is scenery: it collides but never moves.
-  var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground'];
+  var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground', 'collider'];
 
   /**
    * Static by name convention. Pure, so it is unit-tested rather than discovered in Affinity.
