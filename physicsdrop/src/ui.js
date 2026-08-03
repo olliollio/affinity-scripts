@@ -77,6 +77,9 @@
     var convertCtl = beh.addCheckBox('Convert text to curves', false);
     beh.addStaticText('', 'Live text is skipped. Tick this to convert it to curves first so it ' +
       'drops as letters. This changes the document, as its own undo step.').setIsFullWidth(true);
+    var exportCtl = beh.addCheckBox('Export image sequence when finished', false);
+    beh.addStaticText('', 'Writes a 30fps PNG or JPEG sequence to your Desktop, from the start of ' +
+      'the drop up to the frame you keep. Ready to import at 30fps.').setIsFullWidth(true);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
       'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
@@ -110,6 +113,7 @@
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
+      exportSequence: !!exportCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
       maxFrames: Math.round(secs * 30)
     };

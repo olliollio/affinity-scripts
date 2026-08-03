@@ -172,6 +172,16 @@
         : 'Note: the run hit its frame limit before settling.').setIsFullWidth(true);
     }
 
+    // Export is offered here rather than up front, because the sequence runs from the start of the
+    // drop to the frame being viewed — which is not known until the user has scrubbed.
+    var fmtCtl = null;
+    if (o.offerExport) {
+      var eg = col.addGroup('Export image sequence');
+      fmtCtl = eg.addRadioGroup('Format', ['PNG', 'JPEG'], 0);
+      eg.addStaticText('', 'OK exports the drop from the start up to the frame you are viewing, ' +
+        'as a 30fps sequence on your Desktop. Do not touch the document while it runs.').setIsFullWidth(true);
+    }
+
     var shown = last;
     frameCtl.setOnValueChangedHandler(function () {
       try { shown = preview(ctx, frameCtl.value === undefined ? last : frameCtl.value); }
@@ -183,9 +193,17 @@
     var result = dlg.runModal();
     clear(ctx);
 
-    var keep = (result && result.value === DialogResult.Ok.value) ? shown : last;
+    var accepted = !!(result && result.value === DialogResult.Ok.value);
+    var keep = accepted ? shown : last;
     commit(ctx, keep);
-    return { frame: keep, accepted: !!(result && result.value === DialogResult.Ok.value) };
+
+    return {
+      frame: keep,
+      accepted: accepted,
+      // Only export on OK: Cancel means "keep the settled result", not "write 300 files".
+      wantsExport: accepted && !!o.offerExport,
+      jpeg: !!(fmtCtl && fmtCtl.selectedIndex === 1)
+    };
   }
 
   PD.playbackPlay = play;

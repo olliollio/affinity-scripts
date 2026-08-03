@@ -291,9 +291,29 @@
     // when it ends. The dialog has to be raised from the timer callback rather than after this
     // call, because runModal would otherwise block the timer that drives playback.
     PD.playbackPlay(ctx, { intervalMs: o.intervalMs || 33 }, function () {
-      var chosen = PD.showScrubber(ctx, {});
+      var chosen = PD.showScrubber(ctx, { offerExport: !!o.exportSequence });
       console.log('physicsdrop: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
                   (chosen.accepted ? '' : ' (settled result)'));
+
+      if (!chosen.wantsExport) return;
+
+      console.log('physicsdrop: exporting frames 0-' + chosen.frame + '...');
+      PD.exportSequence(ctx, { jpeg: chosen.jpeg, lastFrame: chosen.frame, keepFrame: chosen.frame },
+        function (res) {
+          if (res.ok) {
+            console.log('physicsdrop: exported ' + res.written + ' frame(s) to ' + res.where);
+            if (!res.folder) {
+              console.log('  (no output folder could be created — /fs is denied in this sandbox — ' +
+                          'so the files are on the Desktop with a shared prefix)');
+            }
+            try { app.alert('Export complete: ' + res.written + ' frames.\n' + res.where +
+                            '\n\nImport as an image sequence at 30fps.'); } catch (e) { /* no alert */ }
+          } else {
+            console.log('physicsdrop: export failed after ' + (res.written || 0) + ' frame(s): ' + res.error);
+            try { app.alert('Export failed: ' + res.error + '\nThe frame you chose has been kept.'); }
+            catch (e) { /* no alert */ }
+          }
+        });
     });
 
     return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx };

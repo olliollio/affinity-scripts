@@ -2057,6 +2057,16 @@ PD.planck = (function () {
         : 'Note: the run hit its frame limit before settling.').setIsFullWidth(true);
     }
 
+    // Export is offered here rather than up front, because the sequence runs from the start of the
+    // drop to the frame being viewed — which is not known until the user has scrubbed.
+    var fmtCtl = null;
+    if (o.offerExport) {
+      var eg = col.addGroup('Export image sequence');
+      fmtCtl = eg.addRadioGroup('Format', ['PNG', 'JPEG'], 0);
+      eg.addStaticText('', 'OK exports the drop from the start up to the frame you are viewing, ' +
+        'as a 30fps sequence on your Desktop. Do not touch the document while it runs.').setIsFullWidth(true);
+    }
+
     var shown = last;
     frameCtl.setOnValueChangedHandler(function () {
       try { shown = preview(ctx, frameCtl.value === undefined ? last : frameCtl.value); }
@@ -2068,9 +2078,17 @@ PD.planck = (function () {
     var result = dlg.runModal();
     clear(ctx);
 
-    var keep = (result && result.value === DialogResult.Ok.value) ? shown : last;
+    var accepted = !!(result && result.value === DialogResult.Ok.value);
+    var keep = accepted ? shown : last;
     commit(ctx, keep);
-    return { frame: keep, accepted: !!(result && result.value === DialogResult.Ok.value) };
+
+    return {
+      frame: keep,
+      accepted: accepted,
+      // Only export on OK: Cancel means "keep the settled result", not "write 300 files".
+      wantsExport: accepted && !!o.offerExport,
+      jpeg: !!(fmtCtl && fmtCtl.selectedIndex === 1)
+    };
   }
 
   PD.playbackPlay = play;
@@ -2080,6 +2098,170 @@ PD.planck = (function () {
   PD.playbackCommit = commit;
   PD.playbackClear = clear;
   PD.showScrubber = showScrubber;
+
+})(PD);
+
+// -------------------------------------------------------------------------
+// src/export.js
+/**
+ * export.js — writes the drop out as a 30fps image sequence.
+ *
+ * Ported from v1.1, with one change forced by the sandbox: v1.1 created a timestamped output
+ * folder with `fsys.createDirectories`, and `/fs` denies every path here (see
+ * probes/probe_fs_permissions.js), so that call throws. `doc.export` is a DOCUMENT API rather than
+ * a filesystem one, so it is tried regardless — and if the folder cannot be made, files are
+ * written flat into the Desktop with a timestamped prefix instead of failing outright.
+ *
+ * Each frame is COMMITTED, exported, then undone. A preview is not guaranteed to render into an
+ * export, which is why this cannot reuse the cheap preview path the scrubber uses.
+ *
+ * The loop runs on a timer rather than a `for` loop so the UI is not frozen for the duration, and
+ * so a failure can stop cleanly instead of wedging Affinity.
+ */
+
+(function (PD) {
+  'use strict';
+
+  function pad(v, n) {
+    var s = String(v);
+    while (s.length < n) s = '0' + s;
+    return s;
+  }
+
+  /** A timestamp that sorts, for folder and file names. */
+  function stamp() {
+    var d = new Date();
+    return d.getFullYear() + pad(d.getMonth() + 1, 2) + pad(d.getDate(), 2) + '_' +
+           pad(d.getHours(), 2) + pad(d.getMinutes(), 2) + pad(d.getSeconds(), 2);
+  }
+
+  /**
+   * Works out where files can actually be written.
+   *
+   * Returns a function that maps a frame number to a path, plus a description of what was chosen.
+   * The subfolder is preferred because a sequence is much easier to import when it is alone in a
+   * directory; the flat fallback exists because folder creation needs `/fs`, which is denied.
+   */
+  function resolveTarget(app, ext) {
+    var desk;
+    try { desk = app.userDesktopPath; }
+    catch (e) { return { error: 'no Desktop path: ' + e }; }
+    if (!desk) return { error: 'no Desktop path' };
+
+    var name = 'PhysicsDrop_' + stamp();
+    var dir = desk + '/' + name;
+
+    var madeDir = false;
+    try {
+      var fsys = require('/fs');
+      fsys.createDirectories(dir);
+      madeDir = fsys.isDirectory(dir) === true;
+    } catch (e) {
+      madeDir = false;   // /fs is denied; fall through to writing flat
+    }
+
+    if (madeDir) {
+      return {
+        path: function (f) { return dir + '/drop_' + pad(f, 4) + '.' + ext; },
+        where: dir,
+        folder: true
+      };
+    }
+    return {
+      path: function (f) { return desk + '/' + name + '_' + pad(f, 4) + '.' + ext; },
+      where: desk + '/' + name + '_####.' + ext,
+      folder: false
+    };
+  }
+
+  /**
+   * Exports frames 0..lastFrame of a prepared playback context.
+   *
+   * `ctx` is what `PD.playbackPrepare` returns. The document is left showing `keepFrame`, which is
+   * whatever the user chose in the scrubber, so exporting never changes the result they accepted.
+   */
+  function exportSequence(ctx, opts, onDone) {
+    var o = opts || {};
+    var app, timers, docMod;
+    try {
+      app = require('/application').app;
+      timers = require('/timers');
+      docMod = require('/document');
+    } catch (e) {
+      if (onDone) onDone({ ok: false, error: 'modules unavailable: ' + e });
+      return;
+    }
+
+    var useJpeg = !!o.jpeg;
+    var ext = useJpeg ? 'jpg' : 'png';
+    var target = resolveTarget(app, ext);
+    if (target.error) {
+      if (onDone) onDone({ ok: false, error: target.error });
+      return;
+    }
+
+    var exportOpts, exportArea;
+    try {
+      exportOpts = docMod.FileExportOptions.createWithPresetName(useJpeg ? 'JPEG' : 'PNG');
+      exportArea = docMod.FileExportArea.createForCurrentSpread();
+    } catch (e) {
+      if (onDone) onDone({ ok: false, error: 'export options unavailable: ' + e });
+      return;
+    }
+
+    var last = o.lastFrame === undefined ? ctx.lastIndex : Math.min(o.lastFrame, ctx.lastIndex);
+    var keepFrame = o.keepFrame === undefined ? last : o.keepFrame;
+
+    // The scrubber has already committed a frame. That commit has to come off before replaying
+    // from the start, or every exported frame would be a delta on top of it.
+    var undone = false;
+    var frame = 0;
+    var written = 0;
+    var finished = false;
+
+    function stop(result) {
+      if (finished) return;
+      finished = true;
+      try { timers.Timer.cancelAll(); } catch (e) { /* already gone */ }
+      // Always leave the document on the frame the user accepted, whatever happened.
+      try { PD.playbackCommit(ctx, keepFrame); } catch (e) { /* nothing more to do */ }
+      if (onDone) onDone(result);
+    }
+
+    timers.setInterval(o.intervalMs || 5, function (err) {
+      if (finished) return;
+      if (err) { stop({ ok: false, error: 'timer error: ' + err, written: written }); return; }
+
+      try {
+        if (!undone) {
+          undone = true;
+          try { ctx.doc.undo(); } catch (e) { /* nothing committed yet */ }
+        }
+
+        if (frame > last) {
+          stop({ ok: true, written: written, where: target.where, folder: target.folder });
+          return;
+        }
+
+        PD.playbackCommit(ctx, frame);
+        ctx.doc.export(target.path(frame), exportOpts, exportArea);
+        written++;
+        try { ctx.doc.undo(); } catch (e) { /* keep going; the next commit is absolute anyway */ }
+        frame++;
+      } catch (e) {
+        stop({
+          ok: false,
+          error: 'failed at frame ' + frame + ': ' + (e && e.message ? e.message : e),
+          written: written,
+          where: target.where
+        });
+      }
+    });
+  }
+
+  PD.exportSequence = exportSequence;
+  PD.exportStamp = stamp;
+  PD.exportResolveTarget = resolveTarget;
 
 })(PD);
 
@@ -2164,6 +2346,9 @@ PD.planck = (function () {
     var convertCtl = beh.addCheckBox('Convert text to curves', false);
     beh.addStaticText('', 'Live text is skipped. Tick this to convert it to curves first so it ' +
       'drops as letters. This changes the document, as its own undo step.').setIsFullWidth(true);
+    var exportCtl = beh.addCheckBox('Export image sequence when finished', false);
+    beh.addStaticText('', 'Writes a 30fps PNG or JPEG sequence to your Desktop, from the start of ' +
+      'the drop up to the frame you keep. Ready to import at 30fps.').setIsFullWidth(true);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     beh.addStaticText('', 'Off: every object in a group drops on its own, so a word tumbles as ' +
       'letters. On: the group falls as one rigid piece.').setIsFullWidth(true);
@@ -2197,6 +2382,7 @@ PD.planck = (function () {
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
+      exportSequence: !!exportCtl.value,
       // The recording is 30fps, so duration in seconds is a frame count.
       maxFrames: Math.round(secs * 30)
     };
@@ -2503,9 +2689,29 @@ PD.planck = (function () {
     // when it ends. The dialog has to be raised from the timer callback rather than after this
     // call, because runModal would otherwise block the timer that drives playback.
     PD.playbackPlay(ctx, { intervalMs: o.intervalMs || 33 }, function () {
-      var chosen = PD.showScrubber(ctx, {});
+      var chosen = PD.showScrubber(ctx, { offerExport: !!o.exportSequence });
       console.log('physicsdrop: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
                   (chosen.accepted ? '' : ' (settled result)'));
+
+      if (!chosen.wantsExport) return;
+
+      console.log('physicsdrop: exporting frames 0-' + chosen.frame + '...');
+      PD.exportSequence(ctx, { jpeg: chosen.jpeg, lastFrame: chosen.frame, keepFrame: chosen.frame },
+        function (res) {
+          if (res.ok) {
+            console.log('physicsdrop: exported ' + res.written + ' frame(s) to ' + res.where);
+            if (!res.folder) {
+              console.log('  (no output folder could be created — /fs is denied in this sandbox — ' +
+                          'so the files are on the Desktop with a shared prefix)');
+            }
+            try { app.alert('Export complete: ' + res.written + ' frames.\n' + res.where +
+                            '\n\nImport as an image sequence at 30fps.'); } catch (e) { /* no alert */ }
+          } else {
+            console.log('physicsdrop: export failed after ' + (res.written || 0) + ' frame(s): ' + res.error);
+            try { app.alert('Export failed: ' + res.error + '\nThe frame you chose has been kept.'); }
+            catch (e) { /* no alert */ }
+          }
+        });
     });
 
     return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx };
