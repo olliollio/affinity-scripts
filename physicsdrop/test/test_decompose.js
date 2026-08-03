@@ -104,7 +104,11 @@ module.exports = function (PD, h) {
   for (var i = 0; i < 24; i++) poly.push(50 + 40 * Math.cos(2 * Math.PI * i / 24), 50 + 40 * Math.sin(2 * Math.PI * i / 24));
   var disc = { outer: poly, holes: [] };
   var discRun = run(disc); var discParts = discRun.parts;
-  h.assert('a 24-gon needs several parts', discParts.length >= 4, 'got ' + discParts.length);
+  // A 24-gon is convex, so only the vertex cap can force it apart. Deriving the expectation from
+  // the cap keeps this honest if the cap moves again.
+  var needed = Math.ceil(24 / PD.MAX_VERTS);
+  h.assert('a 24-gon is split by the cap alone', discParts.length >= needed,
+    'got ' + discParts.length + ', cap ' + PD.MAX_VERTS + ' needs at least ' + needed);
   inv.assertInvariants(PD, h, '24-gon', discRun.clean, discParts);
 
   var capped = PD.decompose(disc, { maxVerts: 4 });
@@ -160,7 +164,7 @@ module.exports = function (PD, h) {
     var got = inv.partsArea(PD, r.parts);
     if (Math.abs(got - want) > 1e-3 * want) { failures++; continue; }
     for (var p = 0; p < r.parts.length; p++) {
-      if (!inv.checkConvexPart(PD, r.parts[p], 8).ok) { failures++; break; }
+      if (!inv.checkConvexPart(PD, r.parts[p], PD.MAX_VERTS).ok) { failures++; break; }
     }
 
     // Separately: what sanitising cost. Simplification is allowed to move area, but only a little.
