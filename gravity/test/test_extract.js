@@ -149,10 +149,10 @@ module.exports = function (GR, h) {
   h.assertEqual('two rings became one face', res.objects[0].faces.length, 1);
   h.assertEqual('with one hole', res.objects[0].faces[0].holes.length, 1);
 
-  // A refusal must not abort the rest of the selection.
+  // A refusal must not abort the rest of the selection. Text with no glyph outlines is one.
   var mixed = GR.extract([letterO, mockNode({ tag: 'ArtTextNode', name: 'Lorem ipsum' })]);
   h.assertEqual('the usable object still comes through', mixed.objects.length, 1);
-  h.assertEqual('and the text is refused', mixed.refusals.length, 1);
+  h.assertEqual('and the unusable text is refused', mixed.refusals.length, 1);
   h.assertEqual('for the right reason', mixed.refusals[0].reason, 'text');
   h.assert('with a message naming the node',
     mixed.refusals[0].message.indexOf('Lorem ipsum') >= 0, mixed.refusals[0].message);
@@ -172,41 +172,35 @@ module.exports = function (GR, h) {
     ]
   });
 
-  // Live text is skipped by DEFAULT. Glyph outlines can be read, but they have not been shown to
-  // land in the right coordinate space — in a real document the letters fell correctly and
-  // collided with nothing, which is exactly how a body far from where it renders behaves.
-  // Converting to curves goes through the proven vector path instead.
-  var skipped = GR.extract([textNode]);
-  h.assertEqual('live text is skipped by default', skipped.objects.length, 0);
-  h.assertEqual('and reported', skipped.refusals.length, 1);
-  h.assert('with the fix named in the message',
-    skipped.refusals[0].message.indexOf('Convert text to curves') >= 0,
-    skipped.refusals[0].message);
+  // Live text becomes ONE body carrying every glyph outline. Splitting per glyph looks better but
+  // cannot work: a text node is a SINGLE node, and playback moves a body by transforming its node,
+  // so ten glyph bodies sharing one node apply ten conflicting transforms to it every frame.
+  var t = GR.extract([textNode]);
+  h.assertEqual('live text is extracted', t.refusals.length, 0);
+  h.assertEqual('as exactly one body', t.objects.length, 1);
+  h.assertEqual('carrying every glyph ring', t.objects[0].rings.length, 4);
+  h.assert('all on the one text node', t.objects[0].node === textNode);
 
-  var t = GR.extract([textNode], { textPolicy: 'glyphs' });
-  h.assertEqual('glyph extraction is available on request', t.refusals.length, 0);
-  h.assertEqual('one body per glyph', t.objects.length, 3);
-  h.assertEqual('the counter became a hole', t.objects[1].faces[0].holes.length, 1);
-  h.assert('glyph bodies are named individually',
-    t.objects[0].name.indexOf('[0]') >= 0 && t.objects[2].name.indexOf('[2]') >= 0,
-    t.objects.map(function (x) { return x.name; }).join(','));
+  // The counter must survive into a hole rather than being filled in.
+  var holes = 0;
+  for (var fi = 0; fi < t.objects[0].faces.length; fi++) holes += t.objects[0].faces[fi].holes.length;
+  h.assertEqual('and the counter is still a hole', holes, 1);
 
-  // The glyphs must come from the TRANSFORMED getter — the untransformed one throws in the mock,
-  // so reaching for it would fail loudly rather than silently piling every letter at the origin.
+  // Glyphs come from the TRANSFORMED getter. Probed against spreadBaseBox, it reproduces baseBox
+  // exactly and node.transform then lands it on spreadBaseBox — so the untransformed getter would
+  // pile every letter at the origin, and the mock throws from it to make that fail loudly.
   var moved2 = GR.glyphRingsOf(textNode);
   h.assertEqual('all glyphs extracted', moved2.length, 3);
   var bb = GR.ringsBBox(moved2[0]);
   h.assertClose('the first glyph is where the transform put it', bb.x0, 0, 1e-9);
   h.assertClose('and spans its own width', bb.x1, 40, 1e-9);
 
-  var merged2 = GR.extract([textNode], { textPolicy: 'glyphs', groupsAsOneBody: true });
-  h.assertEqual('merging makes the whole string one body', merged2.objects.length, 1);
-  h.assertEqual('carrying every glyph ring', merged2.objects[0].rings.length, 4);
+  h.assertEqual('text can still be skipped on request',
+    GR.extract([textNode], { textPolicy: 'refuse' }).refusals.length, 1);
 
-  // A text node with no glyph outlines must refuse rather than silently drop the object, even
-  // when glyph extraction was explicitly asked for.
+  // A text node with no glyph outlines must refuse rather than silently drop the object.
   var emptyText = mockNode({ tag: 'ArtTextNode', name: 'Empty', curves: [mockCurve(boxBeziers(0, 0, 10, 10))] });
-  var et = GR.extract([emptyText], { textPolicy: 'glyphs' });
+  var et = GR.extract([emptyText]);
   h.assertEqual('text without glyph outlines is refused', et.refusals.length, 1);
   h.assert('and says why', et.refusals[0].message.indexOf('convert to curves') >= 0,
     et.refusals[0].message);

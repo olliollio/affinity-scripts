@@ -1046,12 +1046,11 @@ GR.planck = (function () {
  *   - `curve.generatePolygon(tolerance)` returns a PolygonHandle with NO readable members, so
  *     flattening is ours to do.
  *   - `curvesInterface.polyCurve` reports curveCount === 1 for an entire string — one glyph.
- *     `curvesInterface.polyPolyCurves` holds one PolyCurve per glyph, counters included. What is
- *     NOT established is the coordinate space `getTransformedPolyCurve(i)` returns: in a real
- *     document the letters fell correctly and collided with nothing, which is how a body far from
- *     where it renders behaves. Live text is therefore skipped by default and
- *     `DocumentCommand.createConvertToCurves` is offered instead, which yields ordinary
- *     PolyCurveNodes whose extraction is proven. `textPolicy: 'glyphs'` re-enables the direct read.
+ *     `curvesInterface.polyPolyCurves` holds one PolyCurve per glyph, counters included, and
+ *     `getTransformedPolyCurve(i)` returns them in BASE space — measured against `spreadBaseBox`,
+ *     it reproduces `baseBox` exactly, and `node.transform` then lands it on `spreadBaseBox`. So
+ *     text needs no conversion and nothing is destroyed. It becomes ONE body, because a live text
+ *     node is one node and playback can only transform it once per frame.
  */
 
 (function (GR) {
@@ -1334,7 +1333,7 @@ GR.planck = (function () {
   function extract(nodes, opts) {
     var o = opts || {};
     var imagePolicy = o.imagePolicy || 'silhouette'; // 'silhouette' | 'rectangle' | 'refuse'
-    var textPolicy = o.textPolicy || 'refuse';      // 'refuse' | 'glyphs'
+    var textPolicy = o.textPolicy || 'glyphs';      // 'glyphs' | 'refuse'
     var results = [];
     var refusals = [];
 
@@ -1361,19 +1360,23 @@ GR.planck = (function () {
 
       if (kind === 'text') {
         if (textPolicy === 'refuse') {
-          // Default. Glyph extraction via polyPolyCurves reads the outlines but has not been shown
-          // to land them in the right coordinate space - letters fall correctly and collide with
-          // nothing, which is what a body sitting far from where it renders looks like. Until that
-          // is probed rather than assumed, converting to curves is the honest route: it produces
-          // ordinary PolyCurveNodes that go through the path everything else already uses.
           refusals.push({
             node: node, reason: 'text',
-            message: describe(node) + ': text is skipped — tick "Convert text to curves" to include it'
+            message: describe(node) + ': text is skipped'
           });
           return;
         }
-        // One body per glyph, so a word tumbles as letters rather than as a rigid slab — the same
-        // reasoning that makes a group yield one body per child.
+
+        // ONE body for the whole text node, carrying every glyph outline.
+        //
+        // Splitting it per glyph is tempting - a word tumbling as letters looks far better - but a
+        // live text node is a SINGLE node. Playback moves each body by transforming its node, so
+        // ten glyph bodies sharing one node means ten conflicting transforms applied to it every
+        // frame: the text lurches around while the physics, which is perfectly correct, is never
+        // seen. That is exactly what "flies around" and later "falls with no collision" were.
+        //
+        // Letters can only move independently if they are separate nodes, which is what "Convert
+        // text to curves" produces. Live text falls as one rigid piece, and that is honest.
         var glyphs = glyphRingsOf(node, o);
         if (!glyphs.length) {
           refusals.push({
@@ -1382,18 +1385,9 @@ GR.planck = (function () {
           });
           return;
         }
-        if (o.groupsAsOneBody) {
-          var allGlyphs = [];
-          for (var gi = 0; gi < glyphs.length; gi++) allGlyphs.push.apply(allGlyphs, glyphs[gi]);
-          results.push(makeResult(node, allGlyphs, o, isStatic));
-          return;
-        }
-        for (var gj = 0; gj < glyphs.length; gj++) {
-          var gr = makeResult(node, glyphs[gj], o, isStatic);
-          gr.name = (gr.name || 'text') + ' [' + gj + ']';
-          gr.glyphIndex = gj;
-          results.push(gr);
-        }
+        var allGlyphs = [];
+        for (var gi = 0; gi < glyphs.length; gi++) allGlyphs.push.apply(allGlyphs, glyphs[gi]);
+        results.push(makeResult(node, allGlyphs, o, isStatic));
         return;
       }
 
@@ -2746,15 +2740,17 @@ GR.planck = (function () {
     var equaliseCtl = mat.addCheckBox('Equalise mass', false);
 
     var beh = col.addGroup('Objects');
-    var convertCtl = beh.addCheckBox('Convert text to curves', false);
+    var convertCtl = beh.addCheckBox('Split text into letters', false);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     var exportCtl = beh.addCheckBox('Export image sequence', false);
 
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Name an object or group "collider", "wall", ' +
       '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
-    help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Convert text ' +
-      'to curves changes the document. Export writes a 30fps sequence to your Desktop.').setIsFullWidth(true);
+    help.addStaticText('', 'Live text drops as one piece. "Split text into letters" converts it to ' +
+      'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
+    help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
+      'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
       'undo step. The same seed always gives the same result.').setIsFullWidth(true);
 

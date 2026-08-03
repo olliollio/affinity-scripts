@@ -77,15 +77,17 @@
     var equaliseCtl = mat.addCheckBox('Equalise mass', false);
 
     var beh = col.addGroup('Objects');
-    var convertCtl = beh.addCheckBox('Convert text to curves', false);
+    var convertCtl = beh.addCheckBox('Split text into letters', false);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     var exportCtl = beh.addCheckBox('Export image sequence', false);
 
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Name an object or group "collider", "wall", ' +
       '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
-    help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Convert text ' +
-      'to curves changes the document. Export writes a 30fps sequence to your Desktop.').setIsFullWidth(true);
+    help.addStaticText('', 'Live text drops as one piece. "Split text into letters" converts it to ' +
+      'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
+    help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
+      'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
       'undo step. The same seed always gives the same result.').setIsFullWidth(true);
 
