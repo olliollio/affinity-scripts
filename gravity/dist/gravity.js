@@ -2372,19 +2372,16 @@ GR.planck = (function () {
 /**
  * export.js — writes the drop out as a 30fps image sequence.
  *
- * Ported from physicsdrop, which exports successfully — so anything failing here is ours, not the SDK's.
+ * REQUIRES AN INSTALLED SCRIPT. Run from the Script Manager's testing environment, `/fs` and
+ * `doc.export` return PERMISSION_DENIED; installed, the same file exports normally. Every theory
+ * about path separators, call timing and preset names came from testing in the environment that
+ * cannot write at all, so if an export fails, install the script before changing a line here.
  *
- * Two rules make the difference, both learned the hard way:
+ * Paths use the backslash root Affinity hands out with forward slashes appended -
+ * `E:\USER\Desktop/Gravity_x/drop_0000.png` - matching the form a working export uses.
  *
- *   1. **Path separators.** A path joined with backslashes is refused by every `/fs` call and by
- *      `doc.export`. The backslash root Affinity hands out, with FORWARD slashes appended, works:
- *      `E:\USER\Desktop/Gravity_x/drop_0000.png`. Earlier probes concluded `/fs` was denied
- *      outright; they had simply joined with backslashes throughout.
- *   2. **Write where you created.** Export lands in a folder the script made itself. The Desktop
- *      root, an existing folder and an existing file are all refused even with forward slashes.
- *
- * So folder creation is not optional and there is no writing-flat fallback: without the folder
- * there is nowhere permitted to write, and pretending otherwise only produces a later failure.
+ * Frames land in a folder the script creates. There is no writing-flat fallback: the Desktop root
+ * was refused in testing, so falling back there would turn a clear failure into a confusing one.
  *
  * Each frame is COMMITTED, exported, then undone. A preview is not guaranteed to render into an
  * export, which is why this cannot reuse the cheap preview path the scrubber uses.
