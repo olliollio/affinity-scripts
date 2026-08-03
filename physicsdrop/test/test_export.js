@@ -19,29 +19,32 @@ module.exports = function (PD, h) {
 
   h.group('export: where files go');
 
-  // require('/fs') throws outside Affinity, which is exactly the denied case: no folder can be
-  // made, so the exporter must fall back rather than give up.
+  // `require('/fs')` throws outside Affinity, so this exercises the no-folder path. There is
+  // deliberately NO fallback to writing flat: the Desktop root is refused by doc.export, so a
+  // fallback there would only turn a clear failure into a confusing later one.
   var mockApp = { userDesktopPath: 'E:\\USER\\Desktop' };
-  var flat = PD.exportResolveTarget(mockApp, 'png');
+  var noFs = PD.exportResolveTarget(mockApp, 'png');
 
-  h.assert('a target is still produced when no folder can be made', !flat.error, String(flat.error));
-  h.assertEqual('and it is the flat fallback', flat.folder, false);
-  h.assert('files land on the Desktop', flat.path(0).indexOf('E:\\USER\\Desktop') === 0, flat.path(0));
-  h.assert('with the requested extension', /\.png$/.test(flat.path(0)), flat.path(0));
+  h.assert('no folder means a reported failure, not a fallback', !!noFs.error, JSON.stringify(noFs));
+  h.assert('and the failure names the folder it wanted',
+    noFs.error.indexOf('PhysicsDrop_') >= 0, noFs.error);
 
-  // Frame numbers must zero-pad, or an image sequence sorts 1, 10, 11, 2 and imports scrambled.
-  h.assert('frame numbers are zero padded to 4', /_0000\.png$/.test(flat.path(0)), flat.path(0));
-  h.assert('and stay padded past nine', /_0042\.png$/.test(flat.path(42)), flat.path(42));
-  h.assert('and do not overflow at four digits', /_1234\.png$/.test(flat.path(1234)), flat.path(1234));
+  // Separators decide everything: a backslash-joined path is PERMISSION_DENIED from every /fs call
+  // and from doc.export, while the backslash root with forward slashes appended works.
+  h.assert('the intended folder uses forward slashes',
+    /E:\\USER\\Desktop\/PhysicsDrop_/.test(noFs.error), noFs.error);
+  h.assert('and appends no backslash of its own',
+    noFs.error.indexOf('Desktop\\PhysicsDrop') < 0, noFs.error);
 
-  // Every frame of one run must share a prefix, since they are not in a folder of their own.
-  var a = flat.path(0), b = flat.path(1);
-  var prefixA = a.slice(0, a.lastIndexOf('_'));
-  var prefixB = b.slice(0, b.lastIndexOf('_'));
-  h.assertEqual('all frames of a run share one prefix', prefixA, prefixB);
+  h.group('export: frame naming');
 
-  h.assert('jpeg gets the jpg extension',
-    /\.jpg$/.test(PD.exportResolveTarget(mockApp, 'jpg').path(0)));
+  // The folder path is only reachable inside Affinity, so the naming rule is checked directly.
+  // Frame numbers must zero-pad or an image sequence sorts 1, 10, 11, 2 and imports scrambled.
+  var name = PD.exportFrameName(7, 'png');
+  h.assertEqual('a frame name is zero padded to four digits', name, 'drop_0007.png');
+  h.assertEqual('and stays padded past nine', PD.exportFrameName(42, 'png'), 'drop_0042.png');
+  h.assertEqual('and does not overflow at four digits', PD.exportFrameName(1234, 'png'), 'drop_1234.png');
+  h.assertEqual('jpeg gets the jpg extension', PD.exportFrameName(0, 'jpg'), 'drop_0000.jpg');
 
   h.group('export: failure reporting');
 
