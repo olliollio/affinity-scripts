@@ -20,13 +20,28 @@
   var VELOCITY_ITERS = 8;
   var POSITION_ITERS = 3;
 
-  // Two sim steps per recorded frame gives 30fps output from 60Hz physics.
-  var STEPS_PER_FRAME = 2;
-  var MAX_FRAMES = 900; // 30 seconds at 30fps
+  // One sim step per recorded frame: the recording samples the physics at its own 60Hz rate.
+  //
+  // This was 2, giving 30fps, on the assumption that the canvas could not show more. Measurement
+  // says otherwise - the playback timer delivers 64.6fps while drawing a full 193-point rope (see
+  // FRAME_MS in playback.js) - and 30 samples per second is not enough for a rope. A rigid object
+  // reads fine at 30fps because the eye tracks one point; a rope is a whole line moving at once,
+  // and undersampling it strobes. That strobing is what was reported as "janky", and no amount of
+  // smoothing the DRAWN curve could fix it, because the missing information is in time, not space.
+  //
+  // Costs nothing in physics: the step count for a given span of simulated time is unchanged, only
+  // how often a pose is written down. The recording array doubles, which is a few megabytes.
+  var STEPS_PER_FRAME = 1;
+  var MAX_FRAMES = 1800; // 30 seconds at 60fps
+
+  // The recorded frame rate, derived rather than declared so it cannot drift from the two constants
+  // that actually determine it. Everything downstream - the duration control, the scrubber's
+  // seconds readout, the export stride - reads this rather than assuming a number.
+  var FPS = Math.round(1 / (DT * STEPS_PER_FRAME));
 
   // Frames every body must stay below the sleep thresholds before we call it settled ourselves.
-  // One second at 30fps, twice planck's own 0.5s timeToSleep.
-  var QUIET_FRAMES = 30;
+  // One second of recording, twice planck's own 0.5s timeToSleep.
+  var QUIET_FRAMES = FPS;
 
   // A contact deeper than this many multiples of linearSlop counts as a real overlap rather than
   // the ordinary slop the solver maintains on every resting contact.
@@ -200,6 +215,7 @@
   GR.findStaticOverlaps = findStaticOverlaps;
   GR.run = run;
   GR.poseAt = poseAt;
+  GR.FPS = FPS;
   GR.SIM_DEFAULTS = {
     dt: DT,
     velocityIterations: VELOCITY_ITERS,

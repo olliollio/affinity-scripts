@@ -1,5 +1,5 @@
 /**
- * export.js — writes the drop out as a 30fps image sequence.
+ * export.js — writes the drop out as an image sequence, 30fps by default.
  *
  * REQUIRES AN INSTALLED SCRIPT. Run from the Script Manager's testing environment, `/fs` and
  * `doc.export` return PERMISSION_DENIED; installed, the same file exports normally. Every theory
@@ -231,23 +231,30 @@
     var last = o.lastFrame === undefined ? ctx.lastIndex : Math.min(o.lastFrame, ctx.lastIndex);
     var keepFrame = o.keepFrame === undefined ? last : o.keepFrame;
 
+    var plan = stridePlan(GR.FPS, o.exportFps, o.frameStride);
+    var stride = plan.stride;
+    var exportFps = plan.fps;
+
     // The scrubber has already committed a frame. That commit has to come off before replaying
     // from the start, or every exported frame would be a delta on top of it.
     var undone = false;
     var frame = 0;
     var written = 0;
     var finished = false;
+    var handle = null;
 
     function stop(result) {
       if (finished) return;
       finished = true;
-      try { timers.Timer.cancelAll(); } catch (e) { /* already gone */ }
+      // Cancel OUR timer only. cancelAll() would reach into any other timer the script has armed.
+      try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
+      catch (e) { /* already gone */ }
       // Always leave the document on the frame the user accepted, whatever happened.
       try { GR.playbackCommit(ctx, keepFrame); } catch (e) { /* nothing more to do */ }
       if (onDone) onDone(result);
     }
 
-    timers.setInterval(o.intervalMs || 5, function (err) {
+    handle = timers.setInterval(o.intervalMs || 5, function (err) {
       if (finished) return;
       if (err) { stop({ ok: false, error: 'timer error: ' + err, written: written }); return; }
 
@@ -258,15 +265,18 @@
         }
 
         if (frame > last) {
-          stop({ ok: true, written: written, where: target.where, folder: target.folder, preset: usedPreset, module: foundIn });
+          stop({ ok: true, written: written, fps: exportFps, where: target.where, folder: target.folder, preset: usedPreset, module: foundIn });
           return;
         }
 
         GR.playbackCommit(ctx, frame);
-        ctx.doc.export(target.path(frame), exportOpts, exportArea);
+        // Numbered by files WRITTEN, not by recorded frame. With a stride the two diverge, and an
+        // image sequence must be contiguous — 0000, 0002, 0004 imports as three frames with holes,
+        // or not at all.
+        ctx.doc.export(target.path(written), exportOpts, exportArea);
         written++;
         try { ctx.doc.undo(); } catch (e) { /* keep going; the next commit is absolute anyway */ }
-        frame++;
+        frame += stride;
       } catch (e) {
         stop({
           ok: false,
@@ -278,7 +288,32 @@
     });
   }
 
+  /**
+   * How many recorded frames to skip per exported file, and what rate that actually yields.
+   *
+   * The recording rate and the export rate are separate questions and were accidentally the same
+   * number until the recording went to 60fps. Playback needs 60 because a rope drawn at 30
+   * samples per second strobes — the eye tracks the whole line at once, so undersampling shows.
+   * A file on disk has no such requirement, and every exported frame is a full `doc.export`, which
+   * is by far the slowest thing this script does. Striding by 2 therefore keeps export exactly as
+   * fast and exactly as large as it has always been, while playback gets its extra frames.
+   *
+   * The yielded rate is REPORTED rather than assumed, because a stride that does not divide the
+   * recording rate evenly cannot hit the requested one — asking for 45fps out of 60 gives a stride
+   * of 1 and therefore 60, and the import instructions have to say 60 or the sequence plays slow.
+   */
+  function stridePlan(recordedFps, wantFps, override) {
+    var rec = Math.max(1, Math.round(recordedFps || 60));
+    var stride = override
+      ? Math.round(override)
+      : Math.round(rec / Math.max(1, wantFps || 30));
+    // A stride below 1 would rewind, and one past the recording rate would export a single frame.
+    stride = Math.max(1, Math.min(rec, stride || 1));
+    return { stride: stride, fps: Math.round(rec / stride) };
+  }
+
   GR.exportSequence = exportSequence;
+  GR.exportStridePlan = stridePlan;
   GR.exportStamp = stamp;
   GR.exportResolveTarget = resolveTarget;
   GR.exportFrameName = frameName;

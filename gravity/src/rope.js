@@ -15,8 +15,17 @@
 (function (GR) {
   'use strict';
 
-  // Enough links to bend smoothly without turning one rope into a hundred bodies.
-  var MAX_SEGMENTS = 32;
+  // Two caps, because the link count that tears a rope apart depends entirely on whether it is
+  // taut. See the measurements below MIN_LINK_SIM: pinned at both ends, a chain goes from 1.03x to
+  // 54x stretch between 40 and 48 links, and the boundary is chaotic. A SLACK rope has nowhere for
+  // that tension to build and was measured as far more forgiving.
+  //
+  // Keeping one conservative cap for both meant a long draped rope was needlessly coarse: at 32
+  // links an 1800pt rope has 56pt links, and a rigid 56pt link cannot enter a 30pt gap between two
+  // letters, so the rope bridges fine detail instead of draping into it. That reads as the collider
+  // being ignored when it is really the rope being too blunt to find it.
+  var MAX_SEGMENTS = 32;        // anchored: the worst case for an iterative solver
+  var MAX_SEGMENTS_SLACK = 96;  // free-hanging: resolution matters more than tension does
   var MIN_SEGMENTS = 3;
 
   // Two independent stability limits, both found by measurement rather than derived.
@@ -143,8 +152,10 @@
     var o = opts || {};
     var s = scale || GR.WORLD_SCALE;
 
+    // Anchored ropes keep the conservative cap; slack ones get the resolution to drape into detail.
+    var cap = o.anchored ? MAX_SEGMENTS : MAX_SEGMENTS_SLACK;
     var stable = Math.floor((length / s) / MIN_LINK_SIM);
-    var ceiling = Math.max(MIN_SEGMENTS, Math.min(MAX_SEGMENTS, stable));
+    var ceiling = Math.max(MIN_SEGMENTS, Math.min(cap, stable));
 
     if (o.segments) return Math.max(MIN_SEGMENTS, Math.min(ceiling, Math.floor(o.segments)));
 
@@ -304,5 +315,7 @@
   GR.ropeSegmentCount = segmentCount;
   GR.addRope = addRope;
   GR.ROPE_ANCHOR_WORDS = ANCHOR_WORDS;
+  GR.ROPE_MAX_SEGMENTS = MAX_SEGMENTS;
+  GR.ROPE_MAX_SEGMENTS_SLACK = MAX_SEGMENTS_SLACK;
 
 })(GR);

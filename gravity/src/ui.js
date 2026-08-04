@@ -108,8 +108,10 @@
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
       exportSequence: !!exportCtl.value,
-      // The recording is 30fps, so duration in seconds is a frame count.
-      maxFrames: Math.round(secs * 30)
+      // Duration in seconds is a frame count at the recorded rate. Reading GR.FPS rather than a
+      // literal is what stops this drifting when the recording rate changes — it was 30 here and
+      // in four other places, and the duration control would have silently halved.
+      maxFrames: Math.round(secs * GR.FPS)
     };
   }
 
