@@ -149,9 +149,35 @@
     return ring;
   }
 
+  /**
+   * Inverts a row-major 2x3 transform, so spread-space coordinates can be written back as base.
+   *
+   * Extraction only ever goes one way — base to spread — because a rigid body is moved with
+   * `createTransform`, which already works in spread space and never needs the return trip. A ROPE
+   * does need it: a rope deforms, so playback rewrites its geometry with `createSetCurves`, and
+   * that writes into the node's own BASE space. Handing it spread coordinates displaces the rope by
+   * exactly the node's own transform — invisibly correct on a node that has never been moved, and
+   * wrong on every other, which is precisely how this surfaced.
+   *
+   * Returns null for a null or singular matrix. Singular means the node has been scaled to nothing
+   * on some axis, and there is no sensible inverse to invent; callers fall back to writing the
+   * points unchanged, which is what they did before this existed.
+   */
+  function invertMatrix(m) {
+    if (!m) return null;
+    var a = m[0], b = m[1], tx = m[2], c = m[3], d = m[4], ty = m[5];
+    var det = a * d - b * c;
+    if (!det || !isFinite(det)) return null;
+    return [
+      d / det, -b / det, (b * ty - d * tx) / det,
+      -c / det, a / det, (c * tx - a * ty) / det
+    ];
+  }
+
   GR.flattenCubic = flattenCubic;
   GR.flattenSegments = flattenSegments;
   GR.transformRing = transformRing;
+  GR.invertMatrix = invertMatrix;
   GR.FLATTEN_TOL = FLATTEN_TOL;
 
 })(GR);

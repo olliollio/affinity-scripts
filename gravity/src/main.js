@@ -22,6 +22,25 @@
 
   function fmt(n, dp) { return Number(n).toFixed(dp === undefined ? 2 : dp); }
 
+  /**
+   * A node in one short string, for diagnostics only.
+   *
+   * The bounds matter more than the name here: several ropes commonly share the name "Curve", so a
+   * name alone cannot say whether two references are two nodes or one node reported twice. A
+   * bounding box distinguishes them, and reading it is safe on any node type.
+   */
+  function describeNode(node) {
+    if (!node) return '(none)';
+    var name = '?';
+    try { name = String(node.description || node.name || '?'); } catch (e) { /* unnamed */ }
+    var where = '';
+    try {
+      var b = node.boundsSpread || node.bounds;
+      if (b) where = ' @(' + fmt(b.x, 0) + ',' + fmt(b.y, 0) + ' ' + fmt(b.w, 0) + 'x' + fmt(b.h, 0) + ')';
+    } catch (e) { /* bounds unavailable on this node type */ }
+    return '"' + name + '"' + where;
+  }
+
   function main(opts) {
     var o = opts || {};
     var app;
@@ -135,22 +154,39 @@
     }
 
     var W = GR.makeWorld({ scale: scale, gravityX: grav.x, gravityY: grav.y });
-    // The box must contain the spread AND every piece of artwork, then stand off from both. Using
-    // the spread alone is not enough: artwork routinely sits on or past the page edge, and any
-    // body overlapping a wall at frame 0 keeps its island awake forever.
-    var box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
-    for (var bi = 0; bi < ex.objects.length; bi++) {
-      var rgs = ex.objects[bi].rings;
-      for (var ri = 0; ri < rgs.length; ri++) {
-        var rg = rgs[ri];
-        for (var vi = 0; vi < rg.length; vi += 2) {
-          if (rg[vi] < box.x0) box.x0 = rg[vi];
-          if (rg[vi] > box.x1) box.x1 = rg[vi];
-          if (rg[vi + 1] < box.y0) box.y0 = rg[vi + 1];
-          if (rg[vi + 1] > box.y1) box.y1 = rg[vi + 1];
-        }
+
+    // The box hugs the ARTWORK, not the page.
+    //
+    // It used to start from the spread extents, which made the page part of the physics: resizing
+    // the artboard moved the walls and silently produced a different drop from the same objects.
+    // Worse for ropes specifically, because a rope roughly as long as the page rests its ends on
+    // the side walls and is held up by them — grow the artboard and the same rope hangs free.
+    //
+    // Bounds still exist, because a body with nothing to hit falls forever and the run can only end
+    // on the frame cap. They just no longer depend on something the user changes for layout
+    // reasons. MARGIN stands the walls off, since a body overlapping a wall at frame 0 keeps its
+    // island awake for the whole run.
+    var box = null;
+    function grow(pts) {
+      for (var vi = 0; vi < pts.length; vi += 2) {
+        if (!box) { box = { x0: pts[vi], y0: pts[vi + 1], x1: pts[vi], y1: pts[vi + 1] }; }
+        if (pts[vi] < box.x0) box.x0 = pts[vi];
+        if (pts[vi] > box.x1) box.x1 = pts[vi];
+        if (pts[vi + 1] < box.y0) box.y0 = pts[vi + 1];
+        if (pts[vi + 1] > box.y1) box.y1 = pts[vi + 1];
       }
     }
+    for (var bi = 0; bi < ex.objects.length; bi++) {
+      var rgs = ex.objects[bi].rings || [];
+      for (var ri = 0; ri < rgs.length; ri++) grow(rgs[ri]);
+      // Ropes carry no rings — an open path has no interior — so their polylines have to be walked
+      // separately or a rope-only scene would produce an empty box. The spread extents used to hide
+      // this by seeding the box with something non-degenerate.
+      var pls = ex.objects[bi].polylines || [];
+      for (var pi = 0; pi < pls.length; pi++) grow(pls[pi]);
+    }
+    // Nothing had any geometry at all. Fall back to the page rather than building a null world.
+    if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
     GR.addBounds(W, {
       x: box.x0 - MARGIN, y: box.y0 - MARGIN,
       width: (box.x1 - box.x0) + 2 * MARGIN,
@@ -314,13 +350,50 @@
       return { world: W, bodies: made, frames: frames, extracted: ex };
     }
 
+    // Ropes are drawn by rewriting their node's geometry, and `prepare` groups them by node
+    // IDENTITY because createSetCurves replaces every curve on a node at once. That grouping is
+    // invisible in its effects — a rope quietly assigned to the wrong group is simply never drawn,
+    // and looks exactly like a rope that failed to fall. Report it, so the difference is one line
+    // of console rather than a screenshot argument.
+    if (ropes.length) {
+      var groups = ctx.ropesByNode || [];
+      var grouped = 0;
+      for (var gi = 0; gi < groups.length; gi++) grouped += groups[gi].ropes.length;
+      console.log('');
+      console.log('== rope drawing ==');
+      console.log('  ' + ropes.length + ' rope(s) -> ' + groups.length + ' node group(s)' +
+        (groups.length === ropes.length ? '  OK' : '  <-- SUSPECT, expected one group per rope'));
+      for (var gj = 0; gj < groups.length; gj++) {
+        var gnames = [];
+        for (var gk = 0; gk < groups[gj].ropes.length; gk++) gnames.push(groups[gj].ropes[gk].name);
+        // The transform is the interesting column. A rope is redrawn by rewriting its node's
+        // geometry, which lands in BASE space, while the poses are in spread space — so a node
+        // with a non-identity transform needs the inverse applied or the rope draws displaced by
+        // exactly that transform. An untransformed node is correct either way, which is why a
+        // single rope on a freshly drawn path looked perfect for so long.
+        var m = GR.matrixOf(groups[gj].node);
+        var identity = !m || (m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 0 && m[4] === 1 && m[5] === 0);
+        console.log('    group ' + gj + ': ' + groups[gj].ropes.length + ' rope(s) [' + gnames.join(', ') + ']' +
+          ' node=' + describeNode(groups[gj].node) +
+          '  transform=' + (identity ? 'identity' :
+            '[' + m.map(function (v) { return fmt(v, 2); }).join(' ') + ']') +
+          '  toBase=' + (groups[gj].toBase ? 'ok' : (identity ? 'not needed' : 'SINGULAR, rope will draw displaced')));
+      }
+      if (grouped < ropes.length) {
+        console.log('  ' + (ropes.length - grouped) + ' rope(s) have NO node and will never be drawn.');
+      }
+    }
+
     console.log('');
     console.log('gravity: playing ' + frames.frameCount + ' frames on canvas...');
 
     // The drop plays first so the behaviour can actually be judged, and the Finished dialog opens
     // when it ends. The dialog has to be raised from the timer callback rather than after this
     // call, because runModal would otherwise block the timer that drives playback.
-    GR.playbackPlay(ctx, { intervalMs: o.intervalMs || 33 }, function () {
+    // No fallback number here on purpose. `|| 33` used to sit in this slot and quietly beat the
+    // interval playback.js chooses, which is picked to land inside the timer's 15.4ms quantum —
+    // 33 rounds up to three quanta and costs two thirds of the frame rate.
+    GR.playbackPlay(ctx, { intervalMs: o.intervalMs }, function () {
       var chosen = GR.showScrubber(ctx, { offerExport: !!o.exportSequence });
       console.log('gravity: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
                   (chosen.accepted ? '' : ' (settled result)'));
@@ -335,7 +408,7 @@
                         (res.preset ? '  [preset "' + res.preset + '", from ' + res.module + ']' : ''));
 
             try { app.alert('Export complete: ' + res.written + ' frames.\n' + res.where +
-                            '\n\nImport as an image sequence at 30fps.'); } catch (e) { /* no alert */ }
+                            '\n\nImport as an image sequence at ' + (res.fps || 30) + 'fps.'); } catch (e) { /* no alert */ }
           } else {
             console.log('gravity: export failed after ' + (res.written || 0) + ' frame(s): ' + res.error);
             try { app.alert('Export failed: ' + res.error + '\nThe frame you chose has been kept.'); }

@@ -19,6 +19,33 @@
 (function (GR) {
   'use strict';
 
+  // ── The interval to ask setInterval for. Do NOT round this to a "nicer" number. ──────────────
+  //
+  // Affinity's timer does not deliver the interval requested. It delivers the next whole multiple
+  // of a ~15.4ms quantum — the host scheduler tick, 64.9Hz — having rounded the request UP.
+  // Measured with an empty callback, 40 ticks each (probes/probe_timer_floor.js):
+  //
+  //     asked   1ms -> 15.3ms    asked  16ms -> 30.5ms    asked  50ms ->  61.6ms
+  //     asked   8ms -> 15.5ms    asked  33ms -> 46.2ms    asked 100ms -> 107.8ms
+  //
+  // Every one of those is n x 15.4. The consequence is a cliff, not a slope: this used to ask for
+  // 33ms, which is one millisecond past two quanta, so it got THREE — 46.2ms, 21.6fps, for a
+  // recording that was itself only 30fps. Asking for 8ms gets one quantum and 64.6fps.
+  //
+  // 16 would be the worst possible choice, and the obvious one: 0.6ms over a quantum, rounded to
+  // two, half the frame rate. 8 sits in the middle of a quantum, so no drift in either direction
+  // can push it over.
+  //
+  // Drawing is not the constraint and never was. A full 193-point rope submits in 0.7ms against a
+  // 15.4ms quantum, and 60 ticks at 8ms measured sd 0.5ms with zero bursts — the timer paces the
+  // loop rather than the loop outrunning the timer.
+  var FRAME_MS = 8;
+
+  // What the above actually delivers, for anything that needs to convert frames to seconds. The
+  // recording is GR.FPS (60), so playback runs about 8% fast. That is the price of a quantum grid
+  // that has no multiple at 16.7ms, and it is well worth paying against 21.6fps.
+  var PLAYBACK_MS = 15.4;
+
   /**
    * One transform command per body for a given frame.
    *
@@ -72,8 +99,9 @@
    * A rigid transform cannot express a rope, because a rope DEFORMS: the whole point is that its
    * shape changes. So its polyline is rebuilt from its link poses and written with
    * `createSetCurves`, which replaces a curve node's geometry outright. That works as a PREVIEW and
-   * is cheap - measured at 0.2ms per rewrite at 7 points and 1.0ms at 41, against a 33ms frame
-   * budget - so a rope scrubs and animates like everything else.
+   * is cheap - measured at 0.7ms per rewrite at 193 points, against the 15.4ms budget FRAME_MS
+   * explains above - so a rope scrubs and animates like everything else. Drawing has never been
+   * what limits this; the requested timer interval was.
    *
    * Ropes are grouped by node first. `createSetCurves` replaces ALL curves on a node, so a node
    * carrying two open paths must have both rebuilt in one command or the second would erase the
@@ -100,6 +128,11 @@
         // The solver's link count is capped for stability; the drawn curve is not, so the rope
         // reads as a rope rather than as a faceted chain.
         pts = GR.smoothPolyline(pts, ctx.ropeSmoothing || 6);
+
+        // Back into the node's own space. Applied AFTER smoothing so the curve is interpolated in
+        // the space the physics ran in — an affine map commutes with Catmull-Rom, but a non-uniform
+        // scale would still make "6 subdivisions" mean different things along each axis.
+        if (entry.toBase) GR.transformRing(pts, entry.toBase);
 
         var cb = g.CurveBuilder.create();
         cb.beginXY(pts[0], pts[1]);
@@ -146,7 +179,13 @@
       for (var e = 0; e < byNode.length; e++) {
         if (byNode[e].node === rope.node) { entry = byNode[e]; break; }
       }
-      if (!entry) { entry = { node: rope.node, ropes: [] }; byNode.push(entry); }
+      if (!entry) {
+        // Poses come back in SPREAD space, and createSetCurves writes into the node's BASE space.
+        // The inverse of the node's own transform is what bridges them. Computed once per node
+        // here rather than per frame, since nothing transforms a rope's node during playback.
+        entry = { node: rope.node, ropes: [], toBase: GR.invertMatrix(GR.matrixOf(rope.node)) };
+        byNode.push(entry);
+      }
       entry.ropes.push(rope);
     }
 
@@ -178,11 +217,11 @@
   }
 
   /**
-   * Plays the recording on canvas at 30fps, then calls `onDone`.
+   * Plays the recording on canvas, then calls `onDone`.
    *
    * physicsdrop animated WHILE solving, so its frame rate was whatever the solver could manage and a
    * heavy scene crawled. v2 solves the whole drop first — a few hundred milliseconds — and replays
-   * it from the recording, so playback runs at a steady 30fps no matter how expensive the physics
+   * it from the recording, so playback runs at a steady rate no matter how expensive the physics
    * was, and rewatching costs nothing.
    *
    * Nothing is committed here: every frame is a preview that supersedes the last, so the document
@@ -194,16 +233,23 @@
     var frame = 0;
     var stopped = false;
     var step = o.frameStep || 1;
+    var handle = null;
 
     function finish() {
       if (stopped) return;
       stopped = true;
-      try { timers.Timer.cancelAll(); } catch (e) { /* already gone */ }
+      // Cancel OUR timer, not every timer in the script. Timer.cancelAll() was used here and works
+      // only because nothing else is running; export drives its own timer the same way, and one of
+      // them stopping must not silently kill the other.
+      try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
+      catch (e) { /* already gone */ }
       if (onDone) onDone();
     }
 
-    timers.setInterval(o.intervalMs || 33, function (err) {
+    handle = timers.setInterval(o.intervalMs || FRAME_MS, function (err) {
       if (stopped) return;
+      // A cancelled timer reports ABORTED through this same callback. `stopped` already swallows
+      // it, which matters: answering it with another cancel would take down any timer armed since.
       if (err) { finish(); return; }
       try {
         preview(ctx, frame);
@@ -233,7 +279,7 @@
     var UnitType = dialogMod.UnitType;
 
     var last = ctx.lastIndex;
-    var secs = ((last + 1) / 30).toFixed(1);
+    var secs = ((last + 1) / GR.FPS).toFixed(1);
 
     var dlg = Dialog.create(o.title || 'Gravity — Finished');
     dlg.initialWidth = 480;
@@ -245,7 +291,7 @@
     frameCtl.precision = 0;
     // One line, not three. Each full-width static text costs real dialog height, and the panel had
     // grown tall enough that the buttons at the bottom were hard to reach.
-    grp.addStaticText('', (last + 1) + ' frames, ' + secs + 's @ 30fps. OK keeps the frame shown; ' +
+    grp.addStaticText('', (last + 1) + ' frames, ' + secs + 's @ ' + GR.FPS + 'fps. OK keeps the frame shown; ' +
       'Cancel keeps the settled result.' +
       (ctx.frames.settledBy === 'quiescence'
         ? ' Some artwork started inside scenery, so the run ended when everything stopped rather ' +
@@ -294,5 +340,7 @@
   GR.playbackCommit = commit;
   GR.playbackClear = clear;
   GR.showScrubber = showScrubber;
+  GR.PLAYBACK_FRAME_MS = FRAME_MS;
+  GR.PLAYBACK_ACTUAL_MS = PLAYBACK_MS;
 
 })(GR);

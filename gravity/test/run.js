@@ -24,7 +24,12 @@ var SRC = [
   'rope.js',
   'sim.js',
   'export.js',
-  'ui.js'
+  'ui.js',
+  // playback.js touches the Affinity API, but only from inside its functions — every require() is
+  // local to a call. So it loads headlessly, and loading it is what lets the playback interval be
+  // asserted. That interval is exactly where the frame rate was being thrown away, so leaving it
+  // outside the test suite would leave the one number that caused the bug unguarded.
+  'playback.js'
 ];
 
 var GR = h.loadPD(SRC, { planck: true });
@@ -39,7 +44,8 @@ var SUITES = [
   require('./test_extract'),
   require('./test_export'),
   require('./test_engine'),
-  require('./test_rope')
+  require('./test_rope'),
+  require('./test_timing')
 ];
 
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);

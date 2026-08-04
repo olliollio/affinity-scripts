@@ -827,9 +827,35 @@ GR.planck = (function () {
     return ring;
   }
 
+  /**
+   * Inverts a row-major 2x3 transform, so spread-space coordinates can be written back as base.
+   *
+   * Extraction only ever goes one way — base to spread — because a rigid body is moved with
+   * `createTransform`, which already works in spread space and never needs the return trip. A ROPE
+   * does need it: a rope deforms, so playback rewrites its geometry with `createSetCurves`, and
+   * that writes into the node's own BASE space. Handing it spread coordinates displaces the rope by
+   * exactly the node's own transform — invisibly correct on a node that has never been moved, and
+   * wrong on every other, which is precisely how this surfaced.
+   *
+   * Returns null for a null or singular matrix. Singular means the node has been scaled to nothing
+   * on some axis, and there is no sensible inverse to invent; callers fall back to writing the
+   * points unchanged, which is what they did before this existed.
+   */
+  function invertMatrix(m) {
+    if (!m) return null;
+    var a = m[0], b = m[1], tx = m[2], c = m[3], d = m[4], ty = m[5];
+    var det = a * d - b * c;
+    if (!det || !isFinite(det)) return null;
+    return [
+      d / det, -b / det, (b * ty - d * tx) / det,
+      -c / det, a / det, (c * tx - a * ty) / det
+    ];
+  }
+
   GR.flattenCubic = flattenCubic;
   GR.flattenSegments = flattenSegments;
   GR.transformRing = transformRing;
+  GR.invertMatrix = invertMatrix;
   GR.FLATTEN_TOL = FLATTEN_TOL;
 
 })(GR);
@@ -2040,8 +2066,17 @@ GR.planck = (function () {
 (function (GR) {
   'use strict';
 
-  // Enough links to bend smoothly without turning one rope into a hundred bodies.
-  var MAX_SEGMENTS = 32;
+  // Two caps, because the link count that tears a rope apart depends entirely on whether it is
+  // taut. See the measurements below MIN_LINK_SIM: pinned at both ends, a chain goes from 1.03x to
+  // 54x stretch between 40 and 48 links, and the boundary is chaotic. A SLACK rope has nowhere for
+  // that tension to build and was measured as far more forgiving.
+  //
+  // Keeping one conservative cap for both meant a long draped rope was needlessly coarse: at 32
+  // links an 1800pt rope has 56pt links, and a rigid 56pt link cannot enter a 30pt gap between two
+  // letters, so the rope bridges fine detail instead of draping into it. That reads as the collider
+  // being ignored when it is really the rope being too blunt to find it.
+  var MAX_SEGMENTS = 32;        // anchored: the worst case for an iterative solver
+  var MAX_SEGMENTS_SLACK = 96;  // free-hanging: resolution matters more than tension does
   var MIN_SEGMENTS = 3;
 
   // Two independent stability limits, both found by measurement rather than derived.
@@ -2168,8 +2203,10 @@ GR.planck = (function () {
     var o = opts || {};
     var s = scale || GR.WORLD_SCALE;
 
+    // Anchored ropes keep the conservative cap; slack ones get the resolution to drape into detail.
+    var cap = o.anchored ? MAX_SEGMENTS : MAX_SEGMENTS_SLACK;
     var stable = Math.floor((length / s) / MIN_LINK_SIM);
-    var ceiling = Math.max(MIN_SEGMENTS, Math.min(MAX_SEGMENTS, stable));
+    var ceiling = Math.max(MIN_SEGMENTS, Math.min(cap, stable));
 
     if (o.segments) return Math.max(MIN_SEGMENTS, Math.min(ceiling, Math.floor(o.segments)));
 
@@ -2329,6 +2366,8 @@ GR.planck = (function () {
   GR.ropeSegmentCount = segmentCount;
   GR.addRope = addRope;
   GR.ROPE_ANCHOR_WORDS = ANCHOR_WORDS;
+  GR.ROPE_MAX_SEGMENTS = MAX_SEGMENTS;
+  GR.ROPE_MAX_SEGMENTS_SLACK = MAX_SEGMENTS_SLACK;
 
 })(GR);
 
@@ -2356,13 +2395,28 @@ GR.planck = (function () {
   var VELOCITY_ITERS = 8;
   var POSITION_ITERS = 3;
 
-  // Two sim steps per recorded frame gives 30fps output from 60Hz physics.
-  var STEPS_PER_FRAME = 2;
-  var MAX_FRAMES = 900; // 30 seconds at 30fps
+  // One sim step per recorded frame: the recording samples the physics at its own 60Hz rate.
+  //
+  // This was 2, giving 30fps, on the assumption that the canvas could not show more. Measurement
+  // says otherwise - the playback timer delivers 64.6fps while drawing a full 193-point rope (see
+  // FRAME_MS in playback.js) - and 30 samples per second is not enough for a rope. A rigid object
+  // reads fine at 30fps because the eye tracks one point; a rope is a whole line moving at once,
+  // and undersampling it strobes. That strobing is what was reported as "janky", and no amount of
+  // smoothing the DRAWN curve could fix it, because the missing information is in time, not space.
+  //
+  // Costs nothing in physics: the step count for a given span of simulated time is unchanged, only
+  // how often a pose is written down. The recording array doubles, which is a few megabytes.
+  var STEPS_PER_FRAME = 1;
+  var MAX_FRAMES = 1800; // 30 seconds at 60fps
+
+  // The recorded frame rate, derived rather than declared so it cannot drift from the two constants
+  // that actually determine it. Everything downstream - the duration control, the scrubber's
+  // seconds readout, the export stride - reads this rather than assuming a number.
+  var FPS = Math.round(1 / (DT * STEPS_PER_FRAME));
 
   // Frames every body must stay below the sleep thresholds before we call it settled ourselves.
-  // One second at 30fps, twice planck's own 0.5s timeToSleep.
-  var QUIET_FRAMES = 30;
+  // One second of recording, twice planck's own 0.5s timeToSleep.
+  var QUIET_FRAMES = FPS;
 
   // A contact deeper than this many multiples of linearSlop counts as a real overlap rather than
   // the ordinary slop the solver maintains on every resting contact.
@@ -2536,6 +2590,7 @@ GR.planck = (function () {
   GR.findStaticOverlaps = findStaticOverlaps;
   GR.run = run;
   GR.poseAt = poseAt;
+  GR.FPS = FPS;
   GR.SIM_DEFAULTS = {
     dt: DT,
     velocityIterations: VELOCITY_ITERS,
@@ -2569,6 +2624,33 @@ GR.planck = (function () {
 
 (function (GR) {
   'use strict';
+
+  // ── The interval to ask setInterval for. Do NOT round this to a "nicer" number. ──────────────
+  //
+  // Affinity's timer does not deliver the interval requested. It delivers the next whole multiple
+  // of a ~15.4ms quantum — the host scheduler tick, 64.9Hz — having rounded the request UP.
+  // Measured with an empty callback, 40 ticks each (probes/probe_timer_floor.js):
+  //
+  //     asked   1ms -> 15.3ms    asked  16ms -> 30.5ms    asked  50ms ->  61.6ms
+  //     asked   8ms -> 15.5ms    asked  33ms -> 46.2ms    asked 100ms -> 107.8ms
+  //
+  // Every one of those is n x 15.4. The consequence is a cliff, not a slope: this used to ask for
+  // 33ms, which is one millisecond past two quanta, so it got THREE — 46.2ms, 21.6fps, for a
+  // recording that was itself only 30fps. Asking for 8ms gets one quantum and 64.6fps.
+  //
+  // 16 would be the worst possible choice, and the obvious one: 0.6ms over a quantum, rounded to
+  // two, half the frame rate. 8 sits in the middle of a quantum, so no drift in either direction
+  // can push it over.
+  //
+  // Drawing is not the constraint and never was. A full 193-point rope submits in 0.7ms against a
+  // 15.4ms quantum, and 60 ticks at 8ms measured sd 0.5ms with zero bursts — the timer paces the
+  // loop rather than the loop outrunning the timer.
+  var FRAME_MS = 8;
+
+  // What the above actually delivers, for anything that needs to convert frames to seconds. The
+  // recording is GR.FPS (60), so playback runs about 8% fast. That is the price of a quantum grid
+  // that has no multiple at 16.7ms, and it is well worth paying against 21.6fps.
+  var PLAYBACK_MS = 15.4;
 
   /**
    * One transform command per body for a given frame.
@@ -2623,8 +2705,9 @@ GR.planck = (function () {
    * A rigid transform cannot express a rope, because a rope DEFORMS: the whole point is that its
    * shape changes. So its polyline is rebuilt from its link poses and written with
    * `createSetCurves`, which replaces a curve node's geometry outright. That works as a PREVIEW and
-   * is cheap - measured at 0.2ms per rewrite at 7 points and 1.0ms at 41, against a 33ms frame
-   * budget - so a rope scrubs and animates like everything else.
+   * is cheap - measured at 0.7ms per rewrite at 193 points, against the 15.4ms budget FRAME_MS
+   * explains above - so a rope scrubs and animates like everything else. Drawing has never been
+   * what limits this; the requested timer interval was.
    *
    * Ropes are grouped by node first. `createSetCurves` replaces ALL curves on a node, so a node
    * carrying two open paths must have both rebuilt in one command or the second would erase the
@@ -2651,6 +2734,11 @@ GR.planck = (function () {
         // The solver's link count is capped for stability; the drawn curve is not, so the rope
         // reads as a rope rather than as a faceted chain.
         pts = GR.smoothPolyline(pts, ctx.ropeSmoothing || 6);
+
+        // Back into the node's own space. Applied AFTER smoothing so the curve is interpolated in
+        // the space the physics ran in — an affine map commutes with Catmull-Rom, but a non-uniform
+        // scale would still make "6 subdivisions" mean different things along each axis.
+        if (entry.toBase) GR.transformRing(pts, entry.toBase);
 
         var cb = g.CurveBuilder.create();
         cb.beginXY(pts[0], pts[1]);
@@ -2697,7 +2785,13 @@ GR.planck = (function () {
       for (var e = 0; e < byNode.length; e++) {
         if (byNode[e].node === rope.node) { entry = byNode[e]; break; }
       }
-      if (!entry) { entry = { node: rope.node, ropes: [] }; byNode.push(entry); }
+      if (!entry) {
+        // Poses come back in SPREAD space, and createSetCurves writes into the node's BASE space.
+        // The inverse of the node's own transform is what bridges them. Computed once per node
+        // here rather than per frame, since nothing transforms a rope's node during playback.
+        entry = { node: rope.node, ropes: [], toBase: GR.invertMatrix(GR.matrixOf(rope.node)) };
+        byNode.push(entry);
+      }
       entry.ropes.push(rope);
     }
 
@@ -2729,11 +2823,11 @@ GR.planck = (function () {
   }
 
   /**
-   * Plays the recording on canvas at 30fps, then calls `onDone`.
+   * Plays the recording on canvas, then calls `onDone`.
    *
    * physicsdrop animated WHILE solving, so its frame rate was whatever the solver could manage and a
    * heavy scene crawled. v2 solves the whole drop first — a few hundred milliseconds — and replays
-   * it from the recording, so playback runs at a steady 30fps no matter how expensive the physics
+   * it from the recording, so playback runs at a steady rate no matter how expensive the physics
    * was, and rewatching costs nothing.
    *
    * Nothing is committed here: every frame is a preview that supersedes the last, so the document
@@ -2745,16 +2839,23 @@ GR.planck = (function () {
     var frame = 0;
     var stopped = false;
     var step = o.frameStep || 1;
+    var handle = null;
 
     function finish() {
       if (stopped) return;
       stopped = true;
-      try { timers.Timer.cancelAll(); } catch (e) { /* already gone */ }
+      // Cancel OUR timer, not every timer in the script. Timer.cancelAll() was used here and works
+      // only because nothing else is running; export drives its own timer the same way, and one of
+      // them stopping must not silently kill the other.
+      try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
+      catch (e) { /* already gone */ }
       if (onDone) onDone();
     }
 
-    timers.setInterval(o.intervalMs || 33, function (err) {
+    handle = timers.setInterval(o.intervalMs || FRAME_MS, function (err) {
       if (stopped) return;
+      // A cancelled timer reports ABORTED through this same callback. `stopped` already swallows
+      // it, which matters: answering it with another cancel would take down any timer armed since.
       if (err) { finish(); return; }
       try {
         preview(ctx, frame);
@@ -2784,7 +2885,7 @@ GR.planck = (function () {
     var UnitType = dialogMod.UnitType;
 
     var last = ctx.lastIndex;
-    var secs = ((last + 1) / 30).toFixed(1);
+    var secs = ((last + 1) / GR.FPS).toFixed(1);
 
     var dlg = Dialog.create(o.title || 'Gravity — Finished');
     dlg.initialWidth = 480;
@@ -2796,7 +2897,7 @@ GR.planck = (function () {
     frameCtl.precision = 0;
     // One line, not three. Each full-width static text costs real dialog height, and the panel had
     // grown tall enough that the buttons at the bottom were hard to reach.
-    grp.addStaticText('', (last + 1) + ' frames, ' + secs + 's @ 30fps. OK keeps the frame shown; ' +
+    grp.addStaticText('', (last + 1) + ' frames, ' + secs + 's @ ' + GR.FPS + 'fps. OK keeps the frame shown; ' +
       'Cancel keeps the settled result.' +
       (ctx.frames.settledBy === 'quiescence'
         ? ' Some artwork started inside scenery, so the run ended when everything stopped rather ' +
@@ -2845,13 +2946,15 @@ GR.planck = (function () {
   GR.playbackCommit = commit;
   GR.playbackClear = clear;
   GR.showScrubber = showScrubber;
+  GR.PLAYBACK_FRAME_MS = FRAME_MS;
+  GR.PLAYBACK_ACTUAL_MS = PLAYBACK_MS;
 
 })(GR);
 
 // -------------------------------------------------------------------------
 // src/export.js
 /**
- * export.js — writes the drop out as a 30fps image sequence.
+ * export.js — writes the drop out as an image sequence, 30fps by default.
  *
  * REQUIRES AN INSTALLED SCRIPT. Run from the Script Manager's testing environment, `/fs` and
  * `doc.export` return PERMISSION_DENIED; installed, the same file exports normally. Every theory
@@ -3083,23 +3186,30 @@ GR.planck = (function () {
     var last = o.lastFrame === undefined ? ctx.lastIndex : Math.min(o.lastFrame, ctx.lastIndex);
     var keepFrame = o.keepFrame === undefined ? last : o.keepFrame;
 
+    var plan = stridePlan(GR.FPS, o.exportFps, o.frameStride);
+    var stride = plan.stride;
+    var exportFps = plan.fps;
+
     // The scrubber has already committed a frame. That commit has to come off before replaying
     // from the start, or every exported frame would be a delta on top of it.
     var undone = false;
     var frame = 0;
     var written = 0;
     var finished = false;
+    var handle = null;
 
     function stop(result) {
       if (finished) return;
       finished = true;
-      try { timers.Timer.cancelAll(); } catch (e) { /* already gone */ }
+      // Cancel OUR timer only. cancelAll() would reach into any other timer the script has armed.
+      try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
+      catch (e) { /* already gone */ }
       // Always leave the document on the frame the user accepted, whatever happened.
       try { GR.playbackCommit(ctx, keepFrame); } catch (e) { /* nothing more to do */ }
       if (onDone) onDone(result);
     }
 
-    timers.setInterval(o.intervalMs || 5, function (err) {
+    handle = timers.setInterval(o.intervalMs || 5, function (err) {
       if (finished) return;
       if (err) { stop({ ok: false, error: 'timer error: ' + err, written: written }); return; }
 
@@ -3110,15 +3220,18 @@ GR.planck = (function () {
         }
 
         if (frame > last) {
-          stop({ ok: true, written: written, where: target.where, folder: target.folder, preset: usedPreset, module: foundIn });
+          stop({ ok: true, written: written, fps: exportFps, where: target.where, folder: target.folder, preset: usedPreset, module: foundIn });
           return;
         }
 
         GR.playbackCommit(ctx, frame);
-        ctx.doc.export(target.path(frame), exportOpts, exportArea);
+        // Numbered by files WRITTEN, not by recorded frame. With a stride the two diverge, and an
+        // image sequence must be contiguous — 0000, 0002, 0004 imports as three frames with holes,
+        // or not at all.
+        ctx.doc.export(target.path(written), exportOpts, exportArea);
         written++;
         try { ctx.doc.undo(); } catch (e) { /* keep going; the next commit is absolute anyway */ }
-        frame++;
+        frame += stride;
       } catch (e) {
         stop({
           ok: false,
@@ -3130,7 +3243,32 @@ GR.planck = (function () {
     });
   }
 
+  /**
+   * How many recorded frames to skip per exported file, and what rate that actually yields.
+   *
+   * The recording rate and the export rate are separate questions and were accidentally the same
+   * number until the recording went to 60fps. Playback needs 60 because a rope drawn at 30
+   * samples per second strobes — the eye tracks the whole line at once, so undersampling shows.
+   * A file on disk has no such requirement, and every exported frame is a full `doc.export`, which
+   * is by far the slowest thing this script does. Striding by 2 therefore keeps export exactly as
+   * fast and exactly as large as it has always been, while playback gets its extra frames.
+   *
+   * The yielded rate is REPORTED rather than assumed, because a stride that does not divide the
+   * recording rate evenly cannot hit the requested one — asking for 45fps out of 60 gives a stride
+   * of 1 and therefore 60, and the import instructions have to say 60 or the sequence plays slow.
+   */
+  function stridePlan(recordedFps, wantFps, override) {
+    var rec = Math.max(1, Math.round(recordedFps || 60));
+    var stride = override
+      ? Math.round(override)
+      : Math.round(rec / Math.max(1, wantFps || 30));
+    // A stride below 1 would rewind, and one past the recording rate would export a single frame.
+    stride = Math.max(1, Math.min(rec, stride || 1));
+    return { stride: stride, fps: Math.round(rec / stride) };
+  }
+
   GR.exportSequence = exportSequence;
+  GR.exportStridePlan = stridePlan;
   GR.exportStamp = stamp;
   GR.exportResolveTarget = resolveTarget;
   GR.exportFrameName = frameName;
@@ -3249,8 +3387,10 @@ GR.planck = (function () {
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
       exportSequence: !!exportCtl.value,
-      // The recording is 30fps, so duration in seconds is a frame count.
-      maxFrames: Math.round(secs * 30)
+      // Duration in seconds is a frame count at the recorded rate. Reading GR.FPS rather than a
+      // literal is what stops this drifting when the recording rate changes — it was 30 here and
+      // in four other places, and the duration control would have silently halved.
+      maxFrames: Math.round(secs * GR.FPS)
     };
   }
 
@@ -3285,6 +3425,25 @@ GR.planck = (function () {
   var MARGIN = 40;
 
   function fmt(n, dp) { return Number(n).toFixed(dp === undefined ? 2 : dp); }
+
+  /**
+   * A node in one short string, for diagnostics only.
+   *
+   * The bounds matter more than the name here: several ropes commonly share the name "Curve", so a
+   * name alone cannot say whether two references are two nodes or one node reported twice. A
+   * bounding box distinguishes them, and reading it is safe on any node type.
+   */
+  function describeNode(node) {
+    if (!node) return '(none)';
+    var name = '?';
+    try { name = String(node.description || node.name || '?'); } catch (e) { /* unnamed */ }
+    var where = '';
+    try {
+      var b = node.boundsSpread || node.bounds;
+      if (b) where = ' @(' + fmt(b.x, 0) + ',' + fmt(b.y, 0) + ' ' + fmt(b.w, 0) + 'x' + fmt(b.h, 0) + ')';
+    } catch (e) { /* bounds unavailable on this node type */ }
+    return '"' + name + '"' + where;
+  }
 
   function main(opts) {
     var o = opts || {};
@@ -3399,22 +3558,39 @@ GR.planck = (function () {
     }
 
     var W = GR.makeWorld({ scale: scale, gravityX: grav.x, gravityY: grav.y });
-    // The box must contain the spread AND every piece of artwork, then stand off from both. Using
-    // the spread alone is not enough: artwork routinely sits on or past the page edge, and any
-    // body overlapping a wall at frame 0 keeps its island awake forever.
-    var box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
-    for (var bi = 0; bi < ex.objects.length; bi++) {
-      var rgs = ex.objects[bi].rings;
-      for (var ri = 0; ri < rgs.length; ri++) {
-        var rg = rgs[ri];
-        for (var vi = 0; vi < rg.length; vi += 2) {
-          if (rg[vi] < box.x0) box.x0 = rg[vi];
-          if (rg[vi] > box.x1) box.x1 = rg[vi];
-          if (rg[vi + 1] < box.y0) box.y0 = rg[vi + 1];
-          if (rg[vi + 1] > box.y1) box.y1 = rg[vi + 1];
-        }
+
+    // The box hugs the ARTWORK, not the page.
+    //
+    // It used to start from the spread extents, which made the page part of the physics: resizing
+    // the artboard moved the walls and silently produced a different drop from the same objects.
+    // Worse for ropes specifically, because a rope roughly as long as the page rests its ends on
+    // the side walls and is held up by them — grow the artboard and the same rope hangs free.
+    //
+    // Bounds still exist, because a body with nothing to hit falls forever and the run can only end
+    // on the frame cap. They just no longer depend on something the user changes for layout
+    // reasons. MARGIN stands the walls off, since a body overlapping a wall at frame 0 keeps its
+    // island awake for the whole run.
+    var box = null;
+    function grow(pts) {
+      for (var vi = 0; vi < pts.length; vi += 2) {
+        if (!box) { box = { x0: pts[vi], y0: pts[vi + 1], x1: pts[vi], y1: pts[vi + 1] }; }
+        if (pts[vi] < box.x0) box.x0 = pts[vi];
+        if (pts[vi] > box.x1) box.x1 = pts[vi];
+        if (pts[vi + 1] < box.y0) box.y0 = pts[vi + 1];
+        if (pts[vi + 1] > box.y1) box.y1 = pts[vi + 1];
       }
     }
+    for (var bi = 0; bi < ex.objects.length; bi++) {
+      var rgs = ex.objects[bi].rings || [];
+      for (var ri = 0; ri < rgs.length; ri++) grow(rgs[ri]);
+      // Ropes carry no rings — an open path has no interior — so their polylines have to be walked
+      // separately or a rope-only scene would produce an empty box. The spread extents used to hide
+      // this by seeding the box with something non-degenerate.
+      var pls = ex.objects[bi].polylines || [];
+      for (var pi = 0; pi < pls.length; pi++) grow(pls[pi]);
+    }
+    // Nothing had any geometry at all. Fall back to the page rather than building a null world.
+    if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
     GR.addBounds(W, {
       x: box.x0 - MARGIN, y: box.y0 - MARGIN,
       width: (box.x1 - box.x0) + 2 * MARGIN,
@@ -3578,13 +3754,50 @@ GR.planck = (function () {
       return { world: W, bodies: made, frames: frames, extracted: ex };
     }
 
+    // Ropes are drawn by rewriting their node's geometry, and `prepare` groups them by node
+    // IDENTITY because createSetCurves replaces every curve on a node at once. That grouping is
+    // invisible in its effects — a rope quietly assigned to the wrong group is simply never drawn,
+    // and looks exactly like a rope that failed to fall. Report it, so the difference is one line
+    // of console rather than a screenshot argument.
+    if (ropes.length) {
+      var groups = ctx.ropesByNode || [];
+      var grouped = 0;
+      for (var gi = 0; gi < groups.length; gi++) grouped += groups[gi].ropes.length;
+      console.log('');
+      console.log('== rope drawing ==');
+      console.log('  ' + ropes.length + ' rope(s) -> ' + groups.length + ' node group(s)' +
+        (groups.length === ropes.length ? '  OK' : '  <-- SUSPECT, expected one group per rope'));
+      for (var gj = 0; gj < groups.length; gj++) {
+        var gnames = [];
+        for (var gk = 0; gk < groups[gj].ropes.length; gk++) gnames.push(groups[gj].ropes[gk].name);
+        // The transform is the interesting column. A rope is redrawn by rewriting its node's
+        // geometry, which lands in BASE space, while the poses are in spread space — so a node
+        // with a non-identity transform needs the inverse applied or the rope draws displaced by
+        // exactly that transform. An untransformed node is correct either way, which is why a
+        // single rope on a freshly drawn path looked perfect for so long.
+        var m = GR.matrixOf(groups[gj].node);
+        var identity = !m || (m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 0 && m[4] === 1 && m[5] === 0);
+        console.log('    group ' + gj + ': ' + groups[gj].ropes.length + ' rope(s) [' + gnames.join(', ') + ']' +
+          ' node=' + describeNode(groups[gj].node) +
+          '  transform=' + (identity ? 'identity' :
+            '[' + m.map(function (v) { return fmt(v, 2); }).join(' ') + ']') +
+          '  toBase=' + (groups[gj].toBase ? 'ok' : (identity ? 'not needed' : 'SINGULAR, rope will draw displaced')));
+      }
+      if (grouped < ropes.length) {
+        console.log('  ' + (ropes.length - grouped) + ' rope(s) have NO node and will never be drawn.');
+      }
+    }
+
     console.log('');
     console.log('gravity: playing ' + frames.frameCount + ' frames on canvas...');
 
     // The drop plays first so the behaviour can actually be judged, and the Finished dialog opens
     // when it ends. The dialog has to be raised from the timer callback rather than after this
     // call, because runModal would otherwise block the timer that drives playback.
-    GR.playbackPlay(ctx, { intervalMs: o.intervalMs || 33 }, function () {
+    // No fallback number here on purpose. `|| 33` used to sit in this slot and quietly beat the
+    // interval playback.js chooses, which is picked to land inside the timer's 15.4ms quantum —
+    // 33 rounds up to three quanta and costs two thirds of the frame rate.
+    GR.playbackPlay(ctx, { intervalMs: o.intervalMs }, function () {
       var chosen = GR.showScrubber(ctx, { offerExport: !!o.exportSequence });
       console.log('gravity: kept frame ' + chosen.frame + ' of ' + frames.frameCount +
                   (chosen.accepted ? '' : ' (settled result)'));
@@ -3599,7 +3812,7 @@ GR.planck = (function () {
                         (res.preset ? '  [preset "' + res.preset + '", from ' + res.module + ']' : ''));
 
             try { app.alert('Export complete: ' + res.written + ' frames.\n' + res.where +
-                            '\n\nImport as an image sequence at 30fps.'); } catch (e) { /* no alert */ }
+                            '\n\nImport as an image sequence at ' + (res.fps || 30) + 'fps.'); } catch (e) { /* no alert */ }
           } else {
             console.log('gravity: export failed after ' + (res.written || 0) + ' frame(s): ' + res.error);
             try { app.alert('Export failed: ' + res.error + '\nThe frame you chose has been kept.'); }

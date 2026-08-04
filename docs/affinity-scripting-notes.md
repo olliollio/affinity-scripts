@@ -96,11 +96,36 @@ confirm the current state with a known-good script before concluding anything.
 ## Deforming geometry can be animated
 
 `DocumentCommand.createSetCurves(curvesInterface, polyCurve)` works as a **preview** —
-`executeCommand(cmd, true)` — and is cheap: measured at 0.2ms per rewrite at 7 points and 1.0ms at
-41, against a 33ms frame budget, with `clearPreviews()` restoring the original.
+`executeCommand(cmd, true)` — and is cheap: measured at 0.2ms per rewrite at 7 points, 0.7ms at
+193, against a **15.4ms** frame budget, with `clearPreviews()` restoring the original.
 
 That matters because a rigid `createTransform` can only move a node, not reshape it. Rewriting the
-curve each frame is what makes ropes, cloth or any soft body possible at 30fps.
+curve each frame is what makes ropes, cloth or any soft body possible at the full ~64fps the timer
+can deliver.
+
+**`createSetCurves` writes into the node's BASE space.** Curve coordinates always are — see the
+coordinate rule in the SDK reference — so geometry you computed in spread space must have the
+inverse of `node.transform` applied before you write it back, or the artwork lands displaced by
+exactly that transform.
+
+This is worth stating loudly because of how it hides. A **freshly drawn path has an identity
+transform and round-trips correctly whether or not you apply the inverse**, so a single object
+looks perfect and nothing appears wrong until a second, moved node is involved. It then presents
+as a *simulation* bug — objects that "don't move" or "don't fall" — rather than a drawing one. The
+cheap discriminator: **check frame 0**. Frame 0 must reproduce the artwork exactly, so if it is
+already wrong the fault is in the write-back, not in whatever is driving the animation.
+
+Objects moved with `createTransform` never hit this, since that command already works in spread
+space. Only geometry rewrites do.
+
+Three more caveats, all learned the expensive way:
+
+- **Time the rewrite inside a real timer callback, not a `for` loop.** A tight loop never yields,
+  so it measures command construction and submission only. The numbers above come from a paced
+  loop, which is the only honest measurement.
+- **The frame budget is 15.4ms, not the interval you requested** — see the quantisation note under
+  [Timers](affinity-sdk-reference.md#20-timers). Drawing is rarely what limits an animation here;
+  asking for the wrong interval usually is.
 
 It replaces **every** curve on the node, so several paths on one node must be rebuilt together in a
 single command.

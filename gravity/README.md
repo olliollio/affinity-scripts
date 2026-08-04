@@ -131,6 +131,27 @@ winding half of this, which is exactly why the tests assert that no vertex is dr
 Because holes are real, mass and rotational inertia come out right for free: a hollow "O" weighs
 less than the disc containing it, and spins more readily.
 
+**Bounds hug the artwork, not the page.** A closed static box is added around everything, standing
+off by `MARGIN`, so a body with nothing to hit cannot fall forever and the run can end on something
+better than the frame cap. It is built from the union of every ring **and every rope polyline** —
+ropes carry no rings, since an open path has no interior, so walking rings alone would leave a
+rope-only scene with a degenerate box.
+
+> This used to start from `getSpreadExtents()`, which made the **page part of the physics**:
+> resizing the artboard moved the walls and produced a different drop from identical artwork. It
+> hit ropes hardest, because a rope about as long as the page rests its ends on the side walls and
+> is held up by them — grow the artboard and the same rope hangs free, which reads as the
+> simulation having changed for no reason. The spread is now only a fallback for the degenerate
+> case where nothing has any geometry at all.
+>
+> **Known issue: resizing the artboard still changes the result.** The bounds above were one real
+> cause and not the only one. Ruled out so far: `suggestScale` reads body extents rather than the
+> page, the Douglas–Peucker tolerance is a fraction of each **ring's own** bounding box, and
+> `FLATTEN_TOL` is a constant. The open suspects are a selected static that is itself sized to the
+> artboard — which would change the collider, not the world — and the possibility that a scene of
+> long ropes draped over lettering is simply chaotic enough that any perturbation diverges. Runs
+> are reproducible for identical input; nothing promises similarity under a changed one.
+
 ## Ropes
 
 **An open path becomes a rope.** A closed path encloses an area and becomes a rigid body; an open
@@ -155,22 +176,51 @@ body and a joint rather than a static end link, so a hanging rope can still swiv
 > chaotic, so `MAX_SEGMENTS` takes margin rather than chasing it: **32**, which held on every
 > length tested at worst 1.02x. A draped rope has slack and is far more forgiving.
 
+**That last sentence is why there are two caps.** Tension is what tears a chain, and a slack rope
+has none to build, so it is capped at `MAX_SEGMENTS_SLACK` (**96**) while an anchored one keeps the
+conservative **32**. Both are ceilings, not targets — the count still comes from the thickness rule
+(links about twice as long as they are thick), and `MIN_LINK_SIM` still overrides both.
+
+The reason a slack rope needs the resolution is geometric rather than aesthetic: **a rigid link
+longer than a gap cannot enter it.** At 32 links an 1800pt rope has 56pt links, so laid across
+lettering it bridges every gap narrower than 56pt and appears to ignore the collider entirely,
+when in fact it is simply too blunt to find it. The tests assert this via the mechanism — a gap
+deliberately narrower than a coarse link and wider than a fine one — rather than by measuring sag,
+because a rope with no slack to feed in measures friction instead of resolution.
+
 **Appearance is decoupled from the solver.** The drawn curve is Catmull-Rom interpolated through
 the link joints — `smoothPolyline`, 6 subdivisions by default — so a 32-link rope draws as roughly
 190 points. Catmull-Rom interpolates rather than approximates, so every joint stays exactly where
 the solver put it and only the space between joints is invented.
 
-> **Known issue: ropes still look janky on canvas.** Adding the smoothing above made no visible
-> difference, tested with a fresh build, so the problem is **not** drawn resolution. The remaining
-> suspects are motion quality rather than geometry: the 30fps recording may alias badly for a shape
-> the eye tracks as a whole, the default 8/3 solver iterations are low for long joint chains, and
-> non-adjacent links currently collide with each other. Unresolved.
+> **Ropes used to look janky, and the cause was neither the solver nor the drawing.** Adding the
+> smoothing above changed nothing visible, which correctly ruled out drawn resolution but was read
+> at the time as "so it must be the physics". It was not. The rope was being **undersampled in
+> time and then delivered slowly**: recorded at 30fps and played back at 21.6, because
+> `setInterval` rounds its interval up to a 15.4ms quantum and playback asked for 33ms — one
+> millisecond past two quanta, so it got three. A rigid object survives that, since the eye tracks
+> a single point; a rope is a whole line moving at once and strobes. Recording every physics step
+> and asking for 8ms instead fixed it: 60 samples per second, delivered at 64.6fps. See
+> [Frame rate](#frame-rate).
 
 Playback cannot transform a rope, because a rope **deforms**. Its polyline is rebuilt from the link
 poses each frame and written with `createSetCurves`, riding the same compound command as everything
 else so a frame is still one preview and one undo step. Ropes sharing a node rebuild together,
 since `createSetCurves` replaces every curve on a node at once, and rope links deliberately get no
 selection — transforming their node as well would move the rope twice.
+
+**Poses come back in spread space; `createSetCurves` writes base space.** Extraction only ever maps
+base → spread, because a rigid body moves with `createTransform` and never needs the return trip. A
+rope does, so `prepare` stores `invertMatrix(matrixOf(node))` per node — once, since nothing
+transforms a rope's node during playback — and `ropeCommands` applies it after smoothing.
+
+> Omitting that inverse displaces each rope by exactly its own node transform, and the failure is
+> unusually good at hiding: **a freshly drawn path has an identity transform and round-trips
+> correctly either way**, so one rope looks perfect and the bug only appears once a second, moved
+> node is involved. It then presents as a *physics* failure — ropes that "don't fall" — even though
+> the final-pose log shows them landing correctly. The discriminator is **frame 0**, which must
+> reproduce the artwork exactly; if it is already wrong, the fault is in the write-back and no
+> amount of looking at the solver will find it.
 
 ## Settling
 
@@ -269,11 +319,40 @@ exactly, and the whole drop stays one undo step.
 > why nothing negates it again. If objects ever counter-rotate against the simulation, that is the
 > only line to flip.
 
-The drop **plays on canvas at a steady 30fps** before the scrubber opens. physicsdrop animated while
+The drop **plays on canvas at a steady 64.6fps** before the scrubber opens. physicsdrop animated while
 solving, so a heavy scene ran at whatever rate the solver managed; v2 solves the whole drop first
 — a few hundred milliseconds — and replays from the recording, so playback speed is independent of
 scene weight and rewatching costs nothing. The Finished dialog is raised from the timer callback,
 because `runModal` would otherwise block the timer driving playback.
+
+### Frame rate
+
+**`setInterval` does not give you the interval you ask for.** It rounds the request **up** to the
+next whole multiple of a **15.4ms quantum** — the host scheduler tick, 64.9Hz. Measured with an
+empty callback, 40 ticks each, by `probes/probe_timer_floor.js`:
+
+| asked | 1ms | 8ms | 16ms | 33ms | 50ms | 100ms |
+|---|---|---|---|---|---|---|
+| **delivered** | 15.3 | 15.5 | 30.5 | 46.2 | 61.6 | 107.8 |
+| **quanta** | 1 | 1 | 2 | 3 | 4 | 7 |
+
+Delivery is otherwise excellent — sd 0.5ms, no late frames — so this is a cliff, not a slope, and
+it is invisible unless measured. **16 is the trap**: it is what anyone writes for 60fps, it is
+0.6ms over one quantum, and it halves the frame rate. Playback asks for **8ms**, mid-quantum, so no
+drift can push it over. `test/test_timing.js` asserts the property rather than the number, so a
+future tidy-up to a rounder value fails the suite.
+
+Drawing is not the constraint and never was: a full 193-point rope submits in **0.7ms** against a
+15.4ms quantum, and 60 ticks at 8ms measured sd 0.5ms with zero bursts.
+
+Recording is therefore **one physics step per frame** — `STEPS_PER_FRAME = 1`, 60fps — since there
+is no point delivering 64fps of a 30fps recording. This costs no extra physics, only a recording
+array twice the size; the step count for a given span of simulated time is unchanged. `GR.FPS` is
+derived from `dt × stepsPerFrame` and is the single source of truth for the duration control, the
+scrubber's seconds readout and the export stride, all of which assumed a literal `30` before.
+
+Playback runs about **8% fast**, because the quantum grid has no multiple at 16.7ms. That is the
+price of 64.6fps over 21.6.
 
 ## Settings
 
@@ -281,7 +360,7 @@ because `runModal` would otherwise block the timer driving playback.
 |---|---|
 | Gravity | world gravity, entered in **document units** per second squared and divided by the world scale once |
 | Angle | 0 = down the page, 90 = right |
-| Max duration | frame cap, at 30fps |
+| Max duration | frame cap, at the recorded 60fps |
 | Seed | initial tie-breaking jitter, so a drop can be reproduced |
 | Bounciness % | fixture `restitution` |
 | Friction % | fixture `friction` |
@@ -298,7 +377,12 @@ that leave no trace on canvas.
 ## Exporting
 
 Tick "Export image sequence when finished" and the drop is written as a 30fps PNG or JPEG sequence
-from frame 0 up to the frame you keep — the range is only known after scrubbing, which is why the
+from frame 0 up to the frame you keep. The recording is 60fps, so export takes **every second
+frame** — playback needs the extra samples, a file on disk does not, and every frame is a full
+`doc.export`, which is by far the slowest thing the script does. Files are numbered by files
+written rather than by recorded frame, since an image sequence with holes in it does not import.
+`exportStridePlan` reports the rate it actually achieved rather than the one requested, because a
+stride is a whole number and most rates are not reachable — the range is only known after scrubbing, which is why the
 format choice lives in the Finished dialog rather than the settings one. Cancel never exports:
 it means "keep the settled result", not "write three hundred files".
 
@@ -341,3 +425,17 @@ part of extraction with **no headless test behind them** — `raster.js` itself 
 synthetic masks through an injected sampler, which proves the tracer and not the plumbing. A
 fully opaque image legitimately *is* its rectangle, so the rectangle stays the fallback both for
 that case and for any failure reaching pixels.
+
+**Reproducibility across edits is unproven.** The same input always gives the same result — the
+seed feeds a mulberry32 PRNG and the drop is recorded rather than solved live. What is *not*
+established is how far a small change to the scene should be expected to change the outcome.
+Resizing the artboard still shifts the result more than seems reasonable (see Bounds above), and a
+scene of long ropes draped over lettering is exactly the shape where contact ordering diverges
+freely. Distinguishing "an input we did not realise was an input" from "a chaotic system behaving
+chaotically" is the open question, and it wants a deliberate experiment rather than another fix.
+
+**Ropes contribute nothing to the world-scale estimate.** `suggestScale` is fed `ringsBBox(obj.rings)`,
+and a rope's `rings` is empty by construction, so a scene of ropes plus static scenery silently
+falls back to `DEFAULT_SCALE` instead of a fitted one. Known, unfixed on purpose: correcting it
+moves the scale enough to change the physics of scenes that currently behave, so it needs a
+measured before-and-after rather than a quiet patch.

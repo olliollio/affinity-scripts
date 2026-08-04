@@ -1094,6 +1094,47 @@ setInterval(33, (err) => {
 `for` loop is what keeps the UI responsive for its duration — and modal dialogs
 can be raised from inside the callback.
 
+`setInterval` also **returns a `Timer`** with its own `.cancel()`, which is what
+you want whenever more than one timer might be alive — `cancelAll()` reaches
+into every timer in the script, not just yours.
+
+```js
+const handle = setInterval(8, onTick);
+handle.cancel();          // stops this timer only
+```
+
+**Cancelling delivers `ABORTED` to the cancelled callback.** That error is the
+*confirmation* of the cancel, not a failure. Answering it with another
+`cancelAll()` will take down any timer armed since — including the one you just
+started to replace it.
+
+### The interval is quantised — you do not get what you ask for
+
+`setInterval` rounds the requested interval **up to the next whole multiple of a
+~15.4ms quantum** (the host scheduler tick, 64.9Hz). Measured with an empty
+callback, 40 ticks per row:
+
+| asked | 1ms | 8ms | 16ms | 33ms | 50ms | 100ms |
+|---|---|---|---|---|---|---|
+| **delivered** | 15.3 | 15.5 | 30.5 | 46.2 | 61.6 | 107.8 |
+| **quanta** | 1 | 1 | 2 | 3 | 4 | 7 |
+
+Delivery is otherwise very good — standard deviation 0.5ms, no late frames — so
+this is a **cliff, not a slope**, and nothing about it is visible without
+measuring. Two consequences worth knowing before writing any animation loop:
+
+- **`16` is the trap.** It is the obvious number for 60fps, it is 0.6ms over one
+  quantum, and it therefore delivers 30.5ms — half the frame rate you wrote it
+  for. Likewise `33` for 30fps delivers 46.2ms, i.e. 21.6fps.
+- **Ask for a value in the middle of a quantum**, such as `8`, so no drift can
+  round it up. The fastest achievable rate is ~64.6fps.
+
+Work done inside the callback does not change this as long as it fits the
+quantum. A `createSetCurves` rewrite of a 193-point path submits in 0.7ms, and
+60 ticks at an 8ms request measured sd 0.5ms with no bursts.
+
+Reproduce with `probes/probe_timer_floor.js`.
+
 ---
 
 ## 21. Known bugs & gotchas
@@ -1128,6 +1169,9 @@ can be raised from inside the callback.
 | 26 | `generatePolygon()` output is unreadable | Returns a `PolygonHandle` whose members don't enumerate. Flatten `curve.beziers` yourself, by arc length. |
 | 27 | Tall dialogs hide their own buttons | The dialog neither scrolls nor resizes and OK/Cancel sit below the content, so excess height puts them out of reach — not merely clipping cosmetic text. |
 | 28 | One node can only hold one transform | Deriving several independently-moving objects from a single node (e.g. per-glyph bodies from a live text node) applies conflicting transforms to it; the artwork lurches while the geometry is correct and invisible. |
+| 29 | `setInterval` rounds the interval up to a ~15.4ms quantum | So `16` delivers 30.5ms and `33` delivers 46.2ms — half and a third of the rate you asked for, silently. Ask for `8`. See [Timers](#20-timers). |
+| 30 | Cancelling a timer reports `ABORTED` through its own callback | It is the confirmation of the cancel, not a failure. Calling `Timer.cancelAll()` in response kills any timer armed since. Prefer the `Timer` handle's own `.cancel()`. |
+| 31 | `createSetCurves` writes BASE space, not spread | Geometry computed in spread space needs the inverse of `node.transform` applied first. A freshly drawn node has an identity transform and round-trips either way, so this stays invisible until a second, *moved* node is involved — and then it looks like a simulation bug. Check frame 0: it must reproduce the artwork exactly. |
 
 ---
 

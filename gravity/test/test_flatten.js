@@ -119,6 +119,44 @@ module.exports = function (GR, h) {
 
   h.assert('a null transform is a no-op', GR.transformRing([1, 2], null)[0] === 1);
 
+  h.group('flatten: inverting a transform');
+
+  // Extraction only ever maps base -> spread, because a rigid body moves with createTransform and
+  // never needs the return trip. A rope does: it is redrawn with createSetCurves, which writes into
+  // the node's BASE space, so spread-space poses have to come back. Getting this wrong displaces a
+  // rope by exactly its node's own transform — invisible on an untransformed node, wrong on every
+  // other, which is exactly how it reached a screenshot rather than a test.
+  function roundTrip(m, pts) {
+    var fwd = GR.transformRing(pts.slice(), m);
+    return GR.transformRing(fwd, GR.invertMatrix(m));
+  }
+
+  var probe = [10, 20, -300, 45.5, 0, 0];
+
+  [
+    ['translation', [1, 0, 250, 0, 1, -80]],
+    ['scale', [2, 0, 0, 0, 3, 0]],
+    ['rotation', [Math.cos(0.7), -Math.sin(0.7), 0, Math.sin(0.7), Math.cos(0.7), 0]],
+    ['shear plus translation', [1, 2, 17, 3, 1, -42]],
+    ['flip', [-1, 0, 100, 0, 1, 0]]
+  ].forEach(function (pair) {
+    var back = roundTrip(pair[1], probe);
+    var worst = 0;
+    for (var i = 0; i < probe.length; i++) worst = Math.max(worst, Math.abs(back[i] - probe[i]));
+    h.assert('a ' + pair[0] + ' round-trips', worst < 1e-9, 'worst drift ' + worst);
+  });
+
+  // The identity case is the one that hid the bug: a node that has never been moved round-trips
+  // whether or not the inverse is applied, so a single untransformed rope looked perfectly correct.
+  var idBack = roundTrip([1, 0, 0, 0, 1, 0], probe);
+  h.assertClose('identity is unchanged either way', idBack[0], probe[0], 1e-12);
+
+  h.assertEqual('a null matrix has no inverse', GR.invertMatrix(null), null);
+  // Singular means an axis has been scaled to nothing. There is no inverse to invent, and callers
+  // fall back to writing points unchanged rather than emitting NaN geometry.
+  h.assertEqual('a singular matrix has no inverse', GR.invertMatrix([0, 0, 5, 0, 0, 5]), null);
+  h.assertEqual('and a collapsed axis is singular too', GR.invertMatrix([2, 1, 0, 4, 2, 0]), null);
+
   h.group('flatten: end to end');
 
   // The whole point: a flattened circle with a flattened hole must decompose into planck parts.
