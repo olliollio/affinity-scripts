@@ -3,6 +3,9 @@
 Drop vector objects into a scene and let them fall, collide and settle, on a real rigid-body
 solver — planck.js, with true concave and holed collision shapes.
 
+> **Using the script rather than working on it?** See **[MANUAL.md](MANUAL.md)**. This file is for
+> people reading `src/`; the manual is for people running it in Affinity.
+
 > **Provenance.** Gravity is a separate script, not a new version of anything. The repository also
 > contains `examples/physicsdrop.js`, an earlier physics script by another author; it is referenced
 > throughout these notes and in code comments purely as **prior art**, because it exercises parts
@@ -235,9 +238,23 @@ aside, and per-step correction is capped. The body then sits at exactly zero vel
 indefinitely. A single-fixture body does not reproduce this — it just pushes itself out.
 
 Artwork dropped already overlapping its container does exactly this, so `run()` also stops when
-every body has stayed under planck's own sleep velocity thresholds for `quietFrames` (30, one
-second) and reports the offending bodies in `staticOverlaps`. `settledBy` says which rule ended
-the run: `sleep`, `quiescence` or `cap`.
+every body has stayed under planck's own sleep velocity thresholds for `quietFrames` (one second,
+derived from `FPS`) and reports the offending bodies in `staticOverlaps`. `settledBy` says which
+rule ended the run: `sleep`, `quiescence` or `cap`.
+
+`cap` on its own says nothing, so `run()` also returns `restless`: how many bodies are awake, how
+many are over tolerance, the fastest linear and angular speeds and the tolerances they are measured
+against. That distinguishes a scene still genuinely creeping from one that is motionless but
+unsleepable — the two have completely different causes and the frame count cannot tell them apart.
+It is measured on every run, so a settled run can also be confirmed rather than assumed.
+
+Long ropes are the case that defeats both exits: a run ends only when *every* body is quiet at
+once, and 84 links draped over lettering never manage it. Measured on a real scene, 52 of 168
+bodies were over tolerance at 5 seconds and 11 still were at 20. Rope links therefore carry
+`linearDamping` and `angularDamping` (see `rope.js`), which roughly halve the residual motion.
+Note what that does *not* claim: on a deliberately hard fixture, undamped settled 0 times out of 5
+seeds and damped settles about 3 — "usually" rather than "never", which is worth having and is not
+the same as solved.
 
 Drops are reproducible: pass a `seed` and the initial tie-breaking jitter is deterministic.
 physicsdrop seeded from `Date.now()`, so a result the user liked could never be recovered.
@@ -426,13 +443,21 @@ synthetic masks through an injected sampler, which proves the tracer and not the
 fully opaque image legitimately *is* its rectangle, so the rectangle stays the fallback both for
 that case and for any failure reaching pixels.
 
-**Reproducibility across edits is unproven.** The same input always gives the same result — the
-seed feeds a mulberry32 PRNG and the drop is recorded rather than solved live. What is *not*
-established is how far a small change to the scene should be expected to change the outcome.
-Resizing the artboard still shifts the result more than seems reasonable (see Bounds above), and a
-scene of long ropes draped over lettering is exactly the shape where contact ordering diverges
-freely. Distinguishing "an input we did not realise was an input" from "a chaotic system behaving
-chaotically" is the open question, and it wants a deliberate experiment rather than another fix.
+**Reproducibility across edits is partly settled.** The same input always gives the same result —
+the seed feeds a mulberry32 PRNG and the drop is recorded rather than solved live.
+
+Resizing the artboard used to shift the result, and that turned out to be a real bug rather than
+chaos: extraction mapped base to spread with `node.transform`, the node's LOCAL matrix, which only
+equals the base-to-spread matrix while every ancestor is identity. Give an artboard a scale and
+every object is wrong by exactly that scale, silently. It now uses `baseToSpreadTransform`.
+Confirmed by prediction rather than by eye: two artboard sizes differing by a pure 447.13pt
+translation reproduced frame 0 exactly, and after 600 steps of a chaotic 168-body scene the worst
+disagreement was 0.4pt.
+
+What is still *not* established is how far a genuinely different input should be expected to change
+the outcome. A scene of long ropes draped over lettering is exactly the shape where contact
+ordering diverges freely, and nothing guarantees that a small perturbation produces a small change.
+That wants a deliberate experiment rather than a fix.
 
 **Ropes contribute nothing to the world-scale estimate.** `suggestScale` is fed `ringsBBox(obj.rings)`,
 and a rope's `rings` is empty by construction, so a scene of ropes plus static scenery silently
