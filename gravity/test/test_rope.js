@@ -181,6 +181,52 @@ module.exports = function (GR, h) {
   h.assert('the chain stayed joined', worstGap < rope.halfLength * 2.6,
     'worst neighbour distance ' + worstGap.toFixed(2) + ' vs link length ' + (rope.halfLength * 2).toFixed(2));
 
+  h.group('rope: damping kills the settling tail');
+
+  // A long rope has a very long tail of tiny motion, and a run only ends when EVERY body is quiet
+  // at once - so a scene that is visually at rest can go on missing both exits indefinitely. This
+  // measures the tail directly rather than trusting that damping was set: the same rope is dropped
+  // with and without it, and what must fall is the residual speed at a fixed frame count.
+  // The fixture has to be a rope draped over OBSTACLES. Dropped onto a flat floor it settles either
+  // way within 80 frames and both residuals are exactly zero, which measures nothing - that version
+  // of this test passed on a rope with no damping at all. Obstacles produce the accordion folds
+  // that generate the long tail, which is the thing being fixed.
+  function tailAfterDrop(opts) {
+    var Wd2 = GR.makeWorld({ scale: 100, gravityY: -10 });
+    GR.addStaticChain(Wd2, [-700, 300, 700, 300, 700, 320, -700, 320], { closed: true });
+    for (var b = -400; b <= 400; b += 200) {
+      GR.addStaticChain(Wd2, [b - 40, 200, b + 40, 200, b + 40, 300, b - 40, 300], { closed: true });
+    }
+    GR.addRope(Wd2, line(-600, 0, 600, 0, 24), Object.assign({ thickness: 8 }, opts || {}));
+    return GR.run(Wd2, { maxFrames: 1800 }).restless;
+  }
+
+  var damped = tailAfterDrop();
+  var undamped = tailAfterDrop({ linearDamping: 0, angularDamping: 0 });
+
+  h.assert('damping leaves less residual speed',
+    damped.maxLinear < undamped.maxLinear,
+    'damped ' + damped.maxLinear.toFixed(4) + ' vs undamped ' + undamped.maxLinear.toFixed(4));
+  h.assert('and much less residual spin',
+    damped.maxAngular < undamped.maxAngular * 0.5,
+    'damped ' + damped.maxAngular.toFixed(4) + ' vs undamped ' + undamped.maxAngular.toFixed(4));
+  h.assert('so fewer bodies are over the sleep tolerance',
+    damped.overTolerance < undamped.overTolerance,
+    'damped ' + damped.overTolerance + ' vs undamped ' + undamped.overTolerance);
+
+  // Damping must not become a way to make the rope fall wrong. The floor is at y=300 and the rope
+  // starts at 0, so a rope slowed to a crawl would still be in mid-air at the same frame count.
+  var Wfall = GR.makeWorld({ scale: 100, gravityY: -10 });
+  GR.addStaticChain(Wfall, [-700, 300, 700, 300, 700, 320, -700, 320], { closed: true });
+  var fallRope = GR.addRope(Wfall, line(-600, 0, 600, 0, 24), { thickness: 8 });
+  GR.run(Wfall, { maxFrames: 600 });
+  var fallPoly = GR.polylineFromPoses(
+    fallRope.links.map(function (l) { return GR.bodyState(Wfall, l); }), fallRope.halfLength);
+  var deepest = -Infinity;
+  for (var fi = 1; fi < fallPoly.length; fi += 2) if (fallPoly[fi] > deepest) deepest = fallPoly[fi];
+  h.assert('a damped rope still reaches the floor', deepest > 280,
+    'lowest point reached y=' + deepest.toFixed(1));
+
   h.group('rope: a taut rope does not stretch');
 
   // The regression that matters. A rope pinned at both ends with no slack is the worst case for an

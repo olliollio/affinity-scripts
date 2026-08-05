@@ -2113,6 +2113,39 @@ GR.planck = (function () {
   // link comparable to that tolerance is fighting the solver's own noise.
   var MIN_THICKNESS = 1.5;
 
+  // Damping, in Box2D's per-step form `v /= (1 + dt * d)`, which over one second at 60Hz is close
+  // to a factor of e^-d. So these read as "how much velocity survives a second": spin keeps 14%,
+  // travel keeps 67%. Terminal speed under damping is g/d, here 25 sim units per second, which is
+  // far above anything a drop reaches - so this slows the settling tail, not the fall.
+  //
+  // They exist because a long rope has a very long tail of tiny motion, and a run only ends when
+  // EVERY body is asleep, or when every body stays under tolerance for a full second. 84 links
+  // draped over lettering managed neither: on a real scene 52 of 168 bodies were over tolerance at
+  // 5 seconds and 11 were still over at 20, the fastest at 1.8pt/s against a 1.0pt/s threshold. It
+  // was converging, far too slowly to ever report itself settled.
+  //
+  // Angular is the heavier of the two because the measurements said so: spin was 33x its tolerance
+  // where travel was 20x. A rope's residual motion is folds rotating against their neighbours
+  // rather than the rope travelling. The old value was 0.05, a 5% decay per second - over a whole
+  // 20 second run that is a factor of 2.7 while contacts alone delivered 10x. It was not
+  // participating in the result at all.
+  //
+  // Chosen from a sweep over five seeds of a rope draped across four obstacles, which is the
+  // fixture that actually reproduces the problem - a rope dropped onto a flat floor settles either
+  // way and can measure nothing. Undamped settled 0 times out of 5. Every value between 0.1/0.5 and
+  // 0.6/2.5 settled 2-3 times out of 5, so the differences within that range are chaos rather than
+  // signal; 0.4/2.0 is taken for having the best worst case (9 bodies over tolerance against 13-14
+  // either side) and a good median settling frame, and it is treated as a plateau rather than a
+  // peak. Note what this does NOT claim: damping does not make a hard scene settle reliably. It
+  // roughly halves the residual motion and turns "never" into "usually", which is worth having and
+  // is not the same as a fix.
+  //
+  // Raising them further is not free. Damping is a lie about the world, and enough of it makes a
+  // rope look like it is falling through syrup - more objectionable than a run that ends on the
+  // frame cap. These are the knob to turn if the drop ever reads as floaty.
+  var LINK_LINEAR_DAMPING = 0.4;
+  var LINK_ANGULAR_DAMPING = 2.0;
+
   var ANCHOR_WORDS = ['hang', 'pin', 'anchor'];
 
   /** Is this path pinned at its ends? Pure, so it is unit-tested like the scenery names. */
@@ -2272,7 +2305,8 @@ GR.planck = (function () {
       var body = W.world.createDynamicBody({
         position: GR.toSim(W, midX, midY),
         angle: angleSim,
-        angularDamping: o.angularDamping === undefined ? 0.05 : o.angularDamping
+        linearDamping: o.linearDamping === undefined ? LINK_LINEAR_DAMPING : o.linearDamping,
+        angularDamping: o.angularDamping === undefined ? LINK_ANGULAR_DAMPING : o.angularDamping
       });
       body.createFixture(
         new pl.Box(halfLen / scale, halfThick / scale),
