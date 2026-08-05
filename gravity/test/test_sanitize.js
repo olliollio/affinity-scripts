@@ -260,4 +260,52 @@ module.exports = function (GR, h) {
     { minArea: 0, minAreaFrac: 0 }
   );
   h.assertEqual('simplification never deletes a hole on its own', tinyKept.holes.length, 1);
+  h.group('sanitize: simplifying an open chain');
+
+  // A rope is drawn by smoothing its poses, which multiplies the point count several-fold; every
+  // one of those vertices became a node on the user's path.
+  function chain(fn, n) {
+    var out = [];
+    for (var i = 0; i <= n; i++) out.push(i * 10, fn(i / n));
+    return out;
+  }
+
+  var flatChain = chain(function () { return 0; }, 60);
+  h.assertEqual('a straight chain collapses to its two ends',
+    GR.simplifyChain(flatChain, 0.3).length / 2, 2);
+
+  // The property that matters, and the one the name makes people doubt: a CURVE keeps its shape.
+  var arc = chain(function (t) { return 400 * t * (1 - t); }, 200);
+  var simple = GR.simplifyChain(arc, 0.3);
+  h.assert('a curved chain loses most of its points', simple.length / 2 < 60,
+    'kept ' + simple.length / 2 + ' of ' + arc.length / 2);
+  h.assert('but keeps enough to still be a curve', simple.length / 2 > 8,
+    'kept only ' + simple.length / 2);
+
+  // Deviation is what "keeps its shape" has to mean. Every original vertex must still lie within
+  // the tolerance of the simplified chain, or the drape has been flattened rather than tidied.
+  function maxDeviation(orig, simp) {
+    var worst = 0;
+    for (var i = 0; i < orig.length; i += 2) {
+      var px = orig[i], py = orig[i + 1], best = Infinity;
+      for (var j = 2; j < simp.length; j += 2) {
+        var ax = simp[j - 2], ay = simp[j - 1], bx = simp[j], by = simp[j + 1];
+        var vx = bx - ax, vy = by - ay, L2 = vx * vx + vy * vy;
+        var t = L2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / L2)) : 0;
+        var dx = px - (ax + vx * t), dy = py - (ay + vy * t);
+        best = Math.min(best, Math.sqrt(dx * dx + dy * dy));
+      }
+      worst = Math.max(worst, best);
+    }
+    return worst;
+  }
+  h.assert('and every original point stays within the tolerance',
+    maxDeviation(arc, simple) <= 0.3 + 1e-9,
+    'worst deviation ' + maxDeviation(arc, simple).toFixed(4));
+
+  h.assertClose('the first point survives (x)', simple[0], arc[0], 1e-9);
+  h.assertClose('the last point survives (x)', simple[simple.length - 2], arc[arc.length - 2], 1e-9);
+  h.assertEqual('a two-point chain is returned unchanged', GR.simplifyChain([0, 0, 10, 0], 0.3).length / 2, 2);
+  h.assertEqual('a zero tolerance keeps everything', GR.simplifyChain(arc, 0).length, arc.length);
+
 };
