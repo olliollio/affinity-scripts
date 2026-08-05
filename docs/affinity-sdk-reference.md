@@ -376,18 +376,45 @@ builder.addShapeNode(ShapeNodeDefinition.create(shape, rect,
 
 ### Coordinate space — curve coords are BASE space
 
-The matrix mapping curve coordinates to spread space is **`node.transform`**,
-which equals `node.baseToSpreadTransform` and equals
-`curvesInterface.domainTransform`.
+The matrix mapping curve coordinates to spread space is
+**`node.baseToSpreadTransform`**, which equals `curvesInterface.domainTransform`.
 
-> ⚠️ **`node.localToSpreadTransform` is identity on every node**, including ones
-> that are demonstrably offset — a grouped child sitting at +220.0/+228.6 still
-> reports identity. Using it silently places every grouped object at the wrong
-> position. It is not the accessor its name suggests.
+Each node carries three different matrices, and they are easy to confuse because
+they coincide whenever the node's ancestors are all identity:
 
-Cross-checks: a grouped child's `baseBox.x` 251.99 → `spreadBaseBox.x` 471.99
-(= 251.99 + 220.0034); an image's 599×301 base box → 357.93×179.86 spread box
-under a 0.5976 scale.
+| Accessor | What it actually is |
+|---|---|
+| `node.transform` | The node's **LOCAL** matrix, relative to its parent. |
+| `node.localToSpreadTransform` | The **parent chain product** — everything above the node, excluding the node itself. |
+| `node.baseToSpreadTransform` | The composition of the two. **This is the one to use.** |
+
+> ⚠️ `node.transform` is the tempting wrong answer. On a flat document it *is*
+> the base-to-spread matrix, so code written against it works until something
+> gains a scaled ancestor — and then it is wrong by exactly that ancestor's
+> scale, with no error and no warning.
+
+Worked example, a curve inside an artboard scaled 1.501× horizontally:
+
+```
+node.transform            = [-0.666  0.000  1478.82 | -0.000  -1.000  1457.78]
+parent (artboard)         = [ 1.501  0.000     0.00 |  0.000   1.000     0.00]
+node.localToSpreadTransform = the artboard matrix, NOT identity
+node.baseToSpreadTransform  = [-1.000  0.000  2219.65 | -0.000  -1.000  1457.78]
+```
+
+`1.501 × (−0.666x + 1478.82) = −1.000x + 2219.7`, so `baseToSpread` is the
+product, as its name says. Check it against the node's own `spreadBaseBox`:
+`baseBox.x` spans 67.93→1708.61, and `x' = −x + 2219.65` maps that to
+511.04→2151.72, i.e. `x=511.04 w=1640.68`. `spreadBaseBox` reports
+`x=511.03 w=1640.68`.
+
+**`spreadBaseBox` is the oracle.** Whatever matrix you use, transformed geometry
+must reproduce it in both position and size; assert that and this whole class of
+bug becomes impossible to ship.
+
+Further cross-checks: a grouped child's `baseBox.x` 251.99 → `spreadBaseBox.x`
+471.99 (= 251.99 + 220.0034); an image's 599×301 base box → 357.93×179.86 spread
+box under a 0.5976 scale.
 
 ### Glyph outlines from live text
 
@@ -399,7 +426,7 @@ counters included ("o" and "e" report two curves, outer plus hole).
 | Member | Notes |
 |---|---|
 | `polyPolyCurves.polyCurveCount` | Glyph count. |
-| `getTransformedPolyCurve(i)` | Glyph outline in the node's **BASE** space — verified on a rotated, offset text node, it reproduces `baseBox` exactly and `node.transform` then lands it on `spreadBaseBox`. **Use this one.** |
+| `getTransformedPolyCurve(i)` | Glyph outline in the node's **BASE** space — verified on a rotated, offset text node, it reproduces `baseBox` exactly and `node.baseToSpreadTransform` then lands it on `spreadBaseBox`. **Use this one.** |
 | `getPolyCurve(i)` | Em space, near the origin. Not directly usable. |
 
 Reading these leaves the text **editable** — no conversion needed.
@@ -968,7 +995,7 @@ path.
 ## 18. Raster & pixel access
 
 An `ImageNode`'s **curves are only its placement rectangle**, in local pixel
-coordinates (e.g. `0,0–599,301`), positioned by `node.transform`. To reach real
+coordinates (e.g. `0,0–599,301`), positioned by `node.baseToSpreadTransform`. To reach real
 pixels — for a true silhouette, an alpha mask, colour sampling — you need the
 raster path.
 
@@ -997,7 +1024,7 @@ reader.dispose();                        // holds native memory — release it
   `/images`, `/pixels` or `/raster` module — those were invented names and do not
   exist.
 - Map pixel space to base space by the ratio of `node.baseBox` to the bitmap
-  (`sx = box.width / bm.width`), then apply `node.transform` as for any vector
+  (`sx = box.width / bm.width`), then apply `node.baseToSpreadTransform` as for any vector
   node.
 
 ---
@@ -1163,7 +1190,7 @@ Reproduce with `probes/probe_timer_floor.js`.
 | 20 | `/fs` and `doc.export` denied | Almost always because the script is being run from the **Script Manager's testing environment**. Install it and try again *before* changing any code. See [Filesystem & export](#19-filesystem--export). |
 | 21 | `isDirectory(path) === true` fails | `/fs` returns a `PathType` enum (`Directory = 3`), not a boolean. Test truthiness. |
 | 22 | `File.readAll` returns a Buffer | A `typeof === 'string'` check rejects a successful read. |
-| 23 | `localToSpreadTransform` is identity | On **every** node, including offset ones. Use `node.transform` to map curve coordinates into spread space. |
+| 23 | Three transform accessors, only one maps base to spread | `node.transform` is the node's **local** matrix, `localToSpreadTransform` is the **parent chain** without the node, `baseToSpreadTransform` is the product. Use the last one. The first two coincide with it whenever the ancestors are identity, which is why either can look correct for months — then an artboard gets a scale and geometry comes out short by exactly that factor, silently. Assert against `spreadBaseBox`. |
 | 24 | `polyCurve.curveCount === 1` on text | That is one glyph, not the string. Per-glyph outlines live in `polyPolyCurves` via `getTransformedPolyCurve(i)`. |
 | 25 | Export preset names are case-sensitive | `PNG` works, `png` does not, and there is no bare `JPEG`. Read `FileExportOptions.allPresetNames` instead of guessing. |
 | 26 | `generatePolygon()` output is unreadable | Returns a `PolygonHandle` whose members don't enumerate. Flatten `curve.beziers` yourself, by arc length. |
@@ -1171,7 +1198,7 @@ Reproduce with `probes/probe_timer_floor.js`.
 | 28 | One node can only hold one transform | Deriving several independently-moving objects from a single node (e.g. per-glyph bodies from a live text node) applies conflicting transforms to it; the artwork lurches while the geometry is correct and invisible. |
 | 29 | `setInterval` rounds the interval up to a ~15.4ms quantum | So `16` delivers 30.5ms and `33` delivers 46.2ms — half and a third of the rate you asked for, silently. Ask for `8`. See [Timers](#20-timers). |
 | 30 | Cancelling a timer reports `ABORTED` through its own callback | It is the confirmation of the cancel, not a failure. Calling `Timer.cancelAll()` in response kills any timer armed since. Prefer the `Timer` handle's own `.cancel()`. |
-| 31 | `createSetCurves` writes BASE space, not spread | Geometry computed in spread space needs the inverse of `node.transform` applied first. A freshly drawn node has an identity transform and round-trips either way, so this stays invisible until a second, *moved* node is involved — and then it looks like a simulation bug. Check frame 0: it must reproduce the artwork exactly. |
+| 31 | `createSetCurves` writes BASE space, not spread | Geometry computed in spread space needs the inverse of `node.baseToSpreadTransform` applied first — the same matrix you read with, or the round trip does not close. A freshly drawn node has an identity transform and round-trips either way, so this stays invisible until a second, *moved* node is involved — and then it looks like a simulation bug. Check frame 0: it must reproduce the artwork exactly. |
 
 ---
 

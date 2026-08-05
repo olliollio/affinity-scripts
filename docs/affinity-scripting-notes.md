@@ -105,7 +105,7 @@ can deliver.
 
 **`createSetCurves` writes into the node's BASE space.** Curve coordinates always are — see the
 coordinate rule in the SDK reference — so geometry you computed in spread space must have the
-inverse of `node.transform` applied before you write it back, or the artwork lands displaced by
+inverse of `node.baseToSpreadTransform` applied before you write it back, or the artwork lands displaced by
 exactly that transform.
 
 This is worth stating loudly because of how it hides. A **freshly drawn path has an identity
@@ -241,9 +241,10 @@ bottomRight, centre, area, offset, moveTo, clone, ...`.
 ### Geometry, text & images
 
 - **Every** node exposes `curvesInterface` — live `ShapeNode` and `ImageNode`
-  included. Curve coordinates are in **BASE** space; `node.transform` maps them
+  included. Curve coordinates are in **BASE** space; `node.baseToSpreadTransform` maps them
   to the spread. ⚠️ `node.localToSpreadTransform` is **identity on every node**
-  and is not the accessor its name suggests.
+  and `node.transform` is only the node’s LOCAL matrix — right only when every
+  ancestor is identity.
 - Live text: `polyCurve` reports `curveCount === 1` for a whole string (one
   glyph). Per-glyph outlines, counters included, come from
   `curvesInterface.polyPolyCurves` → `getTransformedPolyCurve(i)`, which is in
