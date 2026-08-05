@@ -408,6 +408,21 @@ product, as its name says. Check it against the node's own `spreadBaseBox`:
 511.04→2151.72, i.e. `x=511.04 w=1640.68`. `spreadBaseBox` reports
 `x=511.03 w=1640.68`.
 
+A second case, worth having because it is the one that most makes `node.transform`
+look broken. A curve whose LOCAL matrix is non-uniform — `0.799` in x against
+`1.192` in y — inside the same 1.492× artboard:
+
+```
+node.transform             = [0.799  0.000  -167.79 | 0.000  1.192  168.64]
+parent (artboard)          = [1.492  0.000     0.00 | 0.000  1.000    0.00]
+node.baseToSpreadTransform = [1.192  0.000  -250.38 | 0.000  1.192  168.64]
+```
+
+`1.492 × 0.799 = 1.192`, so the composed matrix is **uniform** while the local one
+is not. Reading `node.transform` here would squash the geometry horizontally by a
+third and leave it the right height — a distortion that looks like a bug in
+whatever consumed it, and is entirely an artefact of reading the wrong matrix.
+
 **`spreadBaseBox` is the oracle.** Whatever matrix you use, transformed geometry
 must reproduce it in both position and size; assert that and this whole class of
 bug becomes impossible to ship.

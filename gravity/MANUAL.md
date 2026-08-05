@@ -105,6 +105,12 @@ is longer than it looks. On a 1640pt line pinned at both ends:
 | 20 | 466pt |
 | 35 | 645pt |
 
+Gravity checks how much clear room is under the rope and hangs it as far as that allows. With
+nothing below, it starts as a clean curve. With artwork below, it starts above that artwork so it
+still lands on it — and if you have asked for more slack than the gap can hold, the surplus shows as
+a ripple for the first second or so. On a rope with artwork about 500pt beneath it, 10% starts
+smooth and 25% starts visibly bunched. That is the rope not fitting, not a fault.
+
 The ends stay exactly where you drew them at any setting. The rope starts as a shallow ripple along
 the path rather than as the straight line you drew — a rope that is longer than the gap between its
 ends has to put that extra length somewhere, and the first frame is where it goes. It stays close to

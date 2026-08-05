@@ -103,16 +103,32 @@ module.exports = function (GR, h) {
     for (var i = 1; i < pts.length; i += 2) m = Math.max(m, Math.abs(pts[i]));
     return m;
   }
+  // With something underneath, the arc is capped and the rope must respect it — this is the
+  // measurement that decides whether it starts above its collider or past it.
   [0.1, 0.2, 0.35, 0.5].forEach(function (s) {
-    var r2 = GR.slackenPolyline(GR.resamplePolyline(straight, 200), s, 8);
-    h.assert('at ' + (s * 100) + '% slack the rope starts near the path it was drawn on',
-      maxOffset(r2) < 100, 'strayed ' + maxOffset(r2).toFixed(0) + 'pt from a 1000pt path');
+    var r2 = GR.slackenPolyline(GR.resamplePolyline(straight, 200), s, 8, 60);
+    h.assert('at ' + (s * 100) + '% slack a clamped rope respects the clearance',
+      maxOffset(r2) < 60 + 40, 'strayed ' + maxOffset(r2).toFixed(0) + 'pt with 60pt of room');
   });
 
+  // With nothing underneath it hangs freely, and then it must be a smooth ARC rather than a
+  // ripple: excess length only looks right in the shape a slack rope really takes. A pure arc has
+  // exactly one direction change; a ripple has one per wave.
+  var freeHang = GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.25, 8, Infinity);
+  var turns = 0;
+  for (var fi = 2; fi < freeHang.length / 2; fi++) {
+    var d1 = freeHang[fi * 2 - 1] - freeHang[fi * 2 - 3];
+    var d2 = freeHang[fi * 2 + 1] - freeHang[fi * 2 - 1];
+    if (d1 * d2 < 0) turns++;
+  }
+  h.assertEqual('an unobstructed slack rope starts as a single arc, not a ripple', turns, 1);
+  h.assert('and it hangs properly deep', maxOffset(freeHang) > 200,
+    'only ' + maxOffset(freeHang).toFixed(0) + 'pt');
+
   // More waves carry the same length with a shallower ripple, which is why the wave count is tied
-  // to the link count rather than fixed.
-  var few = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 3));
-  var many = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 12));
+  // to the link count. Forced to a pure ripple with no room for an arc.
+  var few = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 3, 0));
+  var many = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 12, 0));
   h.assert('more waves means a shallower ripple', many < few,
     '3 waves strayed ' + few.toFixed(0) + ', 12 waves ' + many.toFixed(0));
 
@@ -134,8 +150,10 @@ module.exports = function (GR, h) {
   function landsOn(slack, anchored) {
     var Wc = GR.makeWorld({ scale: 100, gravityY: -10 });
     GR.addStaticChain(Wc, [600, 200, 1040, 200, 1040, 260, 600, 260], { closed: true });
+    // 200pt down to the collider, less the clearance main.js keeps — the same number it computes.
     var rc = GR.addRope(Wc, [0, 0, 1640, 0], {
-      thickness: 10, anchored: anchored, slack: slack, name: anchored ? 'hang' : 'rope' });
+      thickness: 10, anchored: anchored, slack: slack, maxSagDepth: 180,
+      name: anchored ? 'hang' : 'rope' });
     var box = { x0: 0, y0: 0, x1: 1640, y1: 0 };
     for (var i = 0; i < rc.links.length; i++) {
       var st = GR.bodyState(Wc, rc.links[i]);
@@ -193,7 +211,11 @@ module.exports = function (GR, h) {
   function foldAndWarnings(slack, allowForHang) {
     var Wf = GR.makeWorld({ scale: 100, gravityY: -10 });
     var box = { x0: 0, y0: 0, x1: 1640, y1: 0 };
-    var rf = GR.addRope(Wf, [0, 0, 1640, 0], { thickness: 10, anchored: true, slack: slack, name: 'hang' });
+    // Clamped, so the rope STARTS shallow and only reaches its full hang as it settles. That gap
+    // between where it begins and where it ends is exactly what the wall sizing has to allow for;
+    // an unobstructed rope starts at its arc and hides the problem.
+    var rf = GR.addRope(Wf, [0, 0, 1640, 0], { thickness: 10, anchored: true, slack: slack,
+                                               maxSagDepth: 60, name: 'hang' });
     for (var i = 0; i < rf.links.length; i++) {
       var st = GR.bodyState(Wf, rf.links[i]), reach = rf.halfLength;
       box.x0 = Math.min(box.x0, st.x - reach); box.x1 = Math.max(box.x1, st.x + reach);
@@ -268,7 +290,8 @@ module.exports = function (GR, h) {
   // blocky square. The wave count is tied to the link count so a wave always has links to be drawn
   // with; this asserts the sampling directly.
   var Ww = GR.makeWorld({ scale: 100, gravityY: -10 });
-  var rw = GR.addRope(Ww, [0, 0, 2470, 0], { thickness: 20, anchored: true, slack: 0.5, name: 'hang' });
+  var rw = GR.addRope(Ww, [0, 0, 2470, 0], { thickness: 20, anchored: true, slack: 0.5,
+                                             maxSagDepth: 0, name: 'hang' });
   var ys = rw.links.map(function (l) { return GR.bodyState(Ww, l).y; });
   var runLen = 1, worstRun = 1;
   for (var wi = 1; wi < ys.length; wi++) {

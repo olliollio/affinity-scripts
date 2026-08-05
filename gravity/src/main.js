@@ -291,6 +291,39 @@
     // 326pt tall, and the rope draped over the bottom wall with a 30 degree kink at each end. The
     // box has to hug what is actually in the world, not what it was derived from.
 
+    // How far a rope may hang before it would start below something it should land ON. A slack
+    // rope is laid along an arc, because excess length only looks right in the shape a rope really
+    // hangs in — but a free-hanging arc for a 2470pt rope at 25% slack is ~865pt deep, and artwork
+    // 515pt below would be missed entirely. Geometry you start past cannot be collided with.
+    //
+    // Measured from the STATIC rings rather than from bodies, because the statics may be built
+    // after the ropes in the loop below, and because a ring is where the collider actually is.
+    var CLEARANCE = 20;
+    function clearDepthBelow(poly) {
+      var minX = Infinity, maxX = -Infinity, lowest = -Infinity;
+      for (var q = 0; q < poly.length; q += 2) {
+        if (poly[q] < minX) minX = poly[q];
+        if (poly[q] > maxX) maxX = poly[q];
+        if (poly[q + 1] > lowest) lowest = poly[q + 1];
+      }
+      var nearest = Infinity;
+      for (var so = 0; so < ex.objects.length; so++) {
+        if (!ex.objects[so].isStatic) continue;
+        var srings = ex.objects[so].rings || [];
+        for (var sr = 0; sr < srings.length; sr++) {
+          var ring = srings[sr];
+          for (var sv = 0; sv < ring.length; sv += 2) {
+            var vx = ring[sv], vy = ring[sv + 1];
+            if (vx < minX || vx > maxX) continue;   // not under this rope
+            if (vy <= lowest) continue;             // not below it
+            if (vy < nearest) nearest = vy;
+          }
+        }
+      }
+      if (!isFinite(nearest)) return Infinity;      // nothing underneath: hang freely
+      return Math.max(0, nearest - lowest - CLEARANCE);
+    }
+
     // ----------------------------------------------------------------- bodies
     console.log('');
     console.log('== bodies ==');
@@ -316,6 +349,7 @@
             thickness: obj.thickness,
             anchored: obj.anchored,
             slack: o.ropeSlack === undefined ? 0 : o.ropeSlack,
+            maxSagDepth: clearDepthBelow(obj.polylines[rp]),
             friction: o.friction === undefined ? 0.4 : o.friction,
             restitution: o.restitution === undefined ? 0.15 : o.restitution,
             density: o.density === undefined ? 1 : o.density,
@@ -334,6 +368,9 @@
           ' links=' + (madeRope ? madeRope.links.length : 0) +
           ' thickness=' + fmt(obj.thickness || 0, 1) + 'pt' +
           (madeRope && madeRope.slack ? ' slack=' + fmt(madeRope.slack * 100, 0) + '%' : '') +
+          (madeRope && madeRope.slack
+            ? ' clearBelow=' + (isFinite(madeRope.maxSagDepth) ? fmt(madeRope.maxSagDepth, 0) + 'pt' : 'free')
+            : '') +
           (obj.anchored ? ' PINNED' : ''));
         continue;
       }
