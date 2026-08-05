@@ -112,6 +112,10 @@ from somewhere, and the first frame is where it comes from.
 If you would rather not use the setting, draw the path as a curve that is genuinely longer than the
 gap between its ends. That has always worked and needs nothing switched on.
 
+The path Gravity draws back is smoothed, then tidied: points that sit on a curve already described
+by their neighbours are dropped, to a fraction of a point. A deep drape therefore comes back with
+more nodes than a shallow one, and only a rope that genuinely ended up straight comes back simple.
+
 > A hanging rope is simulated at lower resolution than a falling one — roughly a third as many
 > segments. A rope pulled tight is much harder to solve than a slack one, and past a certain
 > segment count a taut rope tears itself apart. The drawn curve stays smooth either way, but a

@@ -168,6 +168,38 @@
   }
 
   /**
+   * Douglas-Peucker for an OPEN chain, keeping both ends.
+   *
+   * A rope is drawn by smoothing its link poses, which multiplies the point count several-fold, and
+   * every one of those points became a node on the user's path — a two-point line came back with
+   * nearly two hundred. This removes the ones that lie on a curve already described by their
+   * neighbours.
+   *
+   * It does NOT straighten anything, which is the fear the name invites. Douglas-Peucker keeps
+   * every vertex further than `tol` from the chord across it, so a draped rope keeps all of its
+   * curvature and only a rope that genuinely ended up straight collapses to two points — because it
+   * is straight. The default tolerance is a fraction of a point, far below what any output could
+   * show.
+   *
+   * Separate from `simplifyRing` rather than folded into it: a ring is closed and has to be split
+   * at its far point, while a chain has two ends that must survive unconditionally. Sharing the
+   * code would mean a flag that changes what the function fundamentally is.
+   */
+  function simplifyChain(pts, tol) {
+    if (!pts) return [];
+    var n = pts.length >> 1;
+    if (n <= 2 || !(tol > 0)) return pts.slice();
+
+    var keep = new Array(n);
+    keep[0] = true; keep[n - 1] = true;
+    dpChain(pts, 0, n - 1, tol, keep);
+
+    var out = [];
+    for (var k = 0; k < n; k++) if (keep[k]) out.push(pts[k * 2], pts[k * 2 + 1]);
+    return out;
+  }
+
+  /**
    * Douglas-Peucker for a closed ring.
    *
    * The ring is cut into two chains at the point farthest from vertex 0, so the result does not
@@ -266,6 +298,7 @@
 
   GR.sanitizeRing = sanitizeRing;
   GR.simplifyRing = simplifyRing;
+  GR.simplifyChain = simplifyChain;
   GR.simplifyWithinBudget = simplifyWithinBudget;
   GR.enforceWinding = enforceWinding;
   GR.sanitizeFace = sanitizeFace;

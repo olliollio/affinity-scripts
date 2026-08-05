@@ -129,6 +129,16 @@
         // reads as a rope rather than as a faceted chain.
         pts = GR.smoothPolyline(pts, ctx.ropeSmoothing || 6);
 
+        // Then drop the points that the curve does not need. Smoothing multiplies 33 poses into
+        // nearly 200 vertices, and every one of them became a node on the user's path. The
+        // tolerance is a fraction of a point, so the drape is preserved to well under what any
+        // output could show — a curve keeps its curvature and only a rope that genuinely ended up
+        // straight collapses, because it is straight. Simplifying here, BEFORE the map back into
+        // base space, keeps the tolerance in the units the physics ran in, for the same reason
+        // smoothing does.
+        var simpTol = ctx.ropeSimplifyTol === undefined ? 0.3 : ctx.ropeSimplifyTol;
+        if (simpTol > 0 && GR.simplifyChain) pts = GR.simplifyChain(pts, simpTol);
+
         // Back into the node's own space. Applied AFTER smoothing so the curve is interpolated in
         // the space the physics ran in — an affine map commutes with Catmull-Rom, but a non-uniform
         // scale would still make "6 subdivisions" mean different things along each axis.
