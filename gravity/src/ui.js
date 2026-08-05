@@ -80,6 +80,11 @@
     var convertCtl = beh.addCheckBox('Split text into letters', false);
     var groupCtl = beh.addCheckBox('Keep groups as one object', false);
     var exportCtl = beh.addCheckBox('Export image sequence', false);
+    // A dry run stops after the console report, before playback and before anything is written.
+    // It exists because comparing two runs is only meaningful if neither run altered the artwork
+    // the next one reads — an ordinary run ends by keeping a frame, so the second run of a pair
+    // would be measuring the first one's output.
+    var dryCtl = beh.addCheckBox('Dry run, report only', false);
 
     var help = col.addGroup('How to use');
     help.addStaticText('', 'Select objects and run. Name an object or group "collider", "wall", ' +
@@ -90,6 +95,8 @@
       'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
       'undo step. The same seed always gives the same result.').setIsFullWidth(true);
+    help.addStaticText('', 'Dry run writes the report to the console and stops there — nothing ' +
+      'plays, nothing is exported and the document is not touched.').setIsFullWidth(true);
 
     var result = dlg.runModal();
     if (!result || result.value !== DialogResult.Ok.value) return null;
@@ -108,6 +115,7 @@
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
       exportSequence: !!exportCtl.value,
+      dryRun: !!dryCtl.value,
       // Duration in seconds is a frame count at the recorded rate. Reading GR.FPS rather than a
       // literal is what stops this drifting when the recording rate changes — it was 30 here and
       // in four other places, and the duration control would have silently halved.

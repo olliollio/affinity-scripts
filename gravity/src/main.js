@@ -103,29 +103,125 @@
       var ob = ex.objects[i];
       var holes = 0;
       for (var f = 0; f < ob.faces.length; f++) holes += ob.faces[f].holes.length;
-      // Does the extracted geometry actually sit where the node does? A wrong coordinate space
-      // produces rings that are perfectly self-consistent and land somewhere else entirely, which
-      // no amount of downstream checking would catch. Comparing against the node's own reported
-      // box is the cheap way to notice.
+      // The box is printed because counts alone cannot answer the question that keeps coming up:
+      // does anything in the selection change when the artboard is resized? A background rectangle
+      // sized to the page keeps its ring count and moves only its box, so the counts look identical
+      // while the collider is a different shape. Ropes carry no rings, so fall back to polylines.
+      var obox = null;
+      try {
+        obox = GR.ringsBBox(ob.rings);
+        if (!obox && ob.polylines && ob.polylines.length) {
+          for (var pj = 0; pj < ob.polylines.length; pj++) {
+            var pp = ob.polylines[pj];
+            for (var pk = 0; pk < pp.length; pk += 2) {
+              if (!obox) obox = { x0: pp[pk], y0: pp[pk + 1], x1: pp[pk], y1: pp[pk + 1] };
+              if (pp[pk] < obox.x0) obox.x0 = pp[pk];
+              if (pp[pk] > obox.x1) obox.x1 = pp[pk];
+              if (pp[pk + 1] < obox.y0) obox.y0 = pp[pk + 1];
+              if (pp[pk + 1] > obox.y1) obox.y1 = pp[pk + 1];
+            }
+          }
+        }
+      } catch (e) { /* geometry may be empty */ }
+
+      // `spreadBaseBox` is the app's own answer for where the node is, so extracted geometry has to
+      // reproduce it — position AND size. Size is the half that was missing: using the local matrix
+      // instead of the base-to-spread one left every object the right shape in the wrong scale, and
+      // a position-only check said nothing because the error scaled the box about a corner that
+      // barely moved. Tolerance is proportional because the polyline is a flattened approximation
+      // and the node box includes the stroke, so exact equality is not on offer.
       var space = '';
       try {
-        var bb = GR.ringsBBox(ob.rings);
         var sb = ob.node.spreadBaseBox;
-        if (bb && sb) {
-          var off = Math.max(Math.abs(bb.x0 - sb.x), Math.abs(bb.y0 - sb.y));
+        if (obox && sb) {
           var span = Math.max(sb.width, sb.height, 1);
-          if (off > 0.5 * span) space = '  <-- SUSPECT: geometry is ' + fmt(off) + 'pt from the node box';
+          var tol = Math.max(1, 0.02 * span);
+          var offPos = Math.max(Math.abs(obox.x0 - sb.x), Math.abs(obox.y0 - sb.y));
+          var offSize = Math.max(Math.abs((obox.x1 - obox.x0) - sb.width),
+                                 Math.abs((obox.y1 - obox.y0) - sb.height));
+          if (offSize > tol) {
+            space = '  <-- SUSPECT: geometry is ' + fmt(offSize) + 'pt off the node box in SIZE';
+          } else if (offPos > tol) {
+            space = '  <-- SUSPECT: geometry is ' + fmt(offPos) + 'pt off the node box in POSITION';
+          }
         }
       } catch (e) { /* not every node reports a box */ }
 
-      console.log('  [' + i + '] ' + (ob.name || '(unnamed)') +
+      // The node's OWN reported box and matrix, printed next to the geometry box. When a resize
+      // makes a run differ, these three tell apart "the object really changed" from "the app
+      // reports it in a space that moved". Base geometry that is identical while the matrix scales
+      // means the matrix is page-relative, not that the artwork moved.
+      var nb = '';
+      try {
+        var sb2 = ob.node.spreadBaseBox;
+        if (sb2) nb += '  sbb=[' + fmt(sb2.x) + ',' + fmt(sb2.y) + ' ' +
+                       fmt(sb2.width) + 'x' + fmt(sb2.height) + ']';
+      } catch (e) { /* not every node reports a box */ }
+      try {
+        var bb2 = ob.node.baseBox;
+        if (bb2) nb += ' bb=[' + fmt(bb2.x) + ',' + fmt(bb2.y) + ' ' +
+                       fmt(bb2.width) + 'x' + fmt(bb2.height) + ']';
+      } catch (e) { /* likewise */ }
+      try {
+        var td = ob.node.transform && ob.node.transform.data;
+        if (td) nb += ' t=[' + fmt(td[0], 3) + ' ' + fmt(td[1], 3) + ' ' + fmt(td[2]) +
+                      ' ' + fmt(td[3], 3) + ' ' + fmt(td[4], 3) + ' ' + fmt(td[5]) + ']';
+      } catch (e) { /* likewise */ }
+
+      console.log('  [' + i + '] ' + (ob.name || '(unnamed)') + nb +
         '  rings=' + ob.rings.length +
         ' faces=' + ob.faces.length +
         ' holes=' + holes +
+        (obox ? '  box=[' + fmt(obox.x0) + ',' + fmt(obox.y0) + ' ' +
+                fmt(obox.x1 - obox.x0) + 'x' + fmt(obox.y1 - obox.y0) + ']' : '  box=none') +
         (ob.isStatic ? ' STATIC' : '') +
         (ob.approximate ? ' (' + ob.approximate + ')' : '') +
         space);
     }
+    // Kept after the fix rather than deleted: extraction used to map base to spread with the
+    // node's LOCAL matrix, which is only the whole map while every ancestor is identity, and an
+    // artboard resized with the Transform tool is not. Seeing the ancestors and the three rival
+    // matrices side by side is what identified that, and it is what would identify the next one.
+    console.log('');
+    console.log('== node chain (base -> spread, innermost first) ==');
+    for (var ci2 = 0; ci2 < ex.objects.length; ci2++) {
+      var chain = [];
+      var cur = ex.objects[ci2].node;
+      for (var depth = 0; cur && depth < 8; depth++) {
+        var ct = null;
+        try { ct = cur.transform && cur.transform.data; } catch (e) { /* no matrix */ }
+        var cn = '(unnamed)';
+        try { cn = cur.name || '(unnamed)'; } catch (e) { /* no name */ }
+        chain.push(cn + (ct ? ' t=[' + fmt(ct[0], 3) + ' ' + fmt(ct[1], 3) + ' ' + fmt(ct[2]) +
+                              ' ' + fmt(ct[3], 3) + ' ' + fmt(ct[4], 3) + ' ' + fmt(ct[5]) + ']'
+                            : ' t=none'));
+        var nxt = null;
+        try { nxt = cur.parent; } catch (e) { /* top of the tree */ }
+        if (!nxt || nxt === cur) break;
+        cur = nxt;
+      }
+      console.log('  [' + ci2 + '] ' + chain.join('  <-  '));
+
+      // The reference notes assert these three are the same matrix, on the evidence of one grouped
+      // child. If they diverge on a node whose ancestor carries a scale, the assertion is too weak
+      // and the one that reproduces spreadBaseBox is the one extraction should be using.
+      var alt = [];
+      var nd = ex.objects[ci2].node;
+      function m6(t) {
+        if (!t || !t.data) return null;
+        var q = t.data;
+        return '[' + fmt(q[0], 3) + ' ' + fmt(q[1], 3) + ' ' + fmt(q[2]) + ' ' +
+               fmt(q[3], 3) + ' ' + fmt(q[4], 3) + ' ' + fmt(q[5]) + ']';
+      }
+      try { var a1 = m6(nd.baseToSpreadTransform); if (a1) alt.push('baseToSpread=' + a1); }
+      catch (e) { alt.push('baseToSpread=err'); }
+      try { var a2 = m6(nd.localToSpreadTransform); if (a2) alt.push('localToSpread=' + a2); }
+      catch (e) { alt.push('localToSpread=err'); }
+      try { var a3 = m6(nd.curvesInterface && nd.curvesInterface.domainTransform); if (a3) alt.push('domain=' + a3); }
+      catch (e) { alt.push('domain=err'); }
+      if (alt.length) console.log('        ' + alt.join('  '));
+    }
+
     for (var r = 0; r < ex.refusals.length; r++) console.log('  refused: ' + ex.refusals[r].message);
     if (!ex.objects.length) { console.log('gravity: nothing usable in the selection.'); return null; }
 
@@ -186,6 +282,7 @@
       for (var pi = 0; pi < pls.length; pi++) grow(pls[pi]);
     }
     // Nothing had any geometry at all. Fall back to the page rather than building a null world.
+    var boxFromSpread = !box;
     if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
     GR.addBounds(W, {
       x: box.x0 - MARGIN, y: box.y0 - MARGIN,
@@ -301,6 +398,14 @@
     } catch (e) { /* settings unavailable */ }
     console.log('  spread extents: x=' + fmt(ext.x) + ' y=' + fmt(ext.y) +
                 ' w=' + fmt(ext.width) + ' h=' + fmt(ext.height));
+    // The wall box is the one number that decides whether resizing the artboard can still reach the
+    // physics. It is the union of the artwork now, so it must be identical at two artboard sizes.
+    // Same size but shifted origin means a pure translation; a different size means something in
+    // the selection is itself tracking the page.
+    console.log('  physics box: x=' + fmt(box.x0 - MARGIN) + ' y=' + fmt(box.y0 - MARGIN) +
+                ' w=' + fmt((box.x1 - box.x0) + 2 * MARGIN) +
+                ' h=' + fmt((box.y1 - box.y0) + 2 * MARGIN) +
+                (boxFromSpread ? '  <-- SUSPECT: fell back to the page, no artwork geometry' : ''));
 
     // -------------------------------------------------------------------- sim
     var t0 = Date.now();
