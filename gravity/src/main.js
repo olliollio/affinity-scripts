@@ -422,6 +422,26 @@
       ' settledBy=' + frames.settledBy +
       ' in ' + ms + 'ms (' + fmt(ms / Math.max(1, frames.frameCount), 2) + 'ms/frame)');
 
+    // A capped run is the one outcome that says nothing on its own, so say what was still moving.
+    // Velocities come back in sim units; multiplied by the world scale they are points per second,
+    // which is the only form in which "is that a lot?" has an answer.
+    var rl = frames.restless;
+    if (rl && frames.settledBy === 'cap') {
+      console.log('  did NOT settle: ' + rl.awake + '/' + rl.total + ' bodies still awake, ' +
+                  rl.overTolerance + ' over the sleep tolerance');
+      console.log('  fastest ' + fmt(rl.maxLinear * W.scale, 3) + ' pt/s' +
+                  (rl.worstName ? ' (' + rl.worstName + ')' : '') +
+                  ', spin ' + fmt(rl.maxAngular, 4) + ' rad/s' +
+                  '  — tolerance is ' + fmt(rl.linearTolerance * W.scale, 3) + ' pt/s and ' +
+                  fmt(rl.angularTolerance, 4) + ' rad/s');
+      console.log('  quiescence reached ' + frames.quietRun + ' of the ' +
+                  frames.quietNeeded + ' consecutive quiet frames it needs');
+      if (rl.overTolerance === 0) {
+        console.log('  nothing is over tolerance NOW, so the run was still being interrupted late — ' +
+                    'look at the overlap report above rather than at the physics.');
+      }
+    }
+
     if (frames.staticOverlaps.length) {
       console.log('  ' + frames.staticOverlaps.length +
         ' body/bodies started INSIDE static geometry — they can never sleep, so the run ended on');
