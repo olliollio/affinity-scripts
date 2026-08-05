@@ -1900,6 +1900,24 @@ GR.planck = (function () {
       name: o.name || 'bounds'
     });
     if (rec) rec.isBounds = true;
+
+    // Anything already in the world must be INSIDE the walls. Bounds are normally added before the
+    // bodies, but a slack rope is laid along a sagged arc that reaches far below the path it came
+    // from, so a box sized to the artwork put the floor through the middle of a hanging rope and it
+    // draped over its own wall — a 30 degree kink at each end that read as a physics fault. The
+    // caller's job is to size the box over what is actually there; this says so when it has not.
+    var outside = 0;
+    for (var i = 0; i < W.dynamics.length; i++) {
+      var d = W.dynamics[i];
+      if (d === rec) continue;
+      var st;
+      try { st = GR.bodyState(W, d); } catch (e) { continue; }
+      if (st.x < x0 || st.x > x1 || st.y < y0 || st.y > y1) outside++;
+    }
+    if (outside) {
+      W.warnings.push(outside + ' body/bodies start OUTSIDE the bounds — the walls were sized ' +
+        'before those bodies existed, so they will be pushed back in or rest on a wall');
+    }
     return rec;
   }
 
@@ -2173,8 +2191,9 @@ GR.planck = (function () {
   // links an 1800pt rope has 56pt links, and a rigid 56pt link cannot enter a 30pt gap between two
   // letters, so the rope bridges fine detail instead of draping into it. That reads as the collider
   // being ignored when it is really the rope being too blunt to find it.
-  var MAX_SEGMENTS = 32;        // anchored: the worst case for an iterative solver
-  var MAX_SEGMENTS_SLACK = 96;  // free-hanging: resolution matters more than tension does
+  var MAX_SEGMENTS = 32;         // pinned AND taut: the worst case for an iterative solver
+  var MAX_SEGMENTS_PINNED = 64;  // pinned but slack: tension is bounded by the slack
+  var MAX_SEGMENTS_SLACK = 96;   // free-hanging: resolution matters more than tension does
   var MIN_SEGMENTS = 3;
 
   // Two independent stability limits, both found by measurement rather than derived.
@@ -2334,8 +2353,19 @@ GR.planck = (function () {
     var o = opts || {};
     var s = scale || GR.WORLD_SCALE;
 
-    // Anchored ropes keep the conservative cap; slack ones get the resolution to drape into detail.
-    var cap = o.anchored ? MAX_SEGMENTS : MAX_SEGMENTS_SLACK;
+    // The conservative cap exists for TAUT chains, where tension propagates iteratively along the
+    // chain and past ~40 links a pinned rope tears itself apart. A rope with slack has nowhere for
+    // that tension to build, so being pinned is not by itself the worst case — being pinned AND
+    // taut is. A pinned rope with slack therefore gets the same resolution as a free one, which it
+    // needs twice over: finer links drape into detail, and a wave needs links to be drawn with.
+    // Three caps, because what tears a chain apart is TENSION, and being pinned is only the worst
+    // case when the rope is also taut. A pinned rope with slack still builds some tension - it
+    // carries its own weight between two fixed points - so it sits between the two extremes.
+    // Measured on a 1640pt pinned rope, sweeping link counts at 35%, 50% and 80% slack: stable
+    // through 72 links at every slack level (stretch 0.97-0.99, worst fold under 7 degrees), and
+    // at 76 it tore at 35% and 50% while 80% survived. That is the same chaotic boundary the taut
+    // cap already refuses to chase, so this takes margin at 64 rather than sitting on 72.
+    var cap = o.anchored ? (o.slack > 0.02 ? MAX_SEGMENTS_PINNED : MAX_SEGMENTS) : MAX_SEGMENTS_SLACK;
     var stable = Math.floor((length / s) / MIN_LINK_SIM);
     var ceiling = Math.max(MIN_SEGMENTS, Math.min(cap, stable));
 
@@ -2350,48 +2380,55 @@ GR.planck = (function () {
   // told to be three times its span would be initialised in a loop below the artboard.
   var MAX_SLACK = 1.0;
 
-  // How finely a path is resampled before the sag is applied. The sag displaces vertices and is
-  // zero at both ends, so the curve can only be as smooth as the vertices available to move.
-  var SAG_SAMPLES = 64;
+  // How finely a path is resampled before the ripple is applied. The offset displaces vertices and
+  // is zero at both ends, so the shape can only be as smooth as the vertices available to move.
+  var SLACK_SAMPLES = 64;
 
   /**
-   * Lengthens a path by `slack` (0.2 = 20% longer) by sagging it, keeping both ends exactly put.
+   * Lengthens a path by `slack` (0.2 = 20% longer), keeping both ends exactly put.
    *
    * This is what lets a straight line hang. A rope drawn as a straight line has length equal to the
    * distance between its ends, so a correctly simulated chain has NOTHING spare and cannot drape —
-   * measured, a 1640pt pinned rope sags 105.7pt, and all of that is joint stretch rather than
-   * drape. Extra length has to come from somewhere, and the honest place is the initial shape.
+   * measured, a 1640pt pinned rope sags 105.7pt and all of it is joint stretch. The extra length
+   * has to come from the initial shape.
    *
-   * The sag is a parabola, `4d·t·(1-t)`, which is zero at both ends — so the endpoints, and
-   * therefore the anchor pins, stay exactly where the user drew them. Only the middle moves. That
-   * keeps the frame-0 rule ("the first frame reproduces the artwork") true where it matters most:
-   * a slack rope starts visibly sagging, but it starts sagging FROM the right place.
+   * The shape is a shallow RIPPLE along the path, not a deep arc, and that distinction is the whole
+   * design. A rope with slack needs extra LENGTH, not extra DEPTH — conflating the two put the
+   * rope's first frame at the bottom of its own hanging curve, 485pt down at 20% slack, so it was
+   * initialised below any collider it had been drawn above and could never hit it. Geometry you
+   * start past cannot be collided with. A ripple carries the same extra length within a few tens of
+   * points of the path, so the rope still falls onto what it was drawn over and drapes from there.
    *
-   * `d` is solved rather than derived. The small-sag approximation `d = L·sqrt(3·slack/8)` is only
-   * good to a few percent by 30% slack, and the whole point is that the length comes out right, so
-   * it is used as a seed and then corrected. Pure, so the length identity is unit-tested.
+   * `A*sin(2*PI*waves*t)` is zero at t=0 and t=1 for integer `waves`, so the endpoints — and so the
+   * anchor pins — stay exactly where the user drew them. Only the middle moves.
    *
-   * Sag is applied down the page (+y in source space) because that is where gravity points by
-   * default. A different gravity angle makes this an imperfect starting guess and nothing worse —
-   * it is an initial condition, and the solver takes over on the first step.
+   * The amplitude is solved rather than derived: the arc length of a sine is an elliptic integral,
+   * and the whole point of the control is that the rope really is 20% longer. Length grows
+   * monotonically with amplitude, so bisection needs no derivative.
+   *
+   * The ripple runs down the page (+y in source space) because that is where gravity points by
+   * default. A different gravity angle makes this an imperfect starting guess and nothing worse.
    */
-  function sagPolyline(points, slack) {
+  function slackenPolyline(points, slack, waves) {
     var s = Math.max(0, Math.min(MAX_SLACK, slack || 0));
     if (!points || points.length < 4 || s <= 0) return points ? points.slice() : [];
 
-    // Densify FIRST. The sag is applied by displacing existing vertices, and the displacement is
-    // zero at both ends by construction — so a path with no vertices between its ends cannot sag at
-    // all. A straight line drawn with two points is exactly that, and it is the input this whole
-    // feature exists for: eight passing assertions on the length identity meant nothing until an
-    // end-to-end test fed it a raw two-point line and the rope came out identical to a taut one.
-    var src = points.length / 2 < SAG_SAMPLES ? resample(points, SAG_SAMPLES) : points;
+    var w = Math.max(1, Math.round(waves || 6));
+
+    // Densify FIRST. The offset displaces existing vertices and is zero at both ends, so a path
+    // with no vertices in between cannot change at all. A straight line drawn with TWO points is
+    // exactly that, and it is the input this feature exists for: eight passing assertions on the
+    // length identity meant nothing until an end-to-end test fed it a raw two-point line and the
+    // rope came back identical to a taut one.
+    var want = Math.max(SLACK_SAMPLES, w * 12);
+    var src = points.length / 2 < want ? resample(points, want) : points;
 
     var L = polylineLength(src);
     if (!(L > 0)) return src.slice();
     var target = L * (1 + s);
 
-    // Arc position of every point, normalised, so the sag is placed by distance along the path
-    // rather than by index — an unevenly sampled path would otherwise sag lopsidedly.
+    // Arc position of every point, normalised, so the ripple is placed by distance along the path
+    // rather than by index — an unevenly sampled path would otherwise ripple lopsidedly.
     var ts = [0];
     var run = 0;
     for (var i = 2; i < src.length; i += 2) {
@@ -2400,23 +2437,20 @@ GR.planck = (function () {
       ts.push(run / L);
     }
 
-    function withSag(d) {
+    function withRipple(a) {
       var out = src.slice();
       for (var k = 0; k < ts.length; k++) {
-        var t = ts[k];
-        out[k * 2 + 1] += 4 * d * t * (1 - t);
+        out[k * 2 + 1] += a * Math.sin(2 * Math.PI * w * ts[k]);
       }
       return out;
     }
 
-    // Seed from the small-sag closed form, then bisect. Length grows monotonically with d, so a
-    // bracket plus a fixed iteration count converges without needing a derivative.
-    var lo = 0, hi = Math.max(L * Math.sqrt(3 * s / 8) * 2, L);
-    for (var it = 0; it < 40; it++) {
+    var lo = 0, hi = L;
+    for (var it = 0; it < 48; it++) {
       var mid = (lo + hi) / 2;
-      if (polylineLength(withSag(mid)) < target) lo = mid; else hi = mid;
+      if (polylineLength(withRipple(mid)) < target) lo = mid; else hi = mid;
     }
-    return withSag((lo + hi) / 2);
+    return withRipple((lo + hi) / 2);
   }
 
   /**
@@ -2438,13 +2472,21 @@ GR.planck = (function () {
     // Slack lengthens the rope before anything else is decided, because the link count, the link
     // length and the layout all follow from how long the rope actually is.
     var slack = Math.max(0, Math.min(MAX_SLACK, o.slack || 0));
-    var path = slack > 0 ? sagPolyline(points, slack) : points;
 
-    var length = polylineLength(path);
-    if (!(length > 0)) return null;
-
+    // The link count follows from how long the rope IS, which is known before its shape is. That
+    // breaks the circularity of "shape the path, measure it, then decide how many links".
+    var drawnLength = polylineLength(points);
+    if (!(drawnLength > 0)) return null;
     var scale = W.scale;
-    var n = segmentCount(length, thickness, o, scale);
+    var n = segmentCount(drawnLength * (1 + slack), thickness, o, scale);
+
+    // About eight links per wave. This number is a genuine trade-off in both directions. Too few
+    // waves and the ripple has to be deep to carry the extra length, which is what put the rope
+    // below its collider. Too many and the sine is aliased by the links sampling it: at four links
+    // per wave the centres land on sin(45), sin(135), sin(225), sin(315) and the rope starts as a
+    // blocky square comb - two links up, two links down - rather than a wave.
+    var path = slack > 0 ? slackenPolyline(points, slack, Math.max(1, Math.round(n / 8))) : points;
+    var length = polylineLength(path);
     var sampled = resample(path, n + 1);
     var linkCount = sampled.length / 2 - 1;
     if (linkCount < 1) return null;
@@ -2521,6 +2563,11 @@ GR.planck = (function () {
       thickness: thickness,
       anchored: !!o.anchored,
       slack: slack,
+      // How far below its pins this rope can reach. A chain pinned at both ends can at worst hang
+      // straight down from one of them, so half its length bounds it. The walls need this because
+      // the rope now STARTS as a shallow ripple on the drawn path and only hangs once it settles —
+      // sizing the box to where the bodies begin would put the floor through the finished drape.
+      reach: o.anchored ? (length / 2) : 0,
       node: o.node || null,
       name: o.name || 'rope'
     };
@@ -2575,11 +2622,12 @@ GR.planck = (function () {
   GR.resamplePolyline = resample;
   GR.polylineFromPoses = polylineFromPoses;
   GR.ropeSegmentCount = segmentCount;
-  GR.sagPolyline = sagPolyline;
+  GR.slackenPolyline = slackenPolyline;
   GR.ROPE_MAX_SLACK = MAX_SLACK;
   GR.addRope = addRope;
   GR.ROPE_ANCHOR_WORDS = ANCHOR_WORDS;
   GR.ROPE_MAX_SEGMENTS = MAX_SEGMENTS;
+  GR.ROPE_MAX_SEGMENTS_PINNED = MAX_SEGMENTS_PINNED;
   GR.ROPE_MAX_SEGMENTS_SLACK = MAX_SEGMENTS_SLACK;
 
 })(GR);
@@ -3974,9 +4022,12 @@ GR.planck = (function () {
     // Nothing had any geometry at all. Fall back to the page rather than building a null world.
     var boxFromSpread = !box;
     if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
-    // The rectangle itself is worked out by a pure function, so the degenerate cases have tests.
-    var wallRect = GR.boundsForArtwork(box);
-    GR.addBounds(W, wallRect);
+
+    // The walls are added AFTER the bodies, further down, because a slack rope hangs far below the
+    // path it was drawn from. Sizing the box to the artwork alone put the floor through the middle
+    // of a hanging rope: at 35% slack a 1640pt line settles 657pt down while its own box is only
+    // 326pt tall, and the rope draped over the bottom wall with a 30 degree kink at each end. The
+    // box has to hug what is actually in the world, not what it was derived from.
 
     // ----------------------------------------------------------------- bodies
     console.log('');
@@ -4056,6 +4107,36 @@ GR.planck = (function () {
     }
 
     if (!made.length) { console.log('gravity: no dynamic bodies.'); return null; }
+
+    // ------------------------------------------------------------------ walls
+    //
+    // Now that every body exists, grow the box over where they actually START. A slack rope is laid
+    // along a sagged arc, so its links begin well below the path they came from — the artwork box
+    // alone would put the floor through the middle of the rope and it would drape over its own
+    // wall. Each link contributes its full reach rather than its centre, since a link is a bar and
+    // its ends stick out past its middle.
+    for (var wb = 0; wb < made.length; wb++) {
+      var wst = GR.bodyState(W, made[wb]);
+      var reach = made[wb].halfLength || made[wb].simRadius * W.scale || 0;
+      grow([wst.x - reach, wst.y - reach, wst.x + reach, wst.y + reach]);
+    }
+    // A pinned rope with slack starts as a shallow ripple on the path it was drawn along and only
+    // hangs once it settles, so where its links BEGIN says nothing about where they will end up.
+    // Half the chain's length bounds how far it can reach below its pins.
+    for (var wr = 0; wr < ropes.length; wr++) {
+      if (!ropes[wr].reach) continue;
+      var top = Infinity, lo = Infinity, hi = -Infinity;
+      for (var wl = 0; wl < ropes[wr].links.length; wl++) {
+        var ls = GR.bodyState(W, ropes[wr].links[wl]);
+        if (ls.y < top) top = ls.y;
+        if (ls.x < lo) lo = ls.x;
+        if (ls.x > hi) hi = ls.x;
+      }
+      grow([lo, top, hi, top + ropes[wr].reach]);
+    }
+    // The rectangle itself is worked out by a pure function, so the degenerate cases have tests.
+    var wallRect = GR.boundsForArtwork(box);
+    GR.addBounds(W, wallRect);
 
     // --------------------------------------------------- the transform check
     //

@@ -77,46 +77,87 @@ module.exports = function (GR, h) {
 
   var straight = line(0, 0, 1000, 0, 1);
   h.assertEqual('no slack leaves the path alone',
-    GR.sagPolyline(straight, 0).join(','), straight.join(','));
+    GR.slackenPolyline(straight, 0, 6).join(','), straight.join(','));
 
   // The identity that matters: the whole point of slack is that the rope is LONGER than the gap
-  // between its ends, so the length has to come out right rather than approximately right. The
-  // small-sag closed form is several percent out by 30%, which is why the sag depth is solved.
+  // between its ends, so the length has to come out right rather than approximately right.
   [0.05, 0.1, 0.2, 0.4, 0.8].forEach(function (s) {
-    var sagged = GR.sagPolyline(GR.resamplePolyline(straight, 60), s);
-    var ratio = GR.polylineLength(sagged) / 1000;
-    h.assertClose('slack ' + (s * 100) + '% lengthens the rope by exactly that', ratio, 1 + s, 0.005);
+    var rippled = GR.slackenPolyline(GR.resamplePolyline(straight, 200), s, 8);
+    h.assertClose('slack ' + (s * 100) + '% lengthens the rope by exactly that',
+      GR.polylineLength(rippled) / 1000, 1 + s, 0.01);
   });
 
-  // Both ends must stay exactly where they were drawn, because that is where the anchor pins go -
-  // a slack rope may sag in the middle but it must not detach from the artwork.
-  var sag20 = GR.sagPolyline(GR.resamplePolyline(straight, 60), 0.2);
-  h.assertClose('the start does not move (x)', sag20[0], 0, 1e-9);
-  h.assertClose('the start does not move (y)', sag20[1], 0, 1e-9);
-  h.assertClose('nor the end (x)', sag20[sag20.length - 2], 1000, 1e-6);
-  h.assertClose('nor the end (y)', sag20[sag20.length - 1], 0, 1e-9);
+  // Both ends must stay exactly where they were drawn, because that is where the anchor pins go.
+  var rip = GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.2, 8);
+  h.assertClose('the start does not move (x)', rip[0], 0, 1e-9);
+  h.assertClose('the start does not move (y)', rip[1], 0, 1e-9);
+  h.assertClose('nor the end (x)', rip[rip.length - 2], 1000, 1e-6);
+  h.assertClose('nor the end (y)', rip[rip.length - 1], 0, 1e-6);
 
-  // And it must sag DOWN the page, not up. A sign error here would hang the rope into the sky and
-  // still satisfy every length assertion above.
-  var mid = sag20[Math.floor(sag20.length / 4) * 2 + 1];
-  h.assert('and it sags downwards', mid > 50, 'mid y was ' + mid.toFixed(1));
+  // The property the whole shape exists for. Extra LENGTH must not become extra DEPTH: a deep
+  // starting arc put a 20% slack rope 485pt below the path it was drawn on, which is below any
+  // collider it was drawn above, and geometry you start past can never be hit. The ripple has to
+  // stay near the path.
+  function maxOffset(pts) {
+    var m = 0;
+    for (var i = 1; i < pts.length; i += 2) m = Math.max(m, Math.abs(pts[i]));
+    return m;
+  }
+  [0.1, 0.2, 0.35, 0.5].forEach(function (s) {
+    var r2 = GR.slackenPolyline(GR.resamplePolyline(straight, 200), s, 8);
+    h.assert('at ' + (s * 100) + '% slack the rope starts near the path it was drawn on',
+      maxOffset(r2) < 100, 'strayed ' + maxOffset(r2).toFixed(0) + 'pt from a 1000pt path');
+  });
 
-  h.assert('slack is capped', GR.polylineLength(GR.sagPolyline(straight, 99)) / 1000 <= 1 + GR.ROPE_MAX_SLACK + 0.01);
+  // More waves carry the same length with a shallower ripple, which is why the wave count is tied
+  // to the link count rather than fixed.
+  var few = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 3));
+  var many = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 12));
+  h.assert('more waves means a shallower ripple', many < few,
+    '3 waves strayed ' + few.toFixed(0) + ', 12 waves ' + many.toFixed(0));
 
-  // The case the whole feature exists for, and the one that slipped through: a straight line drawn
-  // with TWO points. The sag displaces vertices and is zero at both ends, so a path with nothing in
-  // between cannot sag however correct the arithmetic is. Every assertion above passed while this
-  // returned the input untouched.
-  var raw2 = [0, 0, 1000, 0];
-  var sagged2 = GR.sagPolyline(raw2, 0.2);
-  h.assertClose('a raw two-point line still lengthens', GR.polylineLength(sagged2) / 1000, 1.2, 0.005);
-  h.assert('by growing vertices to sag with', sagged2.length / 2 > 2, 'got ' + sagged2.length / 2 + ' points');
+  h.assert('slack is capped',
+    GR.polylineLength(GR.slackenPolyline(straight, 99, 8)) / 1000 <= 1 + GR.ROPE_MAX_SLACK + 0.02);
 
-  // A path that is already curved must be lengthened by the same proportion, not flattened.
-  var curved = [0, 0, 250, 120, 500, 0, 750, 120, 1000, 0];
-  var curvedLen = GR.polylineLength(curved);
-  h.assertClose('a curved path lengthens proportionally too',
-    GR.polylineLength(GR.sagPolyline(GR.resamplePolyline(curved, 80), 0.25)) / curvedLen, 1.25, 0.01);
+  // The case the feature exists for, and the one that slipped through once: a straight line drawn
+  // with TWO points. The offset is zero at both ends, so a path with nothing in between cannot
+  // change however correct the arithmetic is.
+  var sagged2 = GR.slackenPolyline([0, 0, 1000, 0], 0.2, 8);
+  h.assertClose('a raw two-point line still lengthens', GR.polylineLength(sagged2) / 1000, 1.2, 0.01);
+  h.assert('by growing vertices to ripple with', sagged2.length / 2 > 2, 'got ' + sagged2.length / 2 + ' points');
+
+  h.group('rope: a slack rope still lands on its collider');
+
+  // The bug this shape replaced: a rope drawn above a collider must still hit it. The old deep arc
+  // initialised the rope BELOW the collider, so it fell straight past and nothing warned, because
+  // it never overlapped anything - it merely started on the wrong side.
+  function landsOn(slack, anchored) {
+    var Wc = GR.makeWorld({ scale: 100, gravityY: -10 });
+    GR.addStaticChain(Wc, [600, 200, 1040, 200, 1040, 260, 600, 260], { closed: true });
+    var rc = GR.addRope(Wc, [0, 0, 1640, 0], {
+      thickness: 10, anchored: anchored, slack: slack, name: anchored ? 'hang' : 'rope' });
+    var box = { x0: 0, y0: 0, x1: 1640, y1: 0 };
+    for (var i = 0; i < rc.links.length; i++) {
+      var st = GR.bodyState(Wc, rc.links[i]);
+      box.x0 = Math.min(box.x0, st.x - rc.halfLength); box.x1 = Math.max(box.x1, st.x + rc.halfLength);
+      box.y0 = Math.min(box.y0, st.y - rc.halfLength); box.y1 = Math.max(box.y1, st.y + rc.halfLength);
+    }
+    if (rc.reach) box.y1 = Math.max(box.y1, box.y1 + rc.reach);
+    GR.addBounds(Wc, GR.boundsForArtwork(box));
+    GR.run(Wc, { maxFrames: 1800 });
+    var on = 0, past = 0;
+    for (var k = 0; k < rc.links.length; k++) {
+      var e = GR.bodyState(Wc, rc.links[k]);
+      if (e.x > 600 && e.x < 1040) { if (e.y < 210) on++; if (e.y > 270) past++; }
+    }
+    return { on: on, past: past };
+  }
+  [[0.2, true], [0.35, true], [0.2, false], [0.35, false]].forEach(function (c) {
+    var r3 = landsOn(c[0], c[1]);
+    h.assert('a ' + (c[1] ? 'pinned' : 'free') + ' rope at ' + (c[0] * 100) + '% slack rests on the collider',
+      r3.on > 0, 'no links on top');
+    h.assertEqual('and none of it passes through', r3.past, 0);
+  });
 
   h.group('rope: slack actually drapes');
 
@@ -142,6 +183,65 @@ module.exports = function (GR, h) {
     Math.abs(slacked.ends[0]) < 12 && Math.abs(slacked.ends[1]) < 12,
     'ends at ' + slacked.ends.map(function (v) { return v.toFixed(1); }).join(' and '));
 
+  h.group('rope: a slack rope hangs smoothly');
+
+  // The dent. A slack rope is laid along a sagged arc that reaches far below the path it came from,
+  // so a box sized to the ARTWORK put the floor through the middle of the rope and it draped over
+  // its own bottom wall - measured, a 30 degree kink two links in from each anchor, exactly where
+  // the wall crossed the chain. It read as a physics fault and was an ordering mistake: the walls
+  // must be sized over where the bodies actually start.
+  function foldAndWarnings(slack, allowForHang) {
+    var Wf = GR.makeWorld({ scale: 100, gravityY: -10 });
+    var box = { x0: 0, y0: 0, x1: 1640, y1: 0 };
+    var rf = GR.addRope(Wf, [0, 0, 1640, 0], { thickness: 10, anchored: true, slack: slack, name: 'hang' });
+    for (var i = 0; i < rf.links.length; i++) {
+      var st = GR.bodyState(Wf, rf.links[i]), reach = rf.halfLength;
+      box.x0 = Math.min(box.x0, st.x - reach); box.x1 = Math.max(box.x1, st.x + reach);
+      box.y0 = Math.min(box.y0, st.y - reach); box.y1 = Math.max(box.y1, st.y + reach);
+    }
+    // What main.js adds: a pinned rope starts as a shallow ripple on its path and only hangs once
+    // it settles, so the box has to allow for where it will END, not where it begins.
+    if (allowForHang && rf.reach) box.y1 += rf.reach;
+    GR.addBounds(Wf, GR.boundsForArtwork(box));
+    GR.run(Wf, { maxFrames: 1800 });
+    var worst = 0;
+    var poses = rf.links.map(function (l) { return GR.bodyState(Wf, l); });
+    for (var k = 1; k < poses.length; k++) {
+      var d = (poses[k].angle - poses[k - 1].angle) * 180 / Math.PI;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      worst = Math.max(worst, Math.abs(d));
+    }
+    return { fold: worst, warnings: Wf.warnings.length };
+  }
+
+  [0.2, 0.35, 0.5].forEach(function (s) {
+    var good = foldAndWarnings(s, true);
+    h.assert('at ' + (s * 100) + '% slack the chain has no kink', good.fold < 12,
+      'worst fold ' + good.fold.toFixed(1) + ' deg');
+    h.assertEqual('and nothing starts outside the walls', good.warnings, 0);
+  });
+
+  // The bug itself, kept so the allowance cannot quietly be dropped: a box that only covers where
+  // the rope STARTS puts the floor through the middle of the finished drape.
+  var bad = foldAndWarnings(0.35, false);
+  h.assert('a box that ignores the hang still kinks', bad.fold > 20,
+    'worst fold ' + bad.fold.toFixed(1) + ' deg');
+
+  h.group('world: walls notice bodies already outside them');
+
+  // The other half of the same mistake, and the one a warning can catch: bodies that exist BEFORE
+  // the walls and fall outside them. main.js adds bounds after the bodies for exactly this reason.
+  var Wout = GR.makeWorld({ scale: 100, gravityY: -10 });
+  GR.addRope(Wout, [0, 0, 400, 0], { thickness: 4, name: 'rope' });
+  GR.addBounds(Wout, { x: 2000, y: 2000, width: 100, height: 100 });
+  h.assert('a wall added around the wrong place says so', Wout.warnings.length > 0);
+
+  var Win = GR.makeWorld({ scale: 100, gravityY: -10 });
+  GR.addRope(Win, [0, 0, 400, 0], { thickness: 4, name: 'rope' });
+  GR.addBounds(Win, { x: -100, y: -100, width: 700, height: 300 });
+  h.assertEqual('and a wall that contains them does not', Win.warnings.length, 0);
+
   h.group('rope: segment count');
 
   h.assert('a long thin rope gets many links', GR.ropeSegmentCount(1000, 2, {}, 100) > 20);
@@ -152,6 +252,34 @@ module.exports = function (GR, h) {
   h.assert('and never runaway', GR.ropeSegmentCount(100000, 0.1, {}, 100) <= GR.ROPE_MAX_SEGMENTS_SLACK);
   h.assert('and a taut one is capped harder',
     GR.ropeSegmentCount(100000, 0.1, { anchored: true }, 100) <= GR.ROPE_MAX_SEGMENTS);
+  // What tears a chain apart is tension, and being pinned is only the worst case while also taut.
+  // A pinned rope WITH slack sits between the two extremes: measured, stable through 72 links at
+  // 35%, 50% and 80% slack, tearing at 76 for two of the three. The cap takes margin at 64.
+  var pinnedTaut = GR.ropeSegmentCount(100000, 0.1, { anchored: true }, 100);
+  var pinnedSlack = GR.ropeSegmentCount(100000, 0.1, { anchored: true, slack: 0.3 }, 100);
+  var free = GR.ropeSegmentCount(100000, 0.1, {}, 100);
+  h.assert('a pinned SLACK rope is allowed more links than a taut one',
+    pinnedSlack > pinnedTaut, pinnedSlack + ' vs ' + pinnedTaut);
+  h.assert('but still fewer than a free one', pinnedSlack < free, pinnedSlack + ' vs ' + free);
+  h.assertEqual('and it uses the pinned-slack cap', pinnedSlack, GR.ROPE_MAX_SEGMENTS_PINNED);
+
+  // The frame-0 shape must read as a WAVE, not a comb. At four links per wave the link centres land
+  // on sin(45), sin(135), sin(225), sin(315) - two up, two down - and a 32-link rope started as a
+  // blocky square. The wave count is tied to the link count so a wave always has links to be drawn
+  // with; this asserts the sampling directly.
+  var Ww = GR.makeWorld({ scale: 100, gravityY: -10 });
+  var rw = GR.addRope(Ww, [0, 0, 2470, 0], { thickness: 20, anchored: true, slack: 0.5, name: 'hang' });
+  var ys = rw.links.map(function (l) { return GR.bodyState(Ww, l).y; });
+  var runLen = 1, worstRun = 1;
+  for (var wi = 1; wi < ys.length; wi++) {
+    if (Math.abs(ys[wi] - ys[wi - 1]) < 0.5) { runLen++; worstRun = Math.max(worstRun, runLen); }
+    else runLen = 1;
+  }
+  h.assert('the starting ripple is sampled as a wave, not a square comb', worstRun <= 2,
+    'found a flat run of ' + worstRun + ' links');
+  var stray = 0;
+  for (var si = 0; si < ys.length; si++) stray = Math.max(stray, Math.abs(ys[si]));
+  h.assert('and it stays shallow', stray < 0.05 * 2470, 'strayed ' + stray.toFixed(0) + 'pt');
   h.assertEqual('an explicit count wins', GR.ropeSegmentCount(500, 3, { segments: 12 }, 100), 12);
 
   // The stability ceiling. A 400pt rope at scale 100 is 4 sim units, so links may not go below

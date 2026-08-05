@@ -105,9 +105,10 @@ is longer than it looks. On a 1640pt line pinned at both ends:
 | 20 | 466pt |
 | 35 | 645pt |
 
-The ends stay exactly where you drew them at any setting. Only the middle moves, and the rope
-starts already sagging rather than starting straight — a slack rope has to get its extra length
-from somewhere, and the first frame is where it comes from.
+The ends stay exactly where you drew them at any setting. The rope starts as a shallow ripple along
+the path rather than as the straight line you drew — a rope that is longer than the gap between its
+ends has to put that extra length somewhere, and the first frame is where it goes. It stays close to
+your path, so it still falls onto whatever you drew it over.
 
 If you would rather not use the setting, draw the path as a curve that is genuinely longer than the
 gap between its ends. That has always worked and needs nothing switched on.
@@ -116,10 +117,10 @@ The path Gravity draws back is smoothed, then tidied: points that sit on a curve
 by their neighbours are dropped, to a fraction of a point. A deep drape therefore comes back with
 more nodes than a shallow one, and only a rope that genuinely ended up straight comes back simple.
 
-> A hanging rope is simulated at lower resolution than a falling one — roughly a third as many
-> segments. A rope pulled tight is much harder to solve than a slack one, and past a certain
-> segment count a taut rope tears itself apart. The drawn curve stays smooth either way, but a
-> hanging rope drapes in broader arcs. This is a real trade-off, not a bug.
+> A rope pinned with **no** slack is simulated at lower resolution — about a third as many segments.
+> A rope pulled tight is far harder to solve than a slack one, and past a certain segment count a
+> taut rope tears itself apart. Give it slack and most of that resolution comes back, because the
+> slack is what stops the tension building. The drawn curve stays smooth either way.
 
 ### Drop a word letter by letter
 

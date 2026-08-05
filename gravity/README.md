@@ -236,14 +236,32 @@ transforms a rope's node during playback — and `ropeCommands` applies it after
 > reproduce the artwork exactly; if it is already wrong, the fault is in the write-back and no
 > amount of looking at the solver will find it.
 
-Ropes take `slack`, which lengthens the path before the link count, link length and layout are
-decided. The sag is a solved parabola rather than the small-angle closed form, because the length
-identity is the whole point and `d = L*sqrt(3*slack/8)` is several percent out by 30%. It is zero
-at both ends, so the anchor pins stay exactly where the user drew them and only the middle moves -
-a slack rope starts sagging, but it starts sagging from the right place. `sagPolyline` densifies
-its input first: the displacement is zero at both ends by construction, so a two-point straight
-line - the exact input the feature exists for - cannot sag at all otherwise. Eight passing
-assertions on the length identity meant nothing until an end-to-end test fed it one.
+Ropes take `slack`, which lengthens the path before the link count and layout are decided. The
+extra length goes into a shallow RIPPLE along the path rather than a deep arc, and that distinction
+is the design: a rope needs extra LENGTH, not extra DEPTH. A deep starting arc put a 20% slack rope
+485pt below the path it was drawn on, which is below any collider it was drawn above — and geometry
+you start past can never be hit, which read as "slack breaks collision". The ripple carries the same
+length within a few percent of the span.
+
+`A*sin(2*PI*waves*t)` is zero at both ends, so the anchor pins stay exactly where they were drawn.
+The amplitude is solved by bisection because a sine's arc length is an elliptic integral and the
+control has to mean what it says. `waves` is tied to the link count at `n/8`: too few and the ripple
+must be deep, too many and the links alias it — at four links per wave the centres land on sin(45),
+sin(135), sin(225), sin(315) and the rope starts as a blocky square comb rather than a wave.
+
+`slackenPolyline` densifies its input first: the offset is zero at both ends by construction, so a
+two-point straight line — the exact input the feature exists for — cannot ripple at all otherwise.
+Eight passing assertions on the length identity meant nothing until an end-to-end test fed it one.
+
+There are THREE link caps, because what tears a chain apart is tension and being pinned is only the
+worst case while also taut. Taut and pinned keeps 32. Free keeps 96. Pinned WITH slack sits between
+at 64: measured on a 1640pt rope, stable through 72 links at 35%, 50% and 80% slack, tearing at 76
+for two of the three — the same chaotic boundary the taut cap refuses to chase, so it takes margin.
+
+A pinned rope also needs the walls to allow for where it will END, not where it starts: it begins as
+a ripple on its path and only hangs once it settles. `reach` is half the chain's length, which
+bounds how far it can fall below its pins. Sizing the box to the starting positions put the floor
+through the middle of the finished drape and the rope kinked 30 degrees at each anchor.
 
 ## Settling
 
