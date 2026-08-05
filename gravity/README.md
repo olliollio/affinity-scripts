@@ -253,6 +253,15 @@ sin(135), sin(225), sin(315) and the rope starts as a blocky square comb rather 
 two-point straight line — the exact input the feature exists for — cannot ripple at all otherwise.
 Eight passing assertions on the length identity meant nothing until an end-to-end test fed it one.
 
+The arc is capped by what is underneath it. `main.js` measures the clear depth from the static
+rings under the rope's span, less 20pt, and passes it as `maxSagDepth`; the arc takes what that
+allows and a ripple carries the remainder. Unobstructed, the rope starts as a clean catenary with no
+ripple at all. Measured on a 2470pt rope with lettering 512pt below: unclamped at 25% slack it
+started 832pt down, past the lettering, and 11 links finished underneath it; clamped, none did and
+41 links rested on it instead of 4. At 10% slack the clamped start is smooth (waviness 5pt) because
+a 492pt gap can absorb about 10.6% of extra length as an arc — beyond that the rope genuinely does
+not fit and must bunch, which is a statement about the rope rather than about the code.
+
 There are THREE link caps, because what tears a chain apart is tension and being pinned is only the
 worst case while also taut. Taut and pinned keeps 32. Free keeps 96. Pinned WITH slack sits between
 at 64: measured on a 1640pt rope, stable through 72 links at 35%, 50% and 80% slack, tearing at 76

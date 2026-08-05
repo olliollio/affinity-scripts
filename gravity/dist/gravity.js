@@ -2409,7 +2409,7 @@ GR.planck = (function () {
    * The ripple runs down the page (+y in source space) because that is where gravity points by
    * default. A different gravity angle makes this an imperfect starting guess and nothing worse.
    */
-  function slackenPolyline(points, slack, waves) {
+  function slackenPolyline(points, slack, waves, maxDepth) {
     var s = Math.max(0, Math.min(MAX_SLACK, slack || 0));
     if (!points || points.length < 4 || s <= 0) return points ? points.slice() : [];
 
@@ -2437,20 +2437,43 @@ GR.planck = (function () {
       ts.push(run / L);
     }
 
-    function withRipple(a) {
+    // Two shapes superimposed: a single ARC, which is what a slack rope actually hangs in, plus a
+    // ripple for whatever length the arc is not allowed to absorb. Both are zero at t=0 and t=1,
+    // so the anchor pins stay exactly where the user drew them whichever is doing the work.
+    function withShape(d, a) {
       var out = src.slice();
       for (var k = 0; k < ts.length; k++) {
-        out[k * 2 + 1] += a * Math.sin(2 * Math.PI * w * ts[k]);
+        var t = ts[k];
+        out[k * 2 + 1] += 4 * d * t * (1 - t) + a * Math.sin(2 * Math.PI * w * t);
       }
       return out;
     }
 
-    var lo = 0, hi = L;
-    for (var it = 0; it < 48; it++) {
-      var mid = (lo + hi) / 2;
-      if (polylineLength(withRipple(mid)) < target) lo = mid; else hi = mid;
+    function solve(fn) {
+      var lo = 0, hi = L;
+      for (var it = 0; it < 48; it++) {
+        var mid = (lo + hi) / 2;
+        if (polylineLength(fn(mid)) < target) lo = mid; else hi = mid;
+      }
+      return (lo + hi) / 2;
     }
-    return withRipple((lo + hi) / 2);
+
+    // Prefer the arc, because excess length only looks RIGHT in the shape a slack rope really
+    // takes. A ripple is the fallback, and its waviness is fixed by the slack alone — measured,
+    // amplitude/wavelength is sqrt(slack)/pi at every wave count, so no amount of tuning hides it.
+    var deep = solve(function (d) { return withShape(d, 0); });
+
+    // But an arc is only safe as deep as there is room for. A free-hanging arc for a 2470pt rope
+    // at 25% slack is ~865pt, and if the artwork it should land on sits 515pt below, starting at
+    // the bottom of the arc means starting past the collider — which is exactly how this shape was
+    // wrong the first time. `maxDepth` is the caller's answer to "how far down is clear".
+    var cap = (maxDepth === undefined || maxDepth === null || !isFinite(maxDepth))
+      ? Infinity : Math.max(0, maxDepth);
+    if (deep <= cap) return withShape(deep, 0);
+
+    // Not enough room for the whole slack. Take what the arc can carry and ripple the remainder —
+    // less waviness than a pure ripple, and the rope still starts above what it has to land on.
+    return withShape(cap, solve(function (a) { return withShape(cap, a); }));
   }
 
   /**
@@ -2485,7 +2508,9 @@ GR.planck = (function () {
     // below its collider. Too many and the sine is aliased by the links sampling it: at four links
     // per wave the centres land on sin(45), sin(135), sin(225), sin(315) and the rope starts as a
     // blocky square comb - two links up, two links down - rather than a wave.
-    var path = slack > 0 ? slackenPolyline(points, slack, Math.max(1, Math.round(n / 8))) : points;
+    var path = slack > 0
+      ? slackenPolyline(points, slack, Math.max(1, Math.round(n / 8)), o.maxSagDepth)
+      : points;
     var length = polylineLength(path);
     var sampled = resample(path, n + 1);
     var linkCount = sampled.length / 2 - 1;
@@ -2568,6 +2593,7 @@ GR.planck = (function () {
       // the rope now STARTS as a shallow ripple on the drawn path and only hangs once it settles —
       // sizing the box to where the bodies begin would put the floor through the finished drape.
       reach: o.anchored ? (length / 2) : 0,
+      maxSagDepth: o.maxSagDepth === undefined ? Infinity : o.maxSagDepth,
       node: o.node || null,
       name: o.name || 'rope'
     };
@@ -4029,6 +4055,39 @@ GR.planck = (function () {
     // 326pt tall, and the rope draped over the bottom wall with a 30 degree kink at each end. The
     // box has to hug what is actually in the world, not what it was derived from.
 
+    // How far a rope may hang before it would start below something it should land ON. A slack
+    // rope is laid along an arc, because excess length only looks right in the shape a rope really
+    // hangs in — but a free-hanging arc for a 2470pt rope at 25% slack is ~865pt deep, and artwork
+    // 515pt below would be missed entirely. Geometry you start past cannot be collided with.
+    //
+    // Measured from the STATIC rings rather than from bodies, because the statics may be built
+    // after the ropes in the loop below, and because a ring is where the collider actually is.
+    var CLEARANCE = 20;
+    function clearDepthBelow(poly) {
+      var minX = Infinity, maxX = -Infinity, lowest = -Infinity;
+      for (var q = 0; q < poly.length; q += 2) {
+        if (poly[q] < minX) minX = poly[q];
+        if (poly[q] > maxX) maxX = poly[q];
+        if (poly[q + 1] > lowest) lowest = poly[q + 1];
+      }
+      var nearest = Infinity;
+      for (var so = 0; so < ex.objects.length; so++) {
+        if (!ex.objects[so].isStatic) continue;
+        var srings = ex.objects[so].rings || [];
+        for (var sr = 0; sr < srings.length; sr++) {
+          var ring = srings[sr];
+          for (var sv = 0; sv < ring.length; sv += 2) {
+            var vx = ring[sv], vy = ring[sv + 1];
+            if (vx < minX || vx > maxX) continue;   // not under this rope
+            if (vy <= lowest) continue;             // not below it
+            if (vy < nearest) nearest = vy;
+          }
+        }
+      }
+      if (!isFinite(nearest)) return Infinity;      // nothing underneath: hang freely
+      return Math.max(0, nearest - lowest - CLEARANCE);
+    }
+
     // ----------------------------------------------------------------- bodies
     console.log('');
     console.log('== bodies ==');
@@ -4054,6 +4113,7 @@ GR.planck = (function () {
             thickness: obj.thickness,
             anchored: obj.anchored,
             slack: o.ropeSlack === undefined ? 0 : o.ropeSlack,
+            maxSagDepth: clearDepthBelow(obj.polylines[rp]),
             friction: o.friction === undefined ? 0.4 : o.friction,
             restitution: o.restitution === undefined ? 0.15 : o.restitution,
             density: o.density === undefined ? 1 : o.density,
@@ -4072,6 +4132,9 @@ GR.planck = (function () {
           ' links=' + (madeRope ? madeRope.links.length : 0) +
           ' thickness=' + fmt(obj.thickness || 0, 1) + 'pt' +
           (madeRope && madeRope.slack ? ' slack=' + fmt(madeRope.slack * 100, 0) + '%' : '') +
+          (madeRope && madeRope.slack
+            ? ' clearBelow=' + (isFinite(madeRope.maxSagDepth) ? fmt(madeRope.maxSagDepth, 0) + 'pt' : 'free')
+            : '') +
           (obj.anchored ? ' PINNED' : ''));
         continue;
       }
