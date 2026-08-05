@@ -134,6 +134,17 @@ winding half of this, which is exactly why the tests assert that no vertex is dr
 Because holes are real, mass and rotational inertia come out right for free: a hollow "O" weighs
 less than the disc containing it, and spins more readily.
 
+**Bounds are worked out by `boundsForArtwork` in `world.js`, which is pure and therefore tested.**
+It lived inline in `main.js`, which touches the Affinity API and is never exercised headlessly - so
+the degenerate case below could not have been caught where it was. No axis of the box may be
+smaller than `MIN_SPAN_FRAC` (0.15) of the artwork's larger dimension: FLAT artwork has a
+zero-height bounding box, and a fixed margin then left a horizontal rope 40pt of room to fall into,
+clipping its sag to 33.5pt where the natural sag is 105.7pt. It read as the anchoring having failed
+when the ends were held exactly right and the world was 80pt tall. 0.15 fixes that while leaving
+working scenes untouched: 1830x778 artwork needs 274 and already has 778, so its box is unchanged
+to the point. Growth is about the centre, or the artwork would shift inside its box and the
+artboard-independence property would be lost.
+
 **Bounds hug the artwork, not the page.** A closed static box is added around everything, standing
 off by `MARGIN`, so a body with nothing to hit cannot fall forever and the run can end on something
 better than the frame cap. It is built from the union of every ring **and every rope polyline** —
