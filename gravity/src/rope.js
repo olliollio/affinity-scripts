@@ -197,6 +197,79 @@
     return Math.max(MIN_SEGMENTS, Math.min(ceiling, byThickness));
   }
 
+  // Slack is capped because the sag needed grows without bound as the extra length does, and a rope
+  // told to be three times its span would be initialised in a loop below the artboard.
+  var MAX_SLACK = 1.0;
+
+  // How finely a path is resampled before the sag is applied. The sag displaces vertices and is
+  // zero at both ends, so the curve can only be as smooth as the vertices available to move.
+  var SAG_SAMPLES = 64;
+
+  /**
+   * Lengthens a path by `slack` (0.2 = 20% longer) by sagging it, keeping both ends exactly put.
+   *
+   * This is what lets a straight line hang. A rope drawn as a straight line has length equal to the
+   * distance between its ends, so a correctly simulated chain has NOTHING spare and cannot drape —
+   * measured, a 1640pt pinned rope sags 105.7pt, and all of that is joint stretch rather than
+   * drape. Extra length has to come from somewhere, and the honest place is the initial shape.
+   *
+   * The sag is a parabola, `4d·t·(1-t)`, which is zero at both ends — so the endpoints, and
+   * therefore the anchor pins, stay exactly where the user drew them. Only the middle moves. That
+   * keeps the frame-0 rule ("the first frame reproduces the artwork") true where it matters most:
+   * a slack rope starts visibly sagging, but it starts sagging FROM the right place.
+   *
+   * `d` is solved rather than derived. The small-sag approximation `d = L·sqrt(3·slack/8)` is only
+   * good to a few percent by 30% slack, and the whole point is that the length comes out right, so
+   * it is used as a seed and then corrected. Pure, so the length identity is unit-tested.
+   *
+   * Sag is applied down the page (+y in source space) because that is where gravity points by
+   * default. A different gravity angle makes this an imperfect starting guess and nothing worse —
+   * it is an initial condition, and the solver takes over on the first step.
+   */
+  function sagPolyline(points, slack) {
+    var s = Math.max(0, Math.min(MAX_SLACK, slack || 0));
+    if (!points || points.length < 4 || s <= 0) return points ? points.slice() : [];
+
+    // Densify FIRST. The sag is applied by displacing existing vertices, and the displacement is
+    // zero at both ends by construction — so a path with no vertices between its ends cannot sag at
+    // all. A straight line drawn with two points is exactly that, and it is the input this whole
+    // feature exists for: eight passing assertions on the length identity meant nothing until an
+    // end-to-end test fed it a raw two-point line and the rope came out identical to a taut one.
+    var src = points.length / 2 < SAG_SAMPLES ? resample(points, SAG_SAMPLES) : points;
+
+    var L = polylineLength(src);
+    if (!(L > 0)) return src.slice();
+    var target = L * (1 + s);
+
+    // Arc position of every point, normalised, so the sag is placed by distance along the path
+    // rather than by index — an unevenly sampled path would otherwise sag lopsidedly.
+    var ts = [0];
+    var run = 0;
+    for (var i = 2; i < src.length; i += 2) {
+      var dx = src[i] - src[i - 2], dy = src[i + 1] - src[i - 1];
+      run += Math.sqrt(dx * dx + dy * dy);
+      ts.push(run / L);
+    }
+
+    function withSag(d) {
+      var out = src.slice();
+      for (var k = 0; k < ts.length; k++) {
+        var t = ts[k];
+        out[k * 2 + 1] += 4 * d * t * (1 - t);
+      }
+      return out;
+    }
+
+    // Seed from the small-sag closed form, then bisect. Length grows monotonically with d, so a
+    // bracket plus a fixed iteration count converges without needing a derivative.
+    var lo = 0, hi = Math.max(L * Math.sqrt(3 * s / 8) * 2, L);
+    for (var it = 0; it < 40; it++) {
+      var mid = (lo + hi) / 2;
+      if (polylineLength(withSag(mid)) < target) lo = mid; else hi = mid;
+    }
+    return withSag((lo + hi) / 2);
+  }
+
   /**
    * Builds a rope in the world from a polyline in SOURCE coordinates.
    *
@@ -213,12 +286,17 @@
     if (!points || points.length < 4) return null;
 
     var thickness = Math.max(MIN_THICKNESS, o.thickness || MIN_THICKNESS);
-    var length = polylineLength(points);
+    // Slack lengthens the rope before anything else is decided, because the link count, the link
+    // length and the layout all follow from how long the rope actually is.
+    var slack = Math.max(0, Math.min(MAX_SLACK, o.slack || 0));
+    var path = slack > 0 ? sagPolyline(points, slack) : points;
+
+    var length = polylineLength(path);
     if (!(length > 0)) return null;
 
     var scale = W.scale;
     var n = segmentCount(length, thickness, o, scale);
-    var sampled = resample(points, n + 1);
+    var sampled = resample(path, n + 1);
     var linkCount = sampled.length / 2 - 1;
     if (linkCount < 1) return null;
 
@@ -293,6 +371,7 @@
       halfLength: halfLen,
       thickness: thickness,
       anchored: !!o.anchored,
+      slack: slack,
       node: o.node || null,
       name: o.name || 'rope'
     };
@@ -347,6 +426,8 @@
   GR.resamplePolyline = resample;
   GR.polylineFromPoses = polylineFromPoses;
   GR.ropeSegmentCount = segmentCount;
+  GR.sagPolyline = sagPolyline;
+  GR.ROPE_MAX_SLACK = MAX_SLACK;
   GR.addRope = addRope;
   GR.ROPE_ANCHOR_WORDS = ANCHOR_WORDS;
   GR.ROPE_MAX_SEGMENTS = MAX_SEGMENTS;

@@ -93,6 +93,25 @@ and drapes rather than falling as a rigid stick.
 By default both ends are free and the whole rope falls. To pin the ends so it hangs, put `hang`,
 `pin` or `anchor` in the object's name.
 
+**Then give it slack, or it will not hang.** A path drawn as a straight line is exactly as long as
+the gap between its ends, so there is nothing spare to drape with — pin it and you get a shallow
+bow, which is physically correct and not what anyone wants. **Rope slack %** tells Gravity the rope
+is longer than it looks. On a 1640pt line pinned at both ends:
+
+| Rope slack % | How far it hangs |
+|---|---|
+| 0 | 105pt — barely a bow |
+| 10 | 328pt |
+| 20 | 466pt |
+| 35 | 645pt |
+
+The ends stay exactly where you drew them at any setting. Only the middle moves, and the rope
+starts already sagging rather than starting straight — a slack rope has to get its extra length
+from somewhere, and the first frame is where it comes from.
+
+If you would rather not use the setting, draw the path as a curve that is genuinely longer than the
+gap between its ends. That has always worked and needs nothing switched on.
+
 > A hanging rope is simulated at lower resolution than a falling one — roughly a third as many
 > segments. A rope pulled tight is much harder to solve than a slack one, and past a certain
 > segment count a taut rope tears itself apart. The drawn curve stays smooth either way, but a
@@ -210,6 +229,7 @@ for the anchor words: a path called `hanging cable` is pinned, one called `Shang
 | **Bounciness %** | 15 | How much objects bounce. 0 is a beanbag, high values make things skitter for a long time. |
 | **Friction %** | 40 | How much they grip. Low values make piles slide apart; high values let them stack. |
 | **Equalise mass** | off | Gives every object comparable weight regardless of size, so large artwork stops bulldozing small artwork. |
+| **Rope slack %** | 0 | How much longer than it looks a rope is. 0 leaves ropes exactly as drawn, so a straight pinned line cannot drape. Raise it to make ropes hang. |
 
 There is deliberately no density control. One density applied to everything leaves every weight
 *ratio* unchanged, and collisions only depend on ratios — so it would do nothing at all. Equalise
@@ -271,6 +291,9 @@ the frame.
 segments, and a run only ends when *every* one of them is still at the same moment. A rope draped
 over lettering can look completely at rest while a few segments creep imperceptibly. The drop is
 fine — keep the frame you like.
+
+**A pinned rope keeps swinging.** A hanging rope is a pendulum, and a pendulum takes a long time to
+stop. Expect `settledBy=cap` on a scene that is mostly rope, and keep the frame you like.
 
 **Very thin artwork is unstable.** Below roughly 5pt at typical sizes, a shape is thin enough that
 the physics engine cannot hold it steady and it will jitter or sink slightly into what it lands on.

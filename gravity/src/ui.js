@@ -18,7 +18,8 @@
     bounce: 15,        // %
     friction: 40,      // %
     seconds: 10,
-    seed: 1
+    seed: 1,
+    slack: 0        // % - a straight rope has no spare length, so drape is opt-in
   };
 
   /**
@@ -75,6 +76,12 @@
     // Anything longer than about "Keep groups as one object" belongs in the help text below, which
     // is full width and wraps properly.
     var equaliseCtl = mat.addCheckBox('Equalise mass', false);
+    // Rope slack lives with Material rather than Simulation because it is a property of the rope,
+    // not of the world. A rope drawn as a straight line has length exactly equal to the gap between
+    // its ends, so a correctly simulated one has nothing spare and cannot drape - it needs to be
+    // told it is longer than it looks.
+    var slackCtl = mat.addUnitValueEditor('Rope slack %', UnitType.Number, UnitType.Number, d.slack, 0, 100);
+    slackCtl.setShowPopupSlider(true); slackCtl.precision = 0;
 
     var beh = col.addGroup('Objects');
     var convertCtl = beh.addCheckBox('Split text into letters', false);
@@ -111,6 +118,7 @@
       restitution: Math.min(0.95, Math.max(0, (bounceCtl.value === undefined ? d.bounce : bounceCtl.value) / 100)),
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
       equaliseMass: !!equaliseCtl.value,
+      ropeSlack: Math.max(0, Math.min(1, (slackCtl.value === undefined ? d.slack : slackCtl.value) / 100)),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,

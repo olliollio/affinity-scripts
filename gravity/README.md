@@ -236,6 +236,15 @@ transforms a rope's node during playback — and `ropeCommands` applies it after
 > reproduce the artwork exactly; if it is already wrong, the fault is in the write-back and no
 > amount of looking at the solver will find it.
 
+Ropes take `slack`, which lengthens the path before the link count, link length and layout are
+decided. The sag is a solved parabola rather than the small-angle closed form, because the length
+identity is the whole point and `d = L*sqrt(3*slack/8)` is several percent out by 30%. It is zero
+at both ends, so the anchor pins stay exactly where the user drew them and only the middle moves -
+a slack rope starts sagging, but it starts sagging from the right place. `sagPolyline` densifies
+its input first: the displacement is zero at both ends by construction, so a two-point straight
+line - the exact input the feature exists for - cannot sag at all otherwise. Eight passing
+assertions on the length identity meant nothing until an end-to-end test fed it one.
+
 ## Settling
 
 `world.setAllowSleeping(true)` and "every body asleep" replace physicsdrop's `stillFrames` /
