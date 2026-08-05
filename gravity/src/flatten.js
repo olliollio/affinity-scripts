@@ -135,8 +135,10 @@
    * Applies a row-major 2x3 transform `[a, b, tx, c, d, ty]` to a ring, in place.
    *
    * This is how base-space curve coordinates become spread-space ones. The matrix comes from
-   * `node.transform`, NOT from `node.localToSpreadTransform` — that one reports identity even for
-   * nodes that are demonstrably offset.
+   * `node.baseToSpreadTransform`, which is the only one of the three with the ancestors composed
+   * into it. `node.transform` is the node's LOCAL matrix and `node.localToSpreadTransform` is the
+   * parent chain without the node — either one alone lands the geometry in the wrong place as soon
+   * as an ancestor carries a scale.
    */
   function transformRing(ring, m) {
     if (!m) return ring;

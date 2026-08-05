@@ -813,8 +813,10 @@ GR.planck = (function () {
    * Applies a row-major 2x3 transform `[a, b, tx, c, d, ty]` to a ring, in place.
    *
    * This is how base-space curve coordinates become spread-space ones. The matrix comes from
-   * `node.transform`, NOT from `node.localToSpreadTransform` — that one reports identity even for
-   * nodes that are demonstrably offset.
+   * `node.baseToSpreadTransform`, which is the only one of the three with the ancestors composed
+   * into it. `node.transform` is the node's LOCAL matrix and `node.localToSpreadTransform` is the
+   * parent chain without the node — either one alone lands the geometry in the wrong place as soon
+   * as an ancestor carries a scale.
    */
   function transformRing(ring, m) {
     if (!m) return ring;
@@ -1066,15 +1068,18 @@ GR.planck = (function () {
  *
  *   - EVERY node type exposes `curvesInterface`, including live ShapeNode, ArtTextNode and
  *     ImageNode. There is no such thing as a live shape with no curves.
- *   - Curve coordinates are in BASE space. `node.transform` maps them to spread space.
- *     `node.localToSpreadTransform` is identity on every node, including offset ones — using it
- *     puts every grouped object in the wrong place.
+ *   - Curve coordinates are in BASE space. `node.baseToSpreadTransform` maps them to spread space.
+ *     `node.transform` is the node's LOCAL matrix, relative to its parent, and only equals the
+ *     base-to-spread matrix while every ancestor is identity. It looked interchangeable for a long
+ *     time because the test document's artboard happened to be unscaled; resize an artboard and a
+ *     rope came out a third short. `node.localToSpreadTransform` is the parent-chain product, so
+ *     it is identity only when there is no meaningful parent — it is not a general no-op either.
  *   - `curve.generatePolygon(tolerance)` returns a PolygonHandle with NO readable members, so
  *     flattening is ours to do.
  *   - `curvesInterface.polyCurve` reports curveCount === 1 for an entire string — one glyph.
  *     `curvesInterface.polyPolyCurves` holds one PolyCurve per glyph, counters included, and
  *     `getTransformedPolyCurve(i)` returns them in BASE space — measured against `spreadBaseBox`,
- *     it reproduces `baseBox` exactly, and `node.transform` then lands it on `spreadBaseBox`. So
+ *     it reproduces `baseBox` exactly, and the base-to-spread matrix lands it on `spreadBaseBox`. So
  *     text needs no conversion and nothing is destroyed. It becomes ONE body, because a live text
  *     node is one node and playback can only transform it once per frame.
  */
@@ -1120,16 +1125,26 @@ GR.planck = (function () {
     return 'unknown';
   }
 
-  /** `Transform.data` is row-major 2x3 `[a, b, tx, c, d, ty]`. */
+  /**
+   * The base-to-spread matrix, as row-major 2x3 `[a, b, tx, c, d, ty]` (`Transform.data`).
+   *
+   * `baseToSpreadTransform` first, because it is the only one of these that has the ancestors
+   * composed into it. `domainTransform` is the curve data's own declared domain and measured
+   * identical to it. `node.transform` is last and is a fallback only: it is the LOCAL matrix, so
+   * on a node inside a scaled artboard it is wrong by the artboard's scale.
+   */
   function matrixOf(node) {
-    try {
-      var t = node.transform;
+    function data(t) {
       if (!t || !t.data) return null;
       var d = t.data;
+      if (d.length < 6) return null;
       return [d[0], d[1], d[2], d[3], d[4], d[5]];
-    } catch (e) {
-      return null;
     }
+    var m = null;
+    try { m = data(node.baseToSpreadTransform); } catch (e) { /* older build, try the next */ }
+    if (!m) { try { m = data(node.curvesInterface && node.curvesInterface.domainTransform); } catch (e) { /* likewise */ } }
+    if (!m) { try { m = data(node.transform); } catch (e) { /* nothing usable */ } }
+    return m;
   }
 
   /**
@@ -1198,7 +1213,7 @@ GR.planck = (function () {
    *
    * Each glyph's own `PolyCurve` is in em space, near the origin, so `getTransformedPolyCurve(i)`
    * is used rather than `getPolyCurve(i)` — it applies the per-glyph placement and lands the
-   * outline in the node's base space, where `node.transform` finishes the job like any other node.
+   * outline in the node's base space, where `node.baseToSpreadTransform` finishes the job.
    *
    * Reading the outlines leaves the text editable. `DocumentCommand.createConvertToCurves` exists,
    * but converting rewrites the user's document to work around a read we can simply do.
@@ -1357,7 +1372,7 @@ GR.planck = (function () {
    * boundary and returns the hole rings too.
    *
    * An ImageNode's own curves are its placement rectangle in local pixel coordinates, so pixel
-   * space maps to base space by the ratio of the node's box to the bitmap, and `node.transform`
+   * space maps to base space by the ratio of the node's box to the bitmap, and `node.baseToSpreadTransform`
    * finishes the job as it does for vector nodes.
    */
   function rasterRingsOf(node, opts) {
@@ -1416,7 +1431,7 @@ GR.planck = (function () {
   /** The image's placement rectangle, in spread coordinates. */
   function imageRect(node, opts) {
     // An ImageNode's curves ARE its placement rectangle, in local pixel coordinates, positioned
-    // by node.transform. So the ordinary vector path already produces the right answer.
+    // by the base-to-spread matrix. So the ordinary vector path already produces the right answer.
     return ringsOf(node, opts);
   }
 
