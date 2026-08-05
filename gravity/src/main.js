@@ -284,9 +284,12 @@
     // Nothing had any geometry at all. Fall back to the page rather than building a null world.
     var boxFromSpread = !box;
     if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
-    // The rectangle itself is worked out by a pure function, so the degenerate cases have tests.
-    var wallRect = GR.boundsForArtwork(box);
-    GR.addBounds(W, wallRect);
+
+    // The walls are added AFTER the bodies, further down, because a slack rope hangs far below the
+    // path it was drawn from. Sizing the box to the artwork alone put the floor through the middle
+    // of a hanging rope: at 35% slack a 1640pt line settles 657pt down while its own box is only
+    // 326pt tall, and the rope draped over the bottom wall with a 30 degree kink at each end. The
+    // box has to hug what is actually in the world, not what it was derived from.
 
     // ----------------------------------------------------------------- bodies
     console.log('');
@@ -366,6 +369,36 @@
     }
 
     if (!made.length) { console.log('gravity: no dynamic bodies.'); return null; }
+
+    // ------------------------------------------------------------------ walls
+    //
+    // Now that every body exists, grow the box over where they actually START. A slack rope is laid
+    // along a sagged arc, so its links begin well below the path they came from — the artwork box
+    // alone would put the floor through the middle of the rope and it would drape over its own
+    // wall. Each link contributes its full reach rather than its centre, since a link is a bar and
+    // its ends stick out past its middle.
+    for (var wb = 0; wb < made.length; wb++) {
+      var wst = GR.bodyState(W, made[wb]);
+      var reach = made[wb].halfLength || made[wb].simRadius * W.scale || 0;
+      grow([wst.x - reach, wst.y - reach, wst.x + reach, wst.y + reach]);
+    }
+    // A pinned rope with slack starts as a shallow ripple on the path it was drawn along and only
+    // hangs once it settles, so where its links BEGIN says nothing about where they will end up.
+    // Half the chain's length bounds how far it can reach below its pins.
+    for (var wr = 0; wr < ropes.length; wr++) {
+      if (!ropes[wr].reach) continue;
+      var top = Infinity, lo = Infinity, hi = -Infinity;
+      for (var wl = 0; wl < ropes[wr].links.length; wl++) {
+        var ls = GR.bodyState(W, ropes[wr].links[wl]);
+        if (ls.y < top) top = ls.y;
+        if (ls.x < lo) lo = ls.x;
+        if (ls.x > hi) hi = ls.x;
+      }
+      grow([lo, top, hi, top + ropes[wr].reach]);
+    }
+    // The rectangle itself is worked out by a pure function, so the degenerate cases have tests.
+    var wallRect = GR.boundsForArtwork(box);
+    GR.addBounds(W, wallRect);
 
     // --------------------------------------------------- the transform check
     //

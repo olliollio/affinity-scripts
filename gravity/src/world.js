@@ -146,6 +146,24 @@
       name: o.name || 'bounds'
     });
     if (rec) rec.isBounds = true;
+
+    // Anything already in the world must be INSIDE the walls. Bounds are normally added before the
+    // bodies, but a slack rope is laid along a sagged arc that reaches far below the path it came
+    // from, so a box sized to the artwork put the floor through the middle of a hanging rope and it
+    // draped over its own wall — a 30 degree kink at each end that read as a physics fault. The
+    // caller's job is to size the box over what is actually there; this says so when it has not.
+    var outside = 0;
+    for (var i = 0; i < W.dynamics.length; i++) {
+      var d = W.dynamics[i];
+      if (d === rec) continue;
+      var st;
+      try { st = GR.bodyState(W, d); } catch (e) { continue; }
+      if (st.x < x0 || st.x > x1 || st.y < y0 || st.y > y1) outside++;
+    }
+    if (outside) {
+      W.warnings.push(outside + ' body/bodies start OUTSIDE the bounds — the walls were sized ' +
+        'before those bodies existed, so they will be pushed back in or rest on a wall');
+    }
     return rec;
   }
 
