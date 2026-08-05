@@ -73,6 +73,75 @@ module.exports = function (GR, h) {
   h.assertEqual('a zero-length path collapses to two points',
     GR.resamplePolyline([7, 7, 7, 7], 6).length / 2, 2);
 
+  h.group('rope: slack');
+
+  var straight = line(0, 0, 1000, 0, 1);
+  h.assertEqual('no slack leaves the path alone',
+    GR.sagPolyline(straight, 0).join(','), straight.join(','));
+
+  // The identity that matters: the whole point of slack is that the rope is LONGER than the gap
+  // between its ends, so the length has to come out right rather than approximately right. The
+  // small-sag closed form is several percent out by 30%, which is why the sag depth is solved.
+  [0.05, 0.1, 0.2, 0.4, 0.8].forEach(function (s) {
+    var sagged = GR.sagPolyline(GR.resamplePolyline(straight, 60), s);
+    var ratio = GR.polylineLength(sagged) / 1000;
+    h.assertClose('slack ' + (s * 100) + '% lengthens the rope by exactly that', ratio, 1 + s, 0.005);
+  });
+
+  // Both ends must stay exactly where they were drawn, because that is where the anchor pins go -
+  // a slack rope may sag in the middle but it must not detach from the artwork.
+  var sag20 = GR.sagPolyline(GR.resamplePolyline(straight, 60), 0.2);
+  h.assertClose('the start does not move (x)', sag20[0], 0, 1e-9);
+  h.assertClose('the start does not move (y)', sag20[1], 0, 1e-9);
+  h.assertClose('nor the end (x)', sag20[sag20.length - 2], 1000, 1e-6);
+  h.assertClose('nor the end (y)', sag20[sag20.length - 1], 0, 1e-9);
+
+  // And it must sag DOWN the page, not up. A sign error here would hang the rope into the sky and
+  // still satisfy every length assertion above.
+  var mid = sag20[Math.floor(sag20.length / 4) * 2 + 1];
+  h.assert('and it sags downwards', mid > 50, 'mid y was ' + mid.toFixed(1));
+
+  h.assert('slack is capped', GR.polylineLength(GR.sagPolyline(straight, 99)) / 1000 <= 1 + GR.ROPE_MAX_SLACK + 0.01);
+
+  // The case the whole feature exists for, and the one that slipped through: a straight line drawn
+  // with TWO points. The sag displaces vertices and is zero at both ends, so a path with nothing in
+  // between cannot sag however correct the arithmetic is. Every assertion above passed while this
+  // returned the input untouched.
+  var raw2 = [0, 0, 1000, 0];
+  var sagged2 = GR.sagPolyline(raw2, 0.2);
+  h.assertClose('a raw two-point line still lengthens', GR.polylineLength(sagged2) / 1000, 1.2, 0.005);
+  h.assert('by growing vertices to sag with', sagged2.length / 2 > 2, 'got ' + sagged2.length / 2 + ' points');
+
+  // A path that is already curved must be lengthened by the same proportion, not flattened.
+  var curved = [0, 0, 250, 120, 500, 0, 750, 120, 1000, 0];
+  var curvedLen = GR.polylineLength(curved);
+  h.assertClose('a curved path lengthens proportionally too',
+    GR.polylineLength(GR.sagPolyline(GR.resamplePolyline(curved, 80), 0.25)) / curvedLen, 1.25, 0.01);
+
+  h.group('rope: slack actually drapes');
+
+  // End to end, in the world that exposed the bug: a pinned straight line in a box built the way
+  // main.js builds it. Without slack the rope is taut and can only stretch; with slack it hangs.
+  function pinnedSag(slack) {
+    var Wp = GR.makeWorld({ scale: 100, gravityY: -10 });
+    GR.addBounds(Wp, GR.boundsForArtwork({ x0: 0, y0: 0, x1: 1640, y1: 0 }, { minSpanFrac: 2 }));
+    var rp = GR.addRope(Wp, [0, 0, 1640, 0], { thickness: 10, anchored: true, slack: slack, name: 'hang' });
+    GR.run(Wp, { maxFrames: 1200 });
+    var poses = rp.links.map(function (l) { return GR.bodyState(Wp, l); });
+    var poly = GR.polylineFromPoses(poses, rp.halfLength);
+    var lowest = -Infinity;
+    for (var i = 1; i < poly.length; i += 2) if (poly[i] > lowest) lowest = poly[i];
+    return { sag: lowest, ends: [poly[1], poly[poly.length - 1]] };
+  }
+  var taut = pinnedSag(0);
+  var slacked = pinnedSag(0.25);
+  h.assert('a taut rope barely sags', taut.sag < 150, 'sagged ' + taut.sag.toFixed(1));
+  h.assert('a slack one hangs much further', slacked.sag > taut.sag * 2,
+    'taut ' + taut.sag.toFixed(1) + ' vs slack ' + slacked.sag.toFixed(1));
+  h.assert('and its ends stay pinned where they were drawn',
+    Math.abs(slacked.ends[0]) < 12 && Math.abs(slacked.ends[1]) < 12,
+    'ends at ' + slacked.ends.map(function (v) { return v.toFixed(1); }).join(' and '));
+
   h.group('rope: segment count');
 
   h.assert('a long thin rope gets many links', GR.ropeSegmentCount(1000, 2, {}, 100) > 20);

@@ -312,6 +312,7 @@
           madeRope = GR.addRope(W, obj.polylines[rp], {
             thickness: obj.thickness,
             anchored: obj.anchored,
+            slack: o.ropeSlack === undefined ? 0 : o.ropeSlack,
             friction: o.friction === undefined ? 0.4 : o.friction,
             restitution: o.restitution === undefined ? 0.15 : o.restitution,
             density: o.density === undefined ? 1 : o.density,
@@ -329,6 +330,7 @@
           '  paths=' + obj.polylines.length +
           ' links=' + (madeRope ? madeRope.links.length : 0) +
           ' thickness=' + fmt(obj.thickness || 0, 1) + 'pt' +
+          (madeRope && madeRope.slack ? ' slack=' + fmt(madeRope.slack * 100, 0) + '%' : '') +
           (obj.anchored ? ' PINNED' : ''));
         continue;
       }
