@@ -96,6 +96,45 @@
   }
 
   /**
+   * What is still moving, and how much.
+   *
+   * A run that ends on the frame cap says only that it did not settle, which is the one outcome
+   * with no information in it. The distinction that matters is between a scene that is genuinely
+   * still creeping and one that is motionless but cannot be certified still: sleeping needs the
+   * position solver to converge, and quiescence needs EVERY body under tolerance for a full second
+   * with `quiet` resetting to zero on any frame that fails. A handful of bodies twitching at a
+   * hundredth of a point per second defeats both while looking perfectly settled.
+   *
+   * Velocities are reported in SIM units, alongside the tolerance they are measured against, so the
+   * caller can convert to points with the world scale and the reader can see how far off it is.
+   */
+  function restlessness(W) {
+    var S = W.planck.Settings;
+    var out = {
+      awake: 0,
+      total: W.dynamics.length,
+      maxLinear: 0,
+      maxAngular: 0,
+      worstName: '',
+      linearTolerance: S.linearSleepTolerance,
+      angularTolerance: S.angularSleepTolerance,
+      overTolerance: 0
+    };
+    for (var i = 0; i < W.dynamics.length; i++) {
+      var rec = W.dynamics[i];
+      var b = rec.body;
+      if (b.isAwake()) out.awake++;
+      var v = b.getLinearVelocity();
+      var lin = Math.sqrt(v.x * v.x + v.y * v.y);
+      var ang = Math.abs(b.getAngularVelocity());
+      if (lin > S.linearSleepTolerance || ang > S.angularSleepTolerance) out.overTolerance++;
+      if (lin > out.maxLinear) { out.maxLinear = lin; out.worstName = rec.name || ''; }
+      if (ang > out.maxAngular) out.maxAngular = ang;
+    }
+    return out;
+  }
+
+  /**
    * Dynamic bodies that are deeply overlapping STATIC geometry.
    *
    * This is the one case where the simulation cannot end on its own. planck only lets an island
@@ -199,7 +238,15 @@
       settledAt: settledAt,
       settledBy: settledBy,
       hitFrameCap: settledAt < 0,
-      staticOverlaps: overlaps || []
+      staticOverlaps: overlaps || [],
+      // Measured at the last recorded frame either way. On a settled run it confirms the scene
+      // really is still; on a capped one it is the whole diagnosis.
+      restless: restlessness(W),
+      // How close quiescence came. `quiet` counts consecutive frames under tolerance and resets to
+      // zero on any frame that fails, so a capped run ending with a small number here means
+      // something interrupted it recently rather than the scene never having been quiet at all.
+      quietRun: quiet,
+      quietNeeded: quietFrames
     };
   }
 

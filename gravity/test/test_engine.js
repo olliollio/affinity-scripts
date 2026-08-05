@@ -302,6 +302,31 @@ module.exports = function (GR, h) {
                Wstuck2.dynamics[0].body.getLinearVelocity().y) < 1e-6 &&
     Wstuck2.dynamics[0].body.isAwake() === true);
 
+  // A capped run reports what was still moving, because "it hit the cap" on its own cannot
+  // distinguish a scene that is genuinely creeping from one that is motionless but unsleepable.
+  // This is the second case: awake, and not moving at all.
+  h.assert('a capped run reports bodies still awake', noBackstop.restless.awake > 0,
+    'awake=' + noBackstop.restless.awake);
+  h.assertEqual('but none of them are over the sleep tolerance',
+    noBackstop.restless.overTolerance, 0);
+  h.assert('so the reported top speed is essentially zero',
+    noBackstop.restless.maxLinear < noBackstop.restless.linearTolerance,
+    'maxLinear=' + noBackstop.restless.maxLinear);
+
+  // And the first case: capped while genuinely in motion. Five frames is nowhere near enough to
+  // land, so the bodies are still falling and must be reported as such.
+  var Wfalling = GR.makeWorld({ scale: 100, gravityY: -10 });
+  GR.addBounds(Wfalling, { x: -800, y: -800, width: 1600, height: 1600 });
+  GR.addBody(Wfalling, GR.decompose({ outer: ring(0, 400, 120, 60, true), holes: [] }), {});
+  var fallingRec = GR.run(Wfalling, { maxFrames: 5 });
+  h.assertEqual('a run capped mid-fall ends on the cap', fallingRec.settledBy, 'cap');
+  h.assert('and reports a speed well over the tolerance',
+    fallingRec.restless.maxLinear > fallingRec.restless.linearTolerance * 10,
+    'maxLinear=' + fallingRec.restless.maxLinear);
+  h.assert('with every body counted as over tolerance',
+    fallingRec.restless.overTolerance === fallingRec.restless.total,
+    fallingRec.restless.overTolerance + '/' + fallingRec.restless.total);
+
   // A clean scene must still settle by SLEEPING, or the backstop is masking a real regression.
   var Wclean = GR.makeWorld({ scale: 100, gravityY: -10 });
   GR.addBounds(Wclean, { x: -800, y: -800, width: 1600, height: 1600 });
@@ -317,6 +342,7 @@ module.exports = function (GR, h) {
   var cleanRec = GR.run(Wclean, { maxFrames: 1200 });
   h.assertEqual('a clean scene settles by sleeping', cleanRec.settledBy, 'sleep');
   h.assertEqual('a clean scene reports no static overlaps', cleanRec.staticOverlaps.length, 0);
+  h.assertEqual('and nothing is left awake when it sleeps', cleanRec.restless.awake, 0);
 
   // ------------------------------------------------------------------- bullets
   h.group('bodies: continuous collision');
