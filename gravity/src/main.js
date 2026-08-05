@@ -15,10 +15,10 @@
 (function (GR) {
   'use strict';
 
-  // Breathing room OUTSIDE the artwork and the spread, never inside them. An inward margin looks
-  // tidier but puts a wall through anything sitting near the page edge, and a body that starts
-  // embedded in static geometry can never sleep - the run then burns to the frame cap every time.
-  var MARGIN = 40;
+  // The wall rectangle is worked out by GR.boundsForArtwork in world.js, which is pure and tested.
+  // Breathing room goes OUTSIDE the artwork, never inside it: an inward margin looks tidier but
+  // puts a wall through anything sitting near the edge, and a body that starts embedded in static
+  // geometry can never sleep - the run then burns to the frame cap every time.
 
   function fmt(n, dp) { return Number(n).toFixed(dp === undefined ? 2 : dp); }
 
@@ -284,11 +284,9 @@
     // Nothing had any geometry at all. Fall back to the page rather than building a null world.
     var boxFromSpread = !box;
     if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
-    GR.addBounds(W, {
-      x: box.x0 - MARGIN, y: box.y0 - MARGIN,
-      width: (box.x1 - box.x0) + 2 * MARGIN,
-      height: (box.y1 - box.y0) + 2 * MARGIN
-    });
+    // The rectangle itself is worked out by a pure function, so the degenerate cases have tests.
+    var wallRect = GR.boundsForArtwork(box);
+    GR.addBounds(W, wallRect);
 
     // ----------------------------------------------------------------- bodies
     console.log('');
@@ -402,9 +400,9 @@
     // physics. It is the union of the artwork now, so it must be identical at two artboard sizes.
     // Same size but shifted origin means a pure translation; a different size means something in
     // the selection is itself tracking the page.
-    console.log('  physics box: x=' + fmt(box.x0 - MARGIN) + ' y=' + fmt(box.y0 - MARGIN) +
-                ' w=' + fmt((box.x1 - box.x0) + 2 * MARGIN) +
-                ' h=' + fmt((box.y1 - box.y0) + 2 * MARGIN) +
+    console.log('  physics box: x=' + fmt(wallRect.x) + ' y=' + fmt(wallRect.y) +
+                ' w=' + fmt(wallRect.width) +
+                ' h=' + fmt(wallRect.height) +
                 (boxFromSpread ? '  <-- SUSPECT: fell back to the page, no artwork geometry' : ''));
 
     // -------------------------------------------------------------------- sim

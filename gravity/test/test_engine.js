@@ -46,6 +46,40 @@ module.exports = function (GR, h) {
     Math.sqrt(50 * 50 + 50 * 50), 1e-9);
 
   // ------------------------------------------------------------------- world
+  h.group('world: the wall rectangle');
+
+  // An ordinary scene: the box is the artwork plus a margin on every side, and nothing else.
+  var ordinary = GR.boundsForArtwork({ x0: 0, y0: 0, x1: 1830, y1: 778 });
+  h.assertClose('an ordinary box is the artwork plus a margin', ordinary.width, 1830 + 80, 1e-9);
+  h.assertClose('on both axes', ordinary.height, 778 + 80, 1e-9);
+  h.assertClose('offset by the margin', ordinary.x, -40, 1e-9);
+
+  // The regression this exists for. Flat artwork - a horizontal rope, a rule, a baseline - has a
+  // bounding box of ZERO height, so a fixed margin left a rope 40pt of room to fall into and it
+  // landed on its own floor long before it could drape. Measured: 33.5pt of sag where the rope's
+  // natural sag is 105.7pt, which read as the anchoring having failed when it had not.
+  var flat = GR.boundsForArtwork({ x0: 0, y0: 0, x1: 1640, y1: 0 });
+  h.assert('a flat box is not left degenerate', flat.height > 200,
+    'height was ' + flat.height.toFixed(1));
+  h.assertClose('it is the min-span fraction of the long side, plus margins',
+    flat.height, GR.BOUNDS_MIN_SPAN_FRAC * 1640 + 80, 1e-9);
+  h.assertClose('and the long axis is untouched', flat.width, 1640 + 80, 1e-9);
+
+  // Growing must be about the CENTRE, or the artwork would shift inside its box and the result
+  // would stop being independent of where the artwork sits.
+  h.assertClose('the artwork stays centred vertically', flat.y + flat.height / 2, 0, 1e-9);
+  var offset = GR.boundsForArtwork({ x0: 500, y0: 900, x1: 2140, y1: 900 });
+  h.assertClose('wherever it sits', offset.y + offset.height / 2, 900, 1e-9);
+  h.assertClose('and the box is the same size', offset.height, flat.height, 1e-9);
+
+  // A vertical rope is the same defect on the other axis.
+  var upright = GR.boundsForArtwork({ x0: 0, y0: 0, x1: 0, y1: 1640 });
+  h.assertClose('a vertical flat box grows in width', upright.width, flat.height, 1e-9);
+
+  // The threshold must leave working scenes alone: 1830x778 needs 274 and already has 778.
+  h.assertClose('a scene that is already deep enough is not touched',
+    ordinary.height, 778 + 80, 1e-9);
+
   h.group('world: scale and axes');
 
   var W = GR.makeWorld({ scale: 100, gravityY: -10 });

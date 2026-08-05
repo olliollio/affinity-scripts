@@ -1809,6 +1809,53 @@ GR.planck = (function () {
    * Four walls around a rectangle in src units, as one open chain per side would leave corner
    * seams — a single closed chain has no seams at all.
    */
+  // How far the walls stand off the artwork. A body overlapping a wall at frame 0 keeps its island
+  // awake for the whole run, so the box never touches the artwork.
+  var MARGIN = 40;
+
+  // No axis of the box may be smaller than this fraction of the artwork's larger dimension.
+  //
+  // A fixed margin is fine until the artwork is FLAT. A horizontal rope, a rule, a baseline: the
+  // bounding box has zero height, so the box is 2*MARGIN tall and the rope lands on its own floor
+  // after 40pt. Measured on a 1640pt pinned rope, the sag was clipped to 33.5pt where the rope's
+  // natural sag is 105.7pt — it looked like the anchoring had failed when the ends were in fact
+  // held exactly right and the world was 80pt tall.
+  //
+  // 0.15 is chosen to fix that while leaving real scenes alone. It gives the 1640pt rope 246pt of
+  // headroom, which the measurements show is enough to reach the full 105.7pt sag, and it is below
+  // the aspect ratio of any scene that already works: artwork 1830x778 needs 274 and has 778, so
+  // the box is untouched. Raising it further would start moving scenes that are behaving.
+  var MIN_SPAN_FRAC = 0.15;
+
+  /**
+   * The wall rectangle for a piece of artwork, from the artwork's own bounding box.
+   *
+   * Pure, and separated from `addBounds` precisely so this can be tested: it used to live inline in
+   * `main.js`, which touches the Affinity API and so is never exercised headlessly. The degenerate
+   * case it exists to handle could not have been caught there.
+   */
+  function boundsForArtwork(box, opts) {
+    var o = opts || {};
+    var margin = o.margin === undefined ? MARGIN : o.margin;
+    var frac = o.minSpanFrac === undefined ? MIN_SPAN_FRAC : o.minSpanFrac;
+
+    var w = box.x1 - box.x0, h = box.y1 - box.y0;
+    var minSpan = frac * Math.max(w, h);
+
+    // Grow about the centre, so the artwork keeps its place in the box and the physics stays
+    // translation-invariant — the property that makes the result independent of the artboard.
+    var cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+    if (w < minSpan) w = minSpan;
+    if (h < minSpan) h = minSpan;
+
+    return {
+      x: cx - w / 2 - margin,
+      y: cy - h / 2 - margin,
+      width: w + 2 * margin,
+      height: h + 2 * margin
+    };
+  }
+
   function addBounds(W, rect, opts) {
     var o = opts || {};
     var x0 = rect.x, y0 = rect.y, x1 = rect.x + rect.width, y1 = rect.y + rect.height;
@@ -1872,6 +1919,9 @@ GR.planck = (function () {
   GR.toSrc = toSrc;
   GR.addStaticChain = addStaticChain;
   GR.addBounds = addBounds;
+  GR.boundsForArtwork = boundsForArtwork;
+  GR.BOUNDS_MARGIN = MARGIN;
+  GR.BOUNDS_MIN_SPAN_FRAC = MIN_SPAN_FRAC;
   GR.checkScale = checkScale;
   GR.WORLD_SCALE = DEFAULT_SCALE;
 
@@ -3523,10 +3573,10 @@ GR.planck = (function () {
 (function (GR) {
   'use strict';
 
-  // Breathing room OUTSIDE the artwork and the spread, never inside them. An inward margin looks
-  // tidier but puts a wall through anything sitting near the page edge, and a body that starts
-  // embedded in static geometry can never sleep - the run then burns to the frame cap every time.
-  var MARGIN = 40;
+  // The wall rectangle is worked out by GR.boundsForArtwork in world.js, which is pure and tested.
+  // Breathing room goes OUTSIDE the artwork, never inside it: an inward margin looks tidier but
+  // puts a wall through anything sitting near the edge, and a body that starts embedded in static
+  // geometry can never sleep - the run then burns to the frame cap every time.
 
   function fmt(n, dp) { return Number(n).toFixed(dp === undefined ? 2 : dp); }
 
@@ -3792,11 +3842,9 @@ GR.planck = (function () {
     // Nothing had any geometry at all. Fall back to the page rather than building a null world.
     var boxFromSpread = !box;
     if (!box) box = { x0: ext.x, y0: ext.y, x1: ext.x + ext.width, y1: ext.y + ext.height };
-    GR.addBounds(W, {
-      x: box.x0 - MARGIN, y: box.y0 - MARGIN,
-      width: (box.x1 - box.x0) + 2 * MARGIN,
-      height: (box.y1 - box.y0) + 2 * MARGIN
-    });
+    // The rectangle itself is worked out by a pure function, so the degenerate cases have tests.
+    var wallRect = GR.boundsForArtwork(box);
+    GR.addBounds(W, wallRect);
 
     // ----------------------------------------------------------------- bodies
     console.log('');
@@ -3910,9 +3958,9 @@ GR.planck = (function () {
     // physics. It is the union of the artwork now, so it must be identical at two artboard sizes.
     // Same size but shifted origin means a pure translation; a different size means something in
     // the selection is itself tracking the page.
-    console.log('  physics box: x=' + fmt(box.x0 - MARGIN) + ' y=' + fmt(box.y0 - MARGIN) +
-                ' w=' + fmt((box.x1 - box.x0) + 2 * MARGIN) +
-                ' h=' + fmt((box.y1 - box.y0) + 2 * MARGIN) +
+    console.log('  physics box: x=' + fmt(wallRect.x) + ' y=' + fmt(wallRect.y) +
+                ' w=' + fmt(wallRect.width) +
+                ' h=' + fmt(wallRect.height) +
                 (boxFromSpread ? '  <-- SUSPECT: fell back to the page, no artwork geometry' : ''));
 
     // -------------------------------------------------------------------- sim
