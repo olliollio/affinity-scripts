@@ -1,0 +1,321 @@
+/**
+ * export.js — writes the drop out as an image sequence, 30fps by default.
+ *
+ * REQUIRES AN INSTALLED SCRIPT. Run from the Script Manager's testing environment, `/fs` and
+ * `doc.export` return PERMISSION_DENIED; installed, the same file exports normally. Every theory
+ * about path separators, call timing and preset names came from testing in the environment that
+ * cannot write at all, so if an export fails, install the script before changing a line here.
+ *
+ * Paths use the backslash root Affinity hands out with forward slashes appended -
+ * `E:\USER\Desktop/Gravity_x/drop_0000.png` - matching the form a working export uses.
+ *
+ * Frames land in a folder the script creates. There is no writing-flat fallback: the Desktop root
+ * was refused in testing, so falling back there would turn a clear failure into a confusing one.
+ *
+ * Each frame is COMMITTED, exported, then undone. A preview is not guaranteed to render into an
+ * export, which is why this cannot reuse the cheap preview path the scrubber uses.
+ *
+ * The loop runs on a timer rather than a `for` loop so the UI is not frozen for the duration, and
+ * so a failure can stop cleanly instead of wedging Affinity.
+ */
+
+(function (GR) {
+  'use strict';
+
+  function pad(v, n) {
+    var s = String(v);
+    while (s.length < n) s = '0' + s;
+    return s;
+  }
+
+  /** A timestamp that sorts, for folder and file names. */
+  function stamp() {
+    var d = new Date();
+    return d.getFullYear() + pad(d.getMonth() + 1, 2) + pad(d.getDate(), 2) + '_' +
+           pad(d.getHours(), 2) + pad(d.getMinutes(), 2) + pad(d.getSeconds(), 2);
+  }
+
+  /** The filename for one frame. Zero padded, or a sequence sorts 1, 10, 11, 2 and imports wrong. */
+  function frameName(f, ext) { return 'drop_' + pad(f, 4) + '.' + ext; }
+
+  /**
+   * Works out where files can actually be written.
+   *
+   * Returns a function mapping a frame number to a path, or an `error` explaining why nowhere is
+   * writable. The subfolder is not a nicety: it is the only location the sandbox permits writing
+   * to, and it also keeps the sequence alone in a directory, which is how it wants importing.
+   */
+  function resolveTarget(app, ext) {
+    var desk;
+    try { desk = app.userDesktopPath; }
+    catch (e) { return { error: 'no Desktop path: ' + e }; }
+    if (!desk) return { error: 'no Desktop path' };
+
+    // Forward slashes, appended to a backslash Windows root. That mixed form is what works here -
+    // `E:\USER\Desktop/Gravity_.../drop_0000.png` - while fully backslashed paths come back
+    // PERMISSION_DENIED.
+    var name = 'Gravity_' + stamp();
+    var dir = desk + '/' + name;
+
+    var note = '';
+    var madeDir = false;
+    try {
+      var fsys = require('/fs');
+      fsys.createDirectories(dir);
+      // TRUTHY, not === true. /fs exports a PathType enum (Directory = 3), so isDirectory may well
+      // answer with an enum or a number rather than a boolean, and a strict comparison then reads
+      // a perfectly good folder as a failure.
+      var isDir = fsys.isDirectory(dir);
+      madeDir = !!isDir;
+      note = 'isDirectory returned ' + (typeof isDir) + ' ' + String(isDir);
+    } catch (e) {
+      note = 'threw: ' + ((e && e.message) ? e.message : String(e));
+      madeDir = false;
+    }
+
+    // No flat fallback. The Desktop ROOT is denied for export, so writing there is a guaranteed
+    // failure dressed up as a graceful degradation - better to say the folder could not be made.
+    if (!madeDir) {
+      return { error: 'could not create the export folder ' + dir + ' (' + note + ')' };
+    }
+
+    return {
+      path: function (f) { return dir + '/' + frameName(f, ext); },
+      where: dir,
+      folder: true,
+      note: note
+    };
+  }
+
+  /**
+   * The export presets this install actually offers.
+   *
+   * `FileExportOptions` exposes both `allPresetNames` and `enumeratePresetNames`, and the shape of
+   * neither is documented, so both are tried as property and as function. Preset names are exact
+   * and case-sensitive — "PNG" is accepted where "png" is not — which makes asking far more
+   * reliable than spelling guesses.
+   */
+  function presetNames(FileExportOptions) {
+    var out = [];
+
+    function absorb(v) {
+      if (!v) return;
+      if (typeof v === 'string') { out.push(v); return; }
+      try {
+        if (typeof v.length === 'number') {
+          for (var i = 0; i < v.length; i++) {
+            var item = (typeof v.at === 'function') ? v.at(i) : v[i];
+            if (typeof item === 'string') out.push(item);
+          }
+          return;
+        }
+      } catch (e) { /* not indexable */ }
+      try { for (var s of v) { if (typeof s === 'string') out.push(s); } } catch (e) { /* not iterable */ }
+    }
+
+    try { absorb(FileExportOptions.allPresetNames); } catch (e) { /* not a property */ }
+    if (!out.length) {
+      try { absorb(FileExportOptions.allPresetNames()); } catch (e) { /* not a function */ }
+    }
+    if (!out.length) {
+      try { absorb(FileExportOptions.enumeratePresetNames()); } catch (e) { /* not argless */ }
+    }
+    if (!out.length) {
+      // Callback form, which is how the SDK enumerates elsewhere.
+      try { FileExportOptions.enumeratePresetNames(function (n) { if (typeof n === 'string') out.push(n); }); }
+      catch (e) { /* give up; the caller falls back to guesses */ }
+    }
+    return out;
+  }
+
+  /**
+   * Exports frames 0..lastFrame of a prepared playback context.
+   *
+   * `ctx` is what `GR.playbackPrepare` returns. The document is left showing `keepFrame`, which is
+   * whatever the user chose in the scrubber, so exporting never changes the result they accepted.
+   */
+  function exportSequence(ctx, opts, onDone) {
+    var o = opts || {};
+    var app, timers;
+    try {
+      app = require('/application').app;
+      timers = require('/timers');
+    } catch (e) {
+      if (onDone) onDone({ ok: false, error: 'modules unavailable: ' + e });
+      return;
+    }
+
+    // physicsdrop imports both classes from /document and calls them exactly as this does, so the failure
+    // is not a porting mistake and the classes may simply live elsewhere now. Cheaper to look than
+    // to assume.
+    var FileExportOptions = null, FileExportArea = null, foundIn = null;
+    var MODULES = ['/document', '/documents', '/export', '/exports', '/files', '/io'];
+    for (var mi = 0; mi < MODULES.length && !FileExportOptions; mi++) {
+      try {
+        var mod = require(MODULES[mi]);
+        if (mod && mod.FileExportOptions && mod.FileExportArea) {
+          FileExportOptions = mod.FileExportOptions;
+          FileExportArea = mod.FileExportArea;
+          foundIn = MODULES[mi];
+        }
+      } catch (e) { /* module absent */ }
+    }
+    if (!FileExportOptions) {
+      if (onDone) onDone({
+        ok: false,
+        error: 'FileExportOptions / FileExportArea were not found in ' + MODULES.join(', ') +
+               '. Run probes/probe_export.js to find where this Affinity build keeps them.'
+      });
+      return;
+    }
+
+    var useJpeg = !!o.jpeg;
+    var ext = useJpeg ? 'jpg' : 'png';
+    var target = resolveTarget(app, ext);
+    if (target.error) {
+      if (onDone) onDone({ ok: false, error: target.error });
+      return;
+    }
+
+    // Preset names are exact and case-sensitive: "PNG" is accepted while "png", "JPEG" and every
+    // other spelling probed is rejected. Guessing them was the wrong approach - FileExportOptions
+    // can list its own, so ask it and match, and fall back to guesses only if it will not say.
+    var available = presetNames(FileExportOptions);
+    var wanted = useJpeg ? /jpe?g/i : /png/i;
+
+    var names = [];
+    if (o.presetName) names.push(o.presetName);
+    for (var av = 0; av < available.length; av++) {
+      if (wanted.test(available[av])) names.push(available[av]);
+    }
+    // Whatever the install offers, in preference order, then the historical guesses.
+    // Real names from a live install: 'PNG' exists bare, but every JPEG preset is qualified -
+    // 'JPEG (Best quality)', '(High quality)' and so on. There is no preset called just 'JPEG'.
+    names = names.concat(useJpeg ? ['JPEG (Best quality)', 'JPEG (High quality)'] : ['PNG']);
+
+    var exportOpts = null, usedPreset = null, presetErr = null;
+    for (var p = 0; p < names.length && !exportOpts; p++) {
+      try {
+        var candidate = FileExportOptions.createWithPresetName(names[p]);
+        if (candidate) { exportOpts = candidate; usedPreset = names[p]; }
+      } catch (e) {
+        presetErr = (e && e.message) ? e.message : String(e);
+      }
+    }
+    if (!exportOpts) {
+      if (onDone) onDone({
+        ok: false,
+        error: 'no export preset was accepted (tried ' + names.join(', ') + '); last error: ' + presetErr +
+               '. Run probes/probe_export.js to discover the preset names this install uses.'
+      });
+      return;
+    }
+
+    var exportArea = null;
+    var areaAttempts = [
+      ['createForCurrentSpread', function () { return FileExportArea.createForCurrentSpread(); }],
+      ['createForDocument', function () { return FileExportArea.createForDocument(); }],
+      ['createForSelection', function () { return FileExportArea.createForSelection(); }]
+    ];
+    var areaErr = null;
+    for (var q = 0; q < areaAttempts.length && !exportArea; q++) {
+      try { exportArea = areaAttempts[q][1](); } catch (e) {
+        areaErr = areaAttempts[q][0] + ': ' + ((e && e.message) ? e.message : String(e));
+      }
+    }
+    if (!exportArea) {
+      if (onDone) onDone({ ok: false, error: 'no export area could be made (' + areaErr + ')' });
+      return;
+    }
+
+    var last = o.lastFrame === undefined ? ctx.lastIndex : Math.min(o.lastFrame, ctx.lastIndex);
+    var keepFrame = o.keepFrame === undefined ? last : o.keepFrame;
+
+    var plan = stridePlan(GR.FPS, o.exportFps, o.frameStride);
+    var stride = plan.stride;
+    var exportFps = plan.fps;
+
+    // The scrubber has already committed a frame. That commit has to come off before replaying
+    // from the start, or every exported frame would be a delta on top of it.
+    var undone = false;
+    var frame = 0;
+    var written = 0;
+    var finished = false;
+    var handle = null;
+
+    function stop(result) {
+      if (finished) return;
+      finished = true;
+      // Cancel OUR timer only. cancelAll() would reach into any other timer the script has armed.
+      try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
+      catch (e) { /* already gone */ }
+      // Always leave the document on the frame the user accepted, whatever happened.
+      try { GR.playbackCommit(ctx, keepFrame); } catch (e) { /* nothing more to do */ }
+      if (onDone) onDone(result);
+    }
+
+    handle = timers.setInterval(o.intervalMs || 5, function (err) {
+      if (finished) return;
+      if (err) { stop({ ok: false, error: 'timer error: ' + err, written: written }); return; }
+
+      try {
+        if (!undone) {
+          undone = true;
+          try { ctx.doc.undo(); } catch (e) { /* nothing committed yet */ }
+        }
+
+        if (frame > last) {
+          stop({ ok: true, written: written, fps: exportFps, where: target.where, folder: target.folder, preset: usedPreset, module: foundIn });
+          return;
+        }
+
+        GR.playbackCommit(ctx, frame);
+        // Numbered by files WRITTEN, not by recorded frame. With a stride the two diverge, and an
+        // image sequence must be contiguous — 0000, 0002, 0004 imports as three frames with holes,
+        // or not at all.
+        ctx.doc.export(target.path(written), exportOpts, exportArea);
+        written++;
+        try { ctx.doc.undo(); } catch (e) { /* keep going; the next commit is absolute anyway */ }
+        frame += stride;
+      } catch (e) {
+        stop({
+          ok: false,
+          error: 'failed at frame ' + frame + ': ' + (e && e.message ? e.message : e),
+          written: written,
+          where: target.where
+        });
+      }
+    });
+  }
+
+  /**
+   * How many recorded frames to skip per exported file, and what rate that actually yields.
+   *
+   * The recording rate and the export rate are separate questions and were accidentally the same
+   * number until the recording went to 60fps. Playback needs 60 because a rope drawn at 30
+   * samples per second strobes — the eye tracks the whole line at once, so undersampling shows.
+   * A file on disk has no such requirement, and every exported frame is a full `doc.export`, which
+   * is by far the slowest thing this script does. Striding by 2 therefore keeps export exactly as
+   * fast and exactly as large as it has always been, while playback gets its extra frames.
+   *
+   * The yielded rate is REPORTED rather than assumed, because a stride that does not divide the
+   * recording rate evenly cannot hit the requested one — asking for 45fps out of 60 gives a stride
+   * of 1 and therefore 60, and the import instructions have to say 60 or the sequence plays slow.
+   */
+  function stridePlan(recordedFps, wantFps, override) {
+    var rec = Math.max(1, Math.round(recordedFps || 60));
+    var stride = override
+      ? Math.round(override)
+      : Math.round(rec / Math.max(1, wantFps || 30));
+    // A stride below 1 would rewind, and one past the recording rate would export a single frame.
+    stride = Math.max(1, Math.min(rec, stride || 1));
+    return { stride: stride, fps: Math.round(rec / stride) };
+  }
+
+  GR.exportSequence = exportSequence;
+  GR.exportStridePlan = stridePlan;
+  GR.exportStamp = stamp;
+  GR.exportResolveTarget = resolveTarget;
+  GR.exportFrameName = frameName;
+
+})(GR);
