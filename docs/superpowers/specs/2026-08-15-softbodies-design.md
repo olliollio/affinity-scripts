@@ -361,11 +361,16 @@ true of ropes and is inherent to `createSetCurves` write-back; it is stated here
 assertion is written against the flattened rings, which is the only reference it can be exact
 against.
 
-**Open question requiring a probe:** rope curves are built open, with `beginXY` and `lineToXY`. A
-jelly outline must close, and the closing call on `CurveBuilder` is unverified. One console probe
-settles it before this part is written. If no closing call exists, the fallback is to repeat the
-first point as the last — which draws correctly and may leave the fill open, so the probe result
-decides whether that fallback is acceptable rather than being assumed.
+**Closing a curve: settled by probe, 2026-08-15.** `CurveBuilder` exposes **`close()`**, and that is
+what a jelly outline uses — called after the last `lineToXY` and before `createCurve()`. `Curve`
+also exposes `makeClosed()` as an after-the-fact route.
+
+The fallback this design originally proposed — repeating the first point as the last — is **wrong
+and must not be used**. Probed directly: a curve built with its first point repeated reports
+`isClosed false`. It would draw as a closed shape while remaining an open curve, so fills would be
+wrong, and `isClosed` is read-only so it cannot be corrected afterwards. A jelly outline that
+forgets `close()` therefore fails silently in a way no headless test can see — it is a case for the
+real-artwork check.
 
 ## Settings, and what changes around them
 
