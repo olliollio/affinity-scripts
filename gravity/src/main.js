@@ -381,6 +381,31 @@
     console.log('== bodies ==');
     var made = [];
     var ropes = [];
+    var softs = [];
+
+    /**
+     * The rig's rest lattice back in SPREAD points.
+     *
+     * `addSoftBody` meshes in SIM units, so `soft.mesh` cannot be handed to playback as it stands —
+     * the binding, the poses and the mesh all have to be in one space, and poses come back in spread
+     * points. Each node record already carries its own rest position in those units as `ox`/`oy`
+     * (softbody.js keeps it for exactly this), so the lattice is rebuilt from the records rather
+     * than rescaled from the sim mesh, and the y flip comes along for free.
+     *
+     * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
+     * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
+     */
+    function spreadMeshOf(soft, scale) {
+      var pts = [];
+      for (var sn = 0; sn < soft.nodes.length; sn++) pts.push(soft.nodes[sn].ox, soft.nodes[sn].oy);
+      var springs = [];
+      for (var sp = 0; sp < soft.mesh.springs.length; sp++) {
+        var spr = soft.mesh.springs[sp];
+        springs.push([spr[0], spr[1], spr[2] * scale]);
+      }
+      return { nodes: pts, springs: springs, cell: soft.cell * scale };
+    }
+
     for (var k = 0; k < ex.objects.length; k++) {
       var obj = ex.objects[k];
 
@@ -425,6 +450,66 @@
             : '') +
           (obj.anchored ? ' PINNED' : ''));
         continue;
+      }
+
+      // AFTER the rope branch and BEFORE the rigid one, deliberately: an open path named "jelly"
+      // carries both flags, and rope has to win because an open path has no interior to mesh.
+      if (obj.isSoft) {
+        var madeSoft = GR.addSoftBody(W, obj.faces, {
+          softness: o.softness === undefined ? 0.5 : o.softness,
+          density: o.density === undefined ? 1 : o.density,
+          equaliseMass: !!o.equaliseMass,
+          friction: o.friction === undefined ? 0.4 : o.friction,
+          restitution: o.restitution === undefined ? 0.15 : o.restitution,
+          name: obj.name,
+          node: obj.node
+        });
+
+        if (madeSoft && !madeSoft.fallback) {
+          for (var sn2 = 0; sn2 < madeSoft.nodes.length; sn2++) made.push(madeSoft.nodes[sn2]);
+
+          // The outline is bound ONCE, at rest, against the spread-space lattice. Every face's outer
+          // ring is bound before its own holes, and the faces in extraction order, because
+          // `softCommands` walks this same array and emits one curve per entry into one PolyCurve —
+          // a different order there would draw the holes against the wrong outlines.
+          var spreadM = spreadMeshOf(madeSoft, W.scale);
+          var bound = [];
+          for (var sf = 0; sf < obj.faces.length; sf++) {
+            var sface = obj.faces[sf];
+            bound.push(GR.bindOutline(sface.outer, spreadM));
+            var sholes = sface.holes || [];
+            for (var sh = 0; sh < sholes.length; sh++) bound.push(GR.bindOutline(sholes[sh], spreadM));
+          }
+
+          softs.push({
+            node: obj.node,
+            mesh: spreadM,
+            rings: bound,
+            nodes: madeSoft.nodes,
+            name: obj.name,
+            object: obj,
+            rig: madeSoft
+          });
+
+          console.log('  soft    ' + (obj.name || '(unnamed)') +
+            '  cells=' + madeSoft.cellsAcross +
+            ' cell=' + fmt(madeSoft.cell * W.scale, 1) + 'pt' +
+            ' nodes=' + madeSoft.nodes.length +
+            ' springs=' + madeSoft.springCount +
+            ' rings=' + bound.length +
+            ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
+            ' mass=' + fmt(madeSoft.totalMass, 4) +
+            ' limit=' + madeSoft.limit);
+          continue;
+        }
+
+        // Refusing is a real outcome, not an error: a shape whose wall cannot hold two cells at a
+        // size the solver can work with is not jelly, and falling through to a rigid body is the
+        // honest result. The reason is reported because "extent" and "thin" have different fixes.
+        // No `continue` here on purpose — control drops out of this branch into the rigid path
+        // below, so the shape still becomes an ordinary body via GR.addBody.
+        console.log('  soft    ' + (obj.name || '(unnamed)') +
+          '  NOT MESHED (' + (madeSoft ? madeSoft.fallback : 'unknown') + ') -> rigid');
       }
 
       // One body per object, with every face's parts on it, so a two-part glyph like "i" stays
@@ -531,14 +616,23 @@
 
     // -------------------------------------------------------------------- sim
     var t0 = Date.now();
+    // A jelly is a lattice of springs, and the default 8/3 iterations leave it visibly stretchy —
+    // the sag then measures solver error rather than the softness that was asked for. Raised only
+    // when a softbody exists, so every scene that had none steps exactly as it did before.
     var frames = GR.run(W, {
       maxFrames: o.maxFrames === undefined ? 900 : o.maxFrames,
-      seed: o.seed === undefined ? 1 : o.seed
+      seed: o.seed === undefined ? 1 : o.seed,
+      velocityIterations: softs.length ? 24 : undefined,
+      positionIterations: softs.length ? 8 : undefined
     });
     var ms = Date.now() - t0;
 
     console.log('');
     console.log('== simulation ==');
+    if (softs.length) {
+      console.log('  solver iterations raised to 24 velocity / 8 position (default 8 / 3) for ' +
+                  softs.length + ' softbody/ies — that is where the extra time went');
+    }
     console.log('  bodies=' + frames.bodyCount +
       ' frames=' + frames.frameCount +
       ' settledBy=' + frames.settledBy +
@@ -590,7 +684,7 @@
 
     var ctx;
     try {
-      ctx = GR.playbackPrepare(doc, made, frames, ropes);
+      ctx = GR.playbackPrepare(doc, made, frames, ropes, softs);
     } catch (e) {
       console.log('');
       console.log('gravity: playback unavailable (' + e + '); document untouched.');
