@@ -667,12 +667,38 @@
 
     console.log('');
     console.log('== final poses ==');
+    // A softbody reports ONE line, not one per node. Its nodes are in `made` like everything else,
+    // so the obvious loop prints ~164 lines for a single jelly and buries the rest of the report -
+    // and the per-node numbers say nothing anyway, since no single node is the object. The centroid
+    // is the honest summary: it is where the shape ended up. Rotation is omitted because a jelly
+    // has none to report; every node carries its own angle and the object as a whole has no pose.
+    var softCentroids = {};
     for (var m = 0; m < made.length; m++) {
+      var rec = made[m];
       var pose = GR.poseAt(frames, frames.frameCount - 1, m);
-      console.log('  ' + (made[m].name || '(unnamed)') +
-        '  from (' + fmt(made[m].ox) + ',' + fmt(made[m].oy) + ')' +
+      if (rec.isSoftNode) {
+        var key = rec.softGroup;
+        if (!softCentroids[key]) {
+          softCentroids[key] = { name: rec.name, n: 0, ox: 0, oy: 0, x: 0, y: 0 };
+        }
+        var acc = softCentroids[key];
+        acc.n++; acc.ox += rec.ox; acc.oy += rec.oy; acc.x += pose.x; acc.y += pose.y;
+        continue;
+      }
+      console.log('  ' + (rec.name || '(unnamed)') +
+        '  from (' + fmt(rec.ox) + ',' + fmt(rec.oy) + ')' +
         '  to (' + fmt(pose.x) + ',' + fmt(pose.y) + ')' +
         '  turned ' + fmt(pose.angle * 180 / Math.PI, 1) + ' deg');
+    }
+    for (var sc in softCentroids) {
+      if (!Object.prototype.hasOwnProperty.call(softCentroids, sc)) continue;
+      var a = softCentroids[sc];
+      // The node names are "<object> [0]", "<object> [1]" and so on, so strip the index back off.
+      var soleName = String(a.name || '(unnamed)').replace(/ \[\d+\]$/, '');
+      console.log('  ' + soleName +
+        '  from (' + fmt(a.ox / a.n) + ',' + fmt(a.oy / a.n) + ')' +
+        '  to (' + fmt(a.x / a.n) + ',' + fmt(a.y / a.n) + ')' +
+        '  centroid of ' + a.n + ' nodes');
     }
 
     // --------------------------------------------------------------- playback
