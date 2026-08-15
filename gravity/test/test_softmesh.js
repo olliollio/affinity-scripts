@@ -209,4 +209,50 @@ module.exports = function (GR, h) {
     (GR.ringPerimeter(ringFace.outer) + GR.ringPerimeter(ringFace.holes[0])) / sized.cell);
   h.assert('a bold ring has about perimeter/cell boundary nodes',
     Math.abs(rmesh.boundaryCount - wantB) <= 4);
+
+  h.group('softmesh: binding');
+
+  var bface = { outer: square(0, 0, 4, 4), holes: [] };
+  var bmesh = GR.buildSoftMesh([bface], { cell: 0.5 });
+  GR.addSoftSprings(bmesh);
+
+  var outline = square(0, 0, 4, 4);
+  var binding = GR.bindOutline(outline, bmesh);
+
+  // FRAME 0. The rest pose must reproduce the input exactly, or the artwork jumps on the first
+  // frame and the fault reads as physics rather than as write-back.
+  var rest = GR.evalSoftOutline(binding, bmesh, bmesh.nodes);
+  var worst = 0;
+  for (var q = 0; q < outline.length; q++) worst = Math.max(worst, Math.abs(rest[q] - outline[q]));
+  h.assertClose('the rest pose reproduces the outline exactly', worst, 0, 1e-9);
+
+  // Rigid translation of every node must translate the outline by the same vector.
+  var moved = bmesh.nodes.slice();
+  for (var m = 0; m < moved.length; m += 2) { moved[m] += 3; moved[m + 1] -= 7; }
+  var tOut = GR.evalSoftOutline(binding, bmesh, moved);
+  var tWorst = 0;
+  for (var t2 = 0; t2 < outline.length; t2 += 2) {
+    tWorst = Math.max(tWorst, Math.abs(tOut[t2] - (outline[t2] + 3)));
+    tWorst = Math.max(tWorst, Math.abs(tOut[t2 + 1] - (outline[t2 + 1] - 7)));
+  }
+  h.assertClose('translating every node translates the outline', tWorst, 0, 1e-9);
+
+  // THE candy-wrapper assertion. Rotate every node about the centroid; a binding without the
+  // per-node rotation term shrinks the outline toward the centre instead of rotating it.
+  var ang = Math.PI / 3, ca = Math.cos(ang), sa = Math.sin(ang);
+  var cx = 2, cy = 2;
+  var spun = bmesh.nodes.slice();
+  for (var r2 = 0; r2 < spun.length; r2 += 2) {
+    var ox = spun[r2] - cx, oy = spun[r2 + 1] - cy;
+    spun[r2] = cx + ox * ca - oy * sa;
+    spun[r2 + 1] = cy + ox * sa + oy * ca;
+  }
+  var rOut = GR.evalSoftOutline(binding, bmesh, spun);
+  var rWorst = 0;
+  for (var r3 = 0; r3 < outline.length; r3 += 2) {
+    var ex = cx + (outline[r3] - cx) * ca - (outline[r3 + 1] - cy) * sa;
+    var ey = cy + (outline[r3] - cx) * sa + (outline[r3 + 1] - cy) * ca;
+    rWorst = Math.max(rWorst, Math.abs(rOut[r3] - ex), Math.abs(rOut[r3 + 1] - ey));
+  }
+  h.assertClose('rotating every node rotates the outline', rWorst, 0, 1e-6);
 };
