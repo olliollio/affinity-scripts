@@ -5,6 +5,15 @@
  * downstream converts again — mixing point space and sim space inside this module is the specific
  * failure it is written to avoid.
  *
+ * PRECONDITION on `faces`: every hole ring lies INSIDE its outer ring. `contours.js buildFaces`
+ * guarantees this — it attaches a hole only to a ring that contains it, and drops a ring with no
+ * container — so nothing here re-checks it. Probed 2026-08-15: a hand-built face whose hole sits
+ * entirely outside its outer ring does still mesh, connected and finite, but stitches the stray
+ * ring on through 24 nearest-neighbour fallbacks with spring rest lengths ~80x the cell size. That
+ * is a phantom appendage tugging the body from empty space, and it would read as a physics fault.
+ * It is left unguarded because the pipeline cannot produce it; if `softmesh.js` ever gains a caller
+ * that builds faces by hand, this is the invariant that caller must uphold.
+ *
  * There is deliberately no triangulation. earcut cannot introduce interior points, so a filled
  * region triangulated from its boundary alone has no interior nodes and hinges instead of resisting
  * squash. Placing the nodes on a grid means adjacency is arithmetic rather than geometry.
