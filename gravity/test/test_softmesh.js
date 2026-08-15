@@ -371,4 +371,29 @@ module.exports = function (GR, h) {
   var thinWall = [{ outer: circle(0, 0, 1.0, 128), holes: [circleCW(0, 0, 0.92, 128)] }];
   var tw = GR.softCellSize(thinWall);
   h.assert('a thin-walled ring never meshes silently', tw.fallback !== null);
+
+  h.group('softmesh: fold detection');
+
+  // A clean convex ring never crosses itself.
+  h.assertEqual('a square outline does not fold', GR.outlineFolds(square(0, 0, 4, 4)), 0);
+  h.assertEqual('a circle outline does not fold', GR.outlineFolds(circle(0, 0, 2, 64)), 0);
+
+  // A bowtie is the minimal self-crossing closed shape: swap two opposite corners.
+  h.assert('a bowtie folds', GR.outlineFolds([0, 0, 4, 4, 4, 0, 0, 4]) > 0);
+
+  // A shape that folds a single lobe back through its own edge - the shape a crushed lattice
+  // actually produces, and the one that fills with a white gouge.
+  var folded = [0, 0, 10, 0, 10, 6, 5, -3, 0, 6];
+  h.assert('a lobe folded back through an edge is detected', GR.outlineFolds(folded) > 0);
+
+  // Concave alone is NOT folding - an L-shape must come back clean, or the check would cry wolf
+  // on every letterform.
+  h.assertEqual('a concave L does not fold', GR.outlineFolds([0, 0, 6, 0, 6, 2, 2, 2, 2, 6, 0, 6]), 0);
+
+  // Degenerate input must not throw or report nonsense.
+  h.assertEqual('a two-point outline cannot fold', GR.outlineFolds([0, 0, 1, 1]), 0);
+  h.assertEqual('an empty outline cannot fold', GR.outlineFolds([]), 0);
+
+  // The cap exists so a badly mangled outline cannot cost O(n^2) unbounded work in the report.
+  h.assert('the crossing count is capped', GR.outlineFolds([0, 0, 4, 4, 4, 0, 0, 4], 1) <= 1);
 };

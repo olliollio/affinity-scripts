@@ -20,7 +20,13 @@
     seconds: 10,
     seed: 1,
     slack: 0,       // % - a straight rope has no spare length, so drape is opt-in
-    softness: 50    // % - the middle of the log-spaced 30..8Hz range, so 15.5Hz: squashes a little
+    // 25% is 21.6Hz on the log-spaced 30..8Hz range. It is deliberately toward the stiff end,
+    // because a mass-spring lattice has no area preservation and a crushed one folds its outline
+    // through itself - which fills with a HOLE and gouges the artwork. Measured on a real 10-shape
+    // scene: clean at 30Hz, gouged at 15.5Hz. The console report now says outright when a shape
+    // folded, so the honest instruction is "turn it up until the report stops complaining" rather
+    // than a default that pretends the whole range is safe.
+    softness: 25
   };
 
   /**
