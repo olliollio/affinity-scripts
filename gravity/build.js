@@ -42,6 +42,8 @@ var SRC = [
   'world.js',
   'bodies.js',
   'rope.js',
+  'softmesh.js',
+  'softbody.js',
   'sim.js',
   'playback.js',
   'export.js',

@@ -1156,6 +1156,37 @@ GR.planck = (function () {
   // A node whose name contains one of these is scenery: it collides but never moves.
   var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground', 'collider'];
 
+  // A closed path named for one of these becomes a deformable lattice instead of a rigid body.
+  // Static still wins: locking or naming something scenery is an explicit act.
+  var SOFT_WORDS = ['soft', 'jelly', 'squish'];
+
+  function isSoftName(name) {
+    return hasWord(name, SOFT_WORDS);
+  }
+
+  /**
+   * Is `word` present in `name` as a whole word?
+   *
+   * Three naming conventions now use this — scenery, rope anchoring and softbodies — and it was
+   * written twice before the third arrived. Whole-word matching is what stops "jellyfish" being
+   * jelly and "grounded" being ground.
+   */
+  function hasWord(name, words) {
+    if (!name) return false;
+    var s = String(name).toLowerCase();
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      var at = s.indexOf(w);
+      while (at >= 0) {
+        var before = at === 0 ? '' : s.charAt(at - 1);
+        var after = s.charAt(at + w.length);
+        if ((at === 0 || !/[a-z0-9]/.test(before)) && (!after || !/[a-z0-9]/.test(after))) return true;
+        at = s.indexOf(w, at + 1);
+      }
+    }
+    return false;
+  }
+
   /**
    * Static by name convention. Pure, so it is unit-tested rather than discovered in Affinity.
    *
@@ -1164,21 +1195,7 @@ GR.planck = (function () {
    * rule rather than the primary mechanism.
    */
   function isStaticName(name) {
-    if (!name) return false;
-    var s = String(name).toLowerCase();
-    for (var i = 0; i < STATIC_WORDS.length; i++) {
-      var w = STATIC_WORDS[i];
-      var at = s.indexOf(w);
-      while (at >= 0) {
-        var before = at === 0 ? '' : s.charAt(at - 1);
-        var after = s.charAt(at + w.length);
-        var okBefore = at === 0 || !/[a-z0-9]/.test(before);
-        var okAfter = !after || !/[a-z0-9]/.test(after);
-        if (okBefore && okAfter) return true;
-        at = s.indexOf(w, at + 1);
-      }
-    }
-    return false;
+    return hasWord(name, STATIC_WORDS);
   }
 
   /** What kind of thing is this, in terms of what we can do with it? */
@@ -1638,7 +1655,11 @@ GR.planck = (function () {
       name: safeName(node),
       rings: rings,
       faces: faces,
-      isStatic: !!forcedStatic || isStaticNode(node)
+      isStatic: !!forcedStatic || isStaticNode(node),
+      // Set here rather than in the rope branch: `anchored` lives there because an open path has
+      // no closed rings, and soft requires them. main.js tests rope BEFORE soft, so an open path
+      // named "jelly" stays a rope — there is no interior to mesh.
+      isSoft: isSoftName(safeName(node))
     };
   }
 
@@ -1770,6 +1791,8 @@ GR.planck = (function () {
   GR.mergeNodeLists = mergeNodeLists;
   GR.convertTextToCurves = convertTextToCurves;
   GR.isStaticName = isStaticName;
+  GR.isSoftName = isSoftName;
+  GR.hasWord = hasWord;
   GR.classifyNode = classify;
   GR.matrixOf = matrixOf;
   GR.ringsOf = ringsOf;
@@ -1780,6 +1803,7 @@ GR.planck = (function () {
   GR.lineWeightOf = lineWeightOf;
   GR.extract = extract;
   GR.STATIC_WORDS = STATIC_WORDS;
+  GR.SOFT_WORDS = SOFT_WORDS;
 
 })(GR);
 
@@ -2285,19 +2309,7 @@ GR.planck = (function () {
 
   /** Is this path pinned at its ends? Pure, so it is unit-tested like the scenery names. */
   function isAnchoredName(name) {
-    if (!name) return false;
-    var s = String(name).toLowerCase();
-    for (var i = 0; i < ANCHOR_WORDS.length; i++) {
-      var w = ANCHOR_WORDS[i];
-      var at = s.indexOf(w);
-      while (at >= 0) {
-        var before = at === 0 ? '' : s.charAt(at - 1);
-        var after = s.charAt(at + w.length);
-        if ((at === 0 || !/[a-z0-9]/.test(before)) && (!after || !/[a-z0-9]/.test(after))) return true;
-        at = s.indexOf(w, at + 1);
-      }
-    }
-    return false;
+    return GR.hasWord(name, ANCHOR_WORDS);
   }
 
   /** Total length of a polyline given as a flat `[x0, y0, x1, y1, ...]` array. */
@@ -2711,6 +2723,771 @@ GR.planck = (function () {
 })(GR);
 
 // -------------------------------------------------------------------------
+// src/softmesh.js
+/**
+ * softmesh.js — pure geometry for softbodies. A face becomes a lattice of nodes and springs.
+ *
+ * Everything here is in SIM units. The caller converts the face once on the way in, and nothing
+ * downstream converts again — mixing point space and sim space inside this module is the specific
+ * failure it is written to avoid.
+ *
+ * PRECONDITION on `faces`: every hole ring lies INSIDE its outer ring. `contours.js buildFaces`
+ * guarantees this — it attaches a hole only to a ring that contains it, and drops a ring with no
+ * container — so nothing here re-checks it. Probed 2026-08-15: a hand-built face whose hole sits
+ * entirely outside its outer ring does still mesh, connected and finite, but stitches the stray
+ * ring on through 24 nearest-neighbour fallbacks with spring rest lengths ~80x the cell size. That
+ * is a phantom appendage tugging the body from empty space, and it would read as a physics fault.
+ * It is left unguarded because the pipeline cannot produce it; if `softmesh.js` ever gains a caller
+ * that builds faces by hand, this is the invariant that caller must uphold.
+ *
+ * There is deliberately no triangulation. earcut cannot introduce interior points, so a filled
+ * region triangulated from its boundary alone has no interior nodes and hinges instead of resisting
+ * squash. Placing the nodes on a grid means adjacency is arithmetic rather than geometry.
+ */
+
+(function (GR) {
+  'use strict';
+
+  // The longer axis never exceeds this many cells. Measured: a rigid lattice sags from SOLVER error
+  // rather than from its springs past this span, and that sag looks exactly like softness while
+  // being controlled by nothing the user can see. At 12 cells and 24/8 iterations a rigid lattice
+  // holds to 0.105 sim units and is scale-invariant; at 13 it doubles. The run raises iterations to
+  // 24/8 whenever a softbody exists, which is what earns 12 rather than 8.
+  var MAX_CELLS = 12;
+
+  // A cell below this solves against linearSlop (0.005) and jitters. Same floor, same reason, as
+  // MIN_LINK_SIM in rope.js.
+  var MIN_CELL_SIM = 0.12;
+
+  // Cells across the shape's own WALL, which the bounding box cannot see. Without this a 200pt "O"
+  // with a 20pt wall is sized from its 200pt box, admits no interior node at all, and silently
+  // becomes an outline-only mesh that behaves like a rope.
+  var MIN_WALL_CELLS = 2;
+
+  // How far an interior point must clear every ring, as a fraction of a cell. This is what makes
+  // ATTACH_RADIUS the right reach.
+  var INTERIOR_CLEAR = 0.5;
+
+  // How far a boundary node reaches for interior nodes to spring to, as a fraction of a cell.
+  var ATTACH_RADIUS = 1.5;
+
+  // Boundary nodes are inset by this fraction of a cell, because the collision silhouette is the
+  // union of the node circles rather than the drawn curve.
+  var INSET_FRAC = 0.6;
+
+  /** Absolute area of one closed ring, by the shoelace formula. */
+  function ringArea(ring) {
+    var a = 0;
+    for (var i = 0, n = ring.length; i < n; i += 2) {
+      var j = (i + 2) % n;
+      a += ring[i] * ring[j + 1] - ring[j] * ring[i + 1];
+    }
+    return Math.abs(a) / 2;
+  }
+
+  /** Closed length of one ring. */
+  function ringPerimeter(ring) {
+    var p = 0;
+    for (var i = 0, n = ring.length; i < n; i += 2) {
+      var j = (i + 2) % n;
+      var dx = ring[j] - ring[i], dy = ring[j + 1] - ring[i + 1];
+      p += Math.sqrt(dx * dx + dy * dy);
+    }
+    return p;
+  }
+
+  /** Hole-subtracted area of a face. */
+  function faceArea(face) {
+    var a = ringArea(face.outer);
+    var holes = face.holes || [];
+    for (var i = 0; i < holes.length; i++) a -= ringArea(holes[i]);
+    return Math.max(0, a);
+  }
+
+  /** Perimeter of a face INCLUDING its hole rings — the annulus identity needs both. */
+  function facePerimeter(face) {
+    var p = ringPerimeter(face.outer);
+    var holes = face.holes || [];
+    for (var i = 0; i < holes.length; i++) p += ringPerimeter(holes[i]);
+    return p;
+  }
+
+  /**
+   * Mean wall width, as `2 * area / perimeter`.
+   *
+   * For an annulus this returns the wall exactly, which is the identity the thickness limit rests
+   * on. It costs one pass over rings that are already in hand, where a true medial axis would not.
+   */
+  function faceThickness(face) {
+    var p = facePerimeter(face);
+    return p > 0 ? 2 * faceArea(face) / p : 0;
+  }
+
+  /** Bounding box of every outer ring in a list of faces. */
+  function facesBBox(faces) {
+    var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    for (var f = 0; f < faces.length; f++) {
+      var r = faces[f].outer;
+      for (var i = 0; i < r.length; i += 2) {
+        if (r[i] < lo[0]) lo[0] = r[i];
+        if (r[i] > hi[0]) hi[0] = r[i];
+        if (r[i + 1] < lo[1]) lo[1] = r[i + 1];
+        if (r[i + 1] > hi[1]) hi[1] = r[i + 1];
+      }
+    }
+    return { minX: lo[0], minY: lo[1], maxX: hi[0], maxY: hi[1] };
+  }
+
+  /**
+   * The cell size for a whole object, or a reason it cannot be jelly.
+   *
+   * Two limits, and the smaller wins, because the bounding box and the shape are not the same
+   * thing. `byThickness` takes the MINIMUM over faces so that a two-face "i" cannot size its cells
+   * from the stem and leave the dot with no interior nodes.
+   *
+   * Returns `{ cell, cellsAcross, limit, fallback }`. `fallback` is null when the object can be
+   * meshed; otherwise it is 'extent' (too intricate for its size) or 'thin' (below the cell floor),
+   * and the report says which.
+   */
+  function softCellSize(faces, opts) {
+    var o = opts || {};
+    var maxCells = o.maxCells === undefined ? MAX_CELLS : o.maxCells;
+    var minCell = o.minCell === undefined ? MIN_CELL_SIM : o.minCell;
+    var wallCells = o.wallCells === undefined ? MIN_WALL_CELLS : o.wallCells;
+
+    if (!faces || !faces.length) return { cell: null, cellsAcross: 0, limit: null, fallback: 'thin' };
+
+    var bb = facesBBox(faces);
+    var maxDim = Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY);
+    if (!(maxDim > 0)) return { cell: null, cellsAcross: 0, limit: null, fallback: 'thin' };
+
+    var byExtent = maxDim / maxCells;
+
+    var thinnest = Infinity;
+    for (var f = 0; f < faces.length; f++) {
+      var t = faceThickness(faces[f]);
+      if (t > 0 && t < thinnest) thinnest = t;
+    }
+    if (!isFinite(thinnest)) return { cell: null, cellsAcross: 0, limit: null, fallback: 'thin' };
+    var byThickness = thinnest / wallCells;
+
+    var limit = byThickness < byExtent ? 'thickness' : 'extent';
+    var cell = Math.min(byExtent, byThickness);
+
+    // The floor is not a clamp that rescues a shape: if the wall cannot hold MIN_WALL_CELLS at a
+    // cell size the solver can work with, the shape is not jelly and says so.
+    if (cell < minCell) {
+      if (thinnest / minCell < wallCells) return { cell: null, cellsAcross: 0, limit: limit, fallback: 'thin' };
+      cell = minCell;
+    }
+
+    var cellsAcross = Math.ceil(maxDim / cell - 1e-9);
+    if (cellsAcross > maxCells) return { cell: null, cellsAcross: cellsAcross, limit: limit, fallback: 'extent' };
+
+    return { cell: cell, cellsAcross: cellsAcross, limit: limit, fallback: null };
+  }
+
+  /** Crossing-number test against one closed ring. */
+  function pointInRing(x, y, ring) {
+    var inside = false;
+    for (var i = 0, n = ring.length; i < n; i += 2) {
+      var j = (i + 2) % n;
+      var xi = ring[i], yi = ring[i + 1], xj = ring[j], yj = ring[j + 1];
+      if ((yi > y) !== (yj > y)) {
+        var t = (y - yi) / (yj - yi);
+        if (x < xi + t * (xj - xi)) inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /** Inside the outer ring and outside every hole. */
+  function pointInFace(x, y, face) {
+    if (!pointInRing(x, y, face.outer)) return false;
+    var holes = face.holes || [];
+    for (var i = 0; i < holes.length; i++) if (pointInRing(x, y, holes[i])) return false;
+    return true;
+  }
+
+  /**
+   * Distance from a point to the nearest segment of ANY ring of the face, holes included.
+   *
+   * Holes count because a point deep inside the material but hugging a counter is not clear of the
+   * geometry — an interior node placed there sits on top of the hole's boundary nodes, and a spring
+   * of near-zero length is exactly what the solver cannot resolve.
+   */
+  function distanceToRings(x, y, face) {
+    var best = Infinity;
+    var rings = [face.outer].concat(face.holes || []);
+    for (var r = 0; r < rings.length; r++) {
+      var ring = rings[r];
+      for (var i = 0, n = ring.length; i < n; i += 2) {
+        var j = (i + 2) % n;
+        var ax = ring[i], ay = ring[i + 1], bx = ring[j], by = ring[j + 1];
+        var dx = bx - ax, dy = by - ay;
+        var len2 = dx * dx + dy * dy;
+        var t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        var px = ax + t * dx - x, py = ay + t * dy - y;
+        var d = Math.sqrt(px * px + py * py);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Resamples a CLOSED ring to `perimeter/step` points spaced evenly by ARC LENGTH.
+   *
+   * Walks a single cursor along the ring and places a point every `target` of arc length, carrying
+   * the remainder ACROSS segment boundaries. The obvious version — measure each segment, place a
+   * point when the segment is long enough, reset on advance — silently collapses when every segment
+   * is shorter than the spacing: it places nothing at all. That is not an edge case, it is the
+   * normal one, because `flatten.js` emits curves at FLATTEN_TOL 0.1 and a flattened circle has
+   * segments far shorter than a cell. Measured on the broken version: a 128-segment circle of
+   * perimeter 9.42 resampled at 0.25 returned ONE point instead of 38.
+   *
+   * It is also invisible to every mesh assertion — an annulus came out with 2 boundary nodes, one
+   * connected component and no orphan nodes, so the tests passed on a mesh with no boundary at all.
+   * Uneven spacing is the reason to care: uneven nodes carry uneven mass and spring stiffness, the
+   * same defect uneven rope links had.
+   */
+  function resampleRing(ring, step) {
+    var per = ringPerimeter(ring);
+    if (!(per > 0) || !(step > 0)) return ring.slice();
+    var count = Math.max(3, Math.round(per / step));
+    var target = per / count;
+    var out = [];
+    var n = ring.length;
+    var acc = 0;      // arc length at the start of the current segment
+    var next = 0;     // arc length at which the next point falls
+    for (var i = 0; i < n && out.length / 2 < count; i += 2) {
+      var j = (i + 2) % n;
+      var ax = ring[i], ay = ring[i + 1];
+      var dx = ring[j] - ax, dy = ring[j + 1] - ay;
+      var segLen = Math.sqrt(dx * dx + dy * dy);
+      if (segLen <= 0) continue;
+      while (next <= acc + segLen + 1e-12 && out.length / 2 < count) {
+        var t = (next - acc) / segLen;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        out.push(ax + dx * t, ay + dy * t);
+        next += target;
+      }
+      acc += segLen;
+    }
+    return out;
+  }
+
+  /**
+   * Offsets a boundary point into the material by `dist`.
+   *
+   * The direction is the ANGLE BISECTOR of the two adjacent edge normals, not one segment's normal.
+   * At a corner a single segment normal slides the point along the neighbouring edge instead of
+   * into the material, so it lands ON the outline with zero clearance — measured on a 3x3 square at
+   * 0.5 cells, two of its 24 boundary nodes came out uninset, which is exactly the bulge the inset
+   * exists to prevent.
+   *
+   * The result is then VERIFIED with the inside test and flipped if it was wrong. Ring winding is
+   * not trusted: rings arrive from several sources, and a silently outward inset would put the
+   * collision hull outside the artwork.
+   */
+  function insetPoint(px, py, nx, ny, dist, face) {
+    var ax = px + nx * dist, ay = py + ny * dist;
+    if (pointInFace(ax, ay, face)) return [ax, ay];
+    var bx = px - nx * dist, by = py - ny * dist;
+    if (pointInFace(bx, by, face)) return [bx, by];
+    return [px, py];
+  }
+
+  /** Unit inward bisector at point `i` of a resampled closed ring. */
+  function bisectorAt(pts, i) {
+    var n = pts.length;
+    var prev = (i - 2 + n) % n, next = (i + 2) % n;
+    var d1x = pts[i] - pts[prev], d1y = pts[i + 1] - pts[prev + 1];
+    var d2x = pts[next] - pts[i], d2y = pts[next + 1] - pts[i + 1];
+    var l1 = Math.sqrt(d1x * d1x + d1y * d1y) || 1;
+    var l2 = Math.sqrt(d2x * d2x + d2y * d2y) || 1;
+    var nx = -d1y / l1 + -d2y / l2;
+    var ny = d1x / l1 + d2x / l2;
+    var l = Math.sqrt(nx * nx + ny * ny);
+    if (l < 1e-12) return [-d2y / l2, d2x / l2];   // a straight-through point
+    return [nx / l, ny / l];
+  }
+
+  /**
+   * Nodes and springs for one object.
+   *
+   * Boundary nodes are emitted FIRST, so indices `0 .. boundaryCount-1` are the ones whose motion
+   * the drawn outline follows most closely, and interior nodes follow.
+   */
+  function buildSoftMesh(faces, opts) {
+    var o = opts || {};
+    var cell = o.cell;
+    var inset = (o.insetFrac === undefined ? INSET_FRAC : o.insetFrac) * cell;
+    var clear = (o.interiorClear === undefined ? INTERIOR_CLEAR : o.interiorClear) * cell;
+
+    var boundary = [];    // flat x,y
+    var ringSpans = [];   // { start, count } per ring, for the ring springs
+    var interior = [];    // flat x,y
+    var grid = {};        // "col,row" -> interior node index, for arithmetic adjacency
+
+    for (var f = 0; f < faces.length; f++) {
+      var face = faces[f];
+      var rings = [face.outer].concat(face.holes || []);
+
+      for (var r = 0; r < rings.length; r++) {
+        var pts = resampleRing(rings[r], cell);
+        var start = boundary.length / 2;
+        var placed = 0;
+        for (var i = 0; i < pts.length; i += 2) {
+          var bis = bisectorAt(pts, i);
+          var p = insetPoint(pts[i], pts[i + 1], bis[0], bis[1], inset, face);
+          boundary.push(p[0], p[1]);
+          placed++;
+        }
+        ringSpans.push({ start: start, count: placed });
+      }
+
+      var bb = facesBBox([face]);
+      var cols = Math.ceil((bb.maxX - bb.minX) / cell);
+      var rows = Math.ceil((bb.maxY - bb.minY) / cell);
+      for (var c = 0; c <= cols; c++) {
+        for (var w = 0; w <= rows; w++) {
+          var gx = bb.minX + c * cell, gy = bb.minY + w * cell;
+          if (!pointInFace(gx, gy, face)) continue;
+          if (distanceToRings(gx, gy, face) < clear) continue;
+          grid[f + ':' + c + ',' + w] = interior.length / 2;
+          interior.push(gx, gy);
+        }
+      }
+    }
+
+    var nodes = boundary.concat(interior);
+    return {
+      nodes: nodes,
+      boundaryCount: boundary.length / 2,
+      interiorCount: interior.length / 2,
+      ringSpans: ringSpans,
+      grid: grid,
+      cell: cell,
+      springs: []
+    };
+  }
+
+  /**
+   * Springs: grid adjacency for the interior, ring order for the boundary, and a radius search to
+   * join the two.
+   *
+   * Interior adjacency is arithmetic — right, up, and BOTH diagonals. The diagonals are not
+   * optional: a grid without them is a mechanism rather than a structure and shears flat under its
+   * own weight. Boundary nodes are not on the grid, so their attachment is the one genuinely
+   * geometric step here, and the one a connectivity test has to guard.
+   */
+  function addSoftSprings(mesh, opts) {
+    var o = opts || {};
+    var cell = mesh.cell;
+    var reach = (o.attachRadius === undefined ? ATTACH_RADIUS : o.attachRadius) * cell;
+    var nodes = mesh.nodes;
+    var bCount = mesh.boundaryCount;
+    var springs = [];
+    var seen = {};
+
+    function add(a, b) {
+      if (a === b) return;
+      var key = (a < b ? a : b) + '-' + (a < b ? b : a);
+      if (seen[key]) return;
+      seen[key] = 1;
+      var dx = nodes[a * 2] - nodes[b * 2], dy = nodes[a * 2 + 1] - nodes[b * 2 + 1];
+      springs.push([a, b, Math.sqrt(dx * dx + dy * dy)]);
+    }
+
+    // Interior lattice, by arithmetic.
+    for (var key in mesh.grid) {
+      if (!Object.prototype.hasOwnProperty.call(mesh.grid, key)) continue;
+      var parts = key.split(':');
+      var fi = parts[0];
+      var cr = parts[1].split(',');
+      var c = parseInt(cr[0], 10), w = parseInt(cr[1], 10);
+      var self = mesh.grid[key] + bCount;
+      var neighbours = [[c + 1, w], [c, w + 1], [c + 1, w + 1], [c - 1, w + 1]];
+      for (var n = 0; n < neighbours.length; n++) {
+        var nk = fi + ':' + neighbours[n][0] + ',' + neighbours[n][1];
+        if (mesh.grid[nk] === undefined) continue;
+        add(self, mesh.grid[nk] + bCount);
+      }
+    }
+
+    // Boundary rings, in order and closed.
+    for (var r = 0; r < mesh.ringSpans.length; r++) {
+      var span = mesh.ringSpans[r];
+      for (var i = 0; i < span.count; i++) {
+        add(span.start + i, span.start + ((i + 1) % span.count));
+      }
+    }
+
+    // Boundary to interior, by radius.
+    var fallbacks = 0;
+    for (var b = 0; b < bCount; b++) {
+      var bx = nodes[b * 2], by = nodes[b * 2 + 1];
+      var nearest = -1, nearestD = Infinity, within = 0;
+      for (var k = 0; k < mesh.interiorCount; k++) {
+        var idx = bCount + k;
+        var ddx = nodes[idx * 2] - bx, ddy = nodes[idx * 2 + 1] - by;
+        var d = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (d <= reach) { add(b, idx); within++; }
+        if (d < nearestD) { nearestD = d; nearest = idx; }
+      }
+      // A node with nothing in range still attaches to its nearest interior neighbour, so the mesh
+      // is never disconnected. But that safety net makes an "every boundary node is attached" test
+      // TAUTOLOGICAL - it can never fail while any interior node exists. So the fallback is
+      // COUNTED, and the count is what the test asserts: it says ATTACH_RADIUS was actually wide
+      // enough, which is the property the radius exists to provide.
+      if (!within && nearest >= 0) { add(b, nearest); fallbacks++; }
+    }
+    mesh.attachFallbacks = fallbacks;
+
+    mesh.springs = springs;
+    return mesh;
+  }
+
+  /** Number of connected components over the spring graph. One, or the mesh is not a mesh. */
+  function softMeshComponents(mesh) {
+    var count = mesh.nodes.length / 2;
+    if (!count) return 0;
+    var adj = [];
+    for (var i = 0; i < count; i++) adj.push([]);
+    for (var s = 0; s < mesh.springs.length; s++) {
+      adj[mesh.springs[s][0]].push(mesh.springs[s][1]);
+      adj[mesh.springs[s][1]].push(mesh.springs[s][0]);
+    }
+    var seen = new Array(count), components = 0;
+    for (var n = 0; n < count; n++) {
+      if (seen[n]) continue;
+      components++;
+      var stack = [n];
+      seen[n] = true;
+      while (stack.length) {
+        var cur = stack.pop();
+        for (var a = 0; a < adj[cur].length; a++) {
+          if (!seen[adj[cur][a]]) { seen[adj[cur][a]] = true; stack.push(adj[cur][a]); }
+        }
+      }
+    }
+    return components;
+  }
+
+  // How many mesh nodes each outline point follows. Four is enough to be smooth and few enough to
+  // stay cheap; the weights fall off fast, so more adds little.
+  var BIND_K = 4;
+
+  /**
+   * Binds a drawn outline to the mesh, once, at rest.
+   *
+   * Weighted skinning rather than barycentric coordinates, for robustness: barycentric needs a
+   * containing triangle, and a triangle that INVERTS under jelly deformation turns its bound points
+   * inside out, while a thin feature may fall outside the mesh entirely and have no triangle at
+   * all. Weighted binding has neither failure and simply gets smoother as the mesh gets sparser.
+   */
+  function bindOutline(points, mesh, opts) {
+    var o = opts || {};
+    var k = o.k === undefined ? BIND_K : o.k;
+    var eps = o.eps === undefined ? 1e-12 : o.eps;
+    var nodes = mesh.nodes;
+    var count = nodes.length / 2;
+    var out = [];
+
+    for (var p = 0; p < points.length; p += 2) {
+      var px = points[p], py = points[p + 1];
+      var best = [];
+      for (var n = 0; n < count; n++) {
+        var dx = nodes[n * 2] - px, dy = nodes[n * 2 + 1] - py;
+        best.push([dx * dx + dy * dy, n]);
+      }
+      best.sort(function (a, b) { return a[0] - b[0]; });
+      var take = Math.min(k, best.length);
+
+      var idx = [], w = [], ox = [], oy = [], sum = 0;
+      for (var i = 0; i < take; i++) {
+        var node = best[i][1];
+        // The epsilon matters: an outline point can land exactly on a mesh node.
+        var weight = 1 / (best[i][0] + eps);
+        idx.push(node);
+        w.push(weight);
+        ox.push(px - nodes[node * 2]);
+        oy.push(py - nodes[node * 2 + 1]);
+        sum += weight;
+      }
+      for (var j = 0; j < w.length; j++) w[j] /= sum;
+      out.push({ idx: idx, w: w, ox: ox, oy: oy });
+    }
+    return out;
+  }
+
+  /**
+   * Per-node best-fit rotation, from rest neighbours against current ones.
+   *
+   * In 2D this is one atan2 over a sum of cross and dot products — no matrix decomposition. Without
+   * it, a jelly that ROTATES has its outline shrink toward the mesh centroid, because averaging
+   * several rotated positions cuts the corner. That is the classic candy-wrapper collapse.
+   */
+  function nodeRotations(mesh, positions) {
+    var count = mesh.nodes.length / 2;
+    // Keyed on the spring count so a re-sprung mesh cannot silently reuse stale adjacency.
+    if (!mesh._adj || mesh._adjFor !== mesh.springs.length) {
+      var adj = [];
+      for (var a = 0; a < count; a++) adj.push([]);
+      for (var s = 0; s < mesh.springs.length; s++) {
+        adj[mesh.springs[s][0]].push(mesh.springs[s][1]);
+        adj[mesh.springs[s][1]].push(mesh.springs[s][0]);
+      }
+      mesh._adj = adj;
+      mesh._adjFor = mesh.springs.length;
+    }
+    var rest = mesh.nodes, adjacency = mesh._adj;
+    var out = new Array(count);
+    for (var n = 0; n < count; n++) {
+      var cross = 0, dot = 0;
+      var list = adjacency[n];
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        var rx = rest[m * 2] - rest[n * 2], ry = rest[m * 2 + 1] - rest[n * 2 + 1];
+        var nx = positions[m * 2] - positions[n * 2], ny = positions[m * 2 + 1] - positions[n * 2 + 1];
+        cross += rx * ny - ry * nx;
+        dot += rx * nx + ry * ny;
+      }
+      out[n] = (cross === 0 && dot === 0) ? 0 : Math.atan2(cross, dot);
+    }
+    return out;
+  }
+
+  /** Rebuilds the drawn outline from current node positions. */
+  function evalSoftOutline(binding, mesh, positions) {
+    var rot = nodeRotations(mesh, positions);
+    var out = [];
+    for (var b = 0; b < binding.length; b++) {
+      var bind = binding[b];
+      var x = 0, y = 0;
+      for (var i = 0; i < bind.idx.length; i++) {
+        var n = bind.idx[i];
+        var th = rot[n], c = Math.cos(th), s = Math.sin(th);
+        var lx = bind.ox[i] * c - bind.oy[i] * s;
+        var ly = bind.ox[i] * s + bind.oy[i] * c;
+        x += bind.w[i] * (positions[n * 2] + lx);
+        y += bind.w[i] * (positions[n * 2 + 1] + ly);
+      }
+      out.push(x, y);
+    }
+    return out;
+  }
+
+  GR.ringArea = ringArea;
+  GR.ringPerimeter = ringPerimeter;
+  GR.faceArea = faceArea;
+  GR.facePerimeter = facePerimeter;
+  GR.faceThickness = faceThickness;
+  GR.facesBBox = facesBBox;
+  GR.softCellSize = softCellSize;
+  GR.pointInFace = pointInFace;
+  GR.distanceToRings = distanceToRings;
+  GR.resampleRing = resampleRing;
+  GR.buildSoftMesh = buildSoftMesh;
+  GR.addSoftSprings = addSoftSprings;
+  GR.softMeshComponents = softMeshComponents;
+  GR.bindOutline = bindOutline;
+  GR.nodeRotations = nodeRotations;
+  GR.evalSoftOutline = evalSoftOutline;
+  GR.SOFT_MAX_CELLS = MAX_CELLS;
+  GR.SOFT_MIN_CELL_SIM = MIN_CELL_SIM;
+  GR.SOFT_MIN_WALL_CELLS = MIN_WALL_CELLS;
+  GR.SOFT_INTERIOR_CLEAR = INTERIOR_CLEAR;
+  GR.SOFT_ATTACH_RADIUS = ATTACH_RADIUS;
+  GR.SOFT_INSET_FRAC = INSET_FRAC;
+})(GR);
+
+// -------------------------------------------------------------------------
+// src/softbody.js
+/**
+ * softbody.js — the only softbody module that touches planck.
+ *
+ * planck has no soft bodies and never will: it is a Box2D 2.x port, and b2ParticleSystem belongs to
+ * LiquidFun, a separate fork. So a softbody is a RIG — many ordinary dynamic bodies wired together
+ * with DistanceJoint springs so that they behave as one deformable thing. rope.js does the same in
+ * one dimension.
+ *
+ * The pure half lives in softmesh.js and is tested headlessly. addSoftBody is the impure boundary.
+ */
+
+(function (GR) {
+  'use strict';
+
+  // Node circles overlap so the union has no gap for a corner to pass through.
+  var RADIUS_FRAC = 0.6;
+
+  // Softness in Hz. Below about 2 the sheet stretches absurdly rather than reading as soft; above
+  // 30 it is indistinguishable from rigid and starts fighting the timestep.
+  var MIN_FREQ = 2;
+  var MAX_FREQ = 30;
+  var DAMPING_RATIO = 0.4;
+
+  // A large soft structure has a very long tail of small motion, and a run ends only when EVERY
+  // body is quiet at once. Same lever, same reason, as the rope link damping.
+  var NODE_LINEAR_DAMPING = 0.5;
+
+  // Counts DOWN from -1, one per softbody. Negative means "never collide within this group", so a
+  // shape does not inflate itself apart on its own overlapping circles; distinct values mean two
+  // jellies still collide with each other normally.
+  var nextGroup = -1;
+
+  /** Softness 0..1 to frequency, log-spaced because droop is strongly non-linear in Hz. */
+  function softnessToFrequency(softness) {
+    var t = Math.max(0, Math.min(1, softness === undefined ? 0.5 : softness));
+    return Math.exp(Math.log(MAX_FREQ) + t * (Math.log(MIN_FREQ) - Math.log(MAX_FREQ)));
+  }
+
+  /** One ring from SOURCE units to SIM units. The y flip is the same mirror `toSim` applies. */
+  function convertRing(ring, scale) {
+    var out = [];
+    for (var i = 0; i < ring.length; i += 2) out.push(ring[i] / scale, -ring[i + 1] / scale);
+    return out;
+  }
+
+  /**
+   * Meshes an object's faces and builds the rig.
+   *
+   * `faces` arrive in SOURCE units and are converted here, once, because softmesh.js works entirely
+   * in sim units. Returns a record with `fallback` set when the object cannot be jelly, saying why,
+   * so the caller can build a rigid body instead and report it.
+   */
+  function addSoftBody(W, faces, opts) {
+    var o = opts || {};
+    var pl = W.planck;
+    var scale = W.scale;
+    var name = o.name || 'soft';
+
+    // Source y grows downward and sim y grows upward. Converting here keeps the mirror in one
+    // place, exactly as toSim does for everything else.
+    var simFaces = [];
+    for (var f = 0; f < faces.length; f++) {
+      var face = faces[f];
+      var holes = [];
+      var srcHoles = face.holes || [];
+      for (var hi = 0; hi < srcHoles.length; hi++) holes.push(convertRing(srcHoles[hi], scale));
+      simFaces.push({ outer: convertRing(face.outer, scale), holes: holes });
+    }
+
+    function give(reason, limit) {
+      return {
+        nodes: [], mesh: null, groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
+        frequency: 0, springCount: 0, totalMass: 0, fallback: reason,
+        node: o.node || null, name: name
+      };
+    }
+
+    var sized = GR.softCellSize(simFaces);
+    if (sized.fallback) return give(sized.fallback, sized.limit);
+
+    var mesh = GR.buildSoftMesh(simFaces, { cell: sized.cell });
+    GR.addSoftSprings(mesh);
+    var nodeCount = mesh.nodes.length / 2;
+    if (!nodeCount) return give('thin', sized.limit);
+
+    var radius = RADIUS_FRAC * sized.cell;
+
+    // Mass is solved backwards from the target, because overlapping circles double-count area
+    // badly. The target is whatever the RIGID body would have weighed, which means honouring
+    // Equalise mass exactly as bodies.js does — it overrides density so every rigid body lands on
+    // targetMass regardless of area, and a jelly that ignored that becomes the one heavy object in
+    // the scene.
+    var simArea = 0;
+    for (var a = 0; a < simFaces.length; a++) simArea += GR.faceArea(simFaces[a]);
+    var density = o.density === undefined ? 1 : o.density;
+    var targetMass = o.targetMass === undefined ? 1 : o.targetMass;
+    var totalMass = o.equaliseMass ? targetMass : simArea * density;
+    var perNode = totalMass / nodeCount;
+    // Degenerate masses would otherwise give planck an infinite or zero density and it rejects
+    // every fixture on the body. Same guard, same reason, as addBody's density clamp.
+    var nodeDensity = Math.min(1e6, Math.max(1e-6, perNode / (Math.PI * radius * radius)));
+
+    var groupIndex = nextGroup--;
+    // `frequencyHz` overrides the softness mapping outright, and 0 means a RIGID constraint rather
+    // than a very stiff spring. Rigid is not a position on the user's slider — the spec is explicit
+    // that rigid means not naming the object — but the tests need it, because "does the solver hold
+    // this span" is a question about the solver and must not be asked through a spring.
+    var freq = o.frequencyHz === undefined ? softnessToFrequency(o.softness) : o.frequencyHz;
+
+    var nodes = [];
+    for (var n = 0; n < nodeCount; n++) {
+      var body = W.world.createDynamicBody({
+        position: new pl.Vec2(mesh.nodes[n * 2], mesh.nodes[n * 2 + 1]),
+        linearDamping: o.linearDamping === undefined ? NODE_LINEAR_DAMPING : o.linearDamping
+      });
+      body.createFixture(new pl.Circle(radius), {
+        density: nodeDensity,
+        friction: o.friction === undefined ? 0.4 : o.friction,
+        restitution: o.restitution === undefined ? 0 : o.restitution,
+        filterGroupIndex: groupIndex
+      });
+      var rec = {
+        body: body,
+        // The rest position back in SRC units, so playback places this node exactly as it places a
+        // rigid body or a rope link.
+        ox: mesh.nodes[n * 2] * scale,
+        oy: -mesh.nodes[n * 2 + 1] * scale,
+        angle0: 0,
+        simRadius: radius,
+        fixtures: 1,
+        rejected: [],
+        bullet: false,
+        name: name + ' [' + n + ']',
+        node: o.node || null,
+        isSoftNode: true,
+        // Which softbody this node belongs to. seedJitter draws once per group, so a lattice is
+        // nudged as one object rather than shaken node by node.
+        softGroup: groupIndex
+      };
+      W.dynamics.push(rec);
+      nodes.push(rec);
+    }
+
+    // Springs at the body CENTRES: the rest length softmesh solved is a centre-to-centre distance,
+    // so both local anchors are the body origin and nothing has to be re-measured here.
+    for (var s = 0; s < mesh.springs.length; s++) {
+      var sp = mesh.springs[s];
+      W.world.createJoint(new pl.DistanceJoint({
+        bodyA: nodes[sp[0]].body,
+        bodyB: nodes[sp[1]].body,
+        localAnchorA: new pl.Vec2(0, 0),
+        localAnchorB: new pl.Vec2(0, 0),
+        length: sp[2],
+        frequencyHz: freq,
+        dampingRatio: o.dampingRatio === undefined ? DAMPING_RATIO : o.dampingRatio,
+        collideConnected: false
+      }));
+    }
+
+    return {
+      nodes: nodes,
+      mesh: mesh,
+      groupIndex: groupIndex,
+      cell: sized.cell,
+      cellsAcross: sized.cellsAcross,
+      limit: sized.limit,
+      frequency: freq,
+      springCount: mesh.springs.length,
+      totalMass: totalMass,
+      fallback: null,
+      node: o.node || null,
+      name: name
+    };
+  }
+
+  GR.addSoftBody = addSoftBody;
+  GR.softnessToFrequency = softnessToFrequency;
+  GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
+})(GR);
+
+// -------------------------------------------------------------------------
 // src/sim.js
 /**
  * sim.js — stepping, settling and frame recording.
@@ -2788,10 +3565,18 @@ GR.planck = (function () {
     var r = rng(seed);
     var amt = amount === undefined ? 0.01 : amount;
     if (!amt) return;
+    // One draw per SOFTBODY rather than per node. A lattice given an independent velocity per node
+    // is shaken rather than nudged, and a soft structure holds that energy for a long time — the
+    // jitter exists to break a symmetry, not to deform anything.
+    var groups = {};
     for (var i = 0; i < W.dynamics.length; i++) {
-      var b = W.dynamics[i].body;
-      b.setAngularVelocity((r() - 0.5) * 2 * amt);
-      b.setLinearVelocity(new W.planck.Vec2((r() - 0.5) * 2 * amt, 0));
+      var rec = W.dynamics[i];
+      var key = rec.isSoftNode ? ('soft:' + rec.softGroup) : ('body:' + i);
+      if (groups[key] === undefined) {
+        groups[key] = { av: (r() - 0.5) * 2 * amt, lv: (r() - 0.5) * 2 * amt };
+      }
+      rec.body.setAngularVelocity(groups[key].av);
+      rec.body.setLinearVelocity(new W.planck.Vec2(groups[key].lv, 0));
     }
   }
 
@@ -3104,6 +3889,10 @@ GR.planck = (function () {
     var ropeCmds = ropeCommands(ctx, frameIndex);
     for (var r = 0; r < ropeCmds.length; r++) { cc.addCommand(ropeCmds[r]); any = true; }
 
+    // Softbodies deform too, so they ride along the same way for the same reason.
+    var softCmds = softCommands(ctx, frameIndex);
+    for (var sc = 0; sc < softCmds.length; sc++) { cc.addCommand(softCmds[sc]); any = true; }
+
     return any ? cc.createCommand() : null;
   }
 
@@ -3189,11 +3978,94 @@ GR.planck = (function () {
   }
 
   /**
+   * Commands that rewrite each softbody's geometry for a frame.
+   *
+   * The two-dimensional sibling of ropeCommands, and for the same reason: a jelly DEFORMS, so no
+   * transform can express it — every outline point moves on its own. Its rings are re-evaluated from
+   * the mesh node poses and written with `createSetCurves`, which replaces a curve node's geometry
+   * outright and works as a preview, so a jelly scrubs like everything else.
+   *
+   * Two things are deliberately NOT done here, both of which ropes do:
+   *
+   *  - nothing is smoothed. A rope interpolates because its solver link count is capped for
+   *    stability and the drawn curve should not be a faceted chain. A jelly's outline is not built
+   *    from its nodes, it is BOUND to them, so it already has whatever resolution the artwork had.
+   *  - nothing is simplified. The rope tolerance exists to keep smoothing from dumping ~200 invented
+   *    vertices onto the user's path. A jelly's outline IS the user's own points, so simplifying
+   *    would only lose them — and frame 0 has to give the flattened rings back exactly.
+   *
+   * Softbodies are grouped by node first, exactly as ropes are: `createSetCurves` replaces ALL
+   * curves on a node, so two jellies sharing one node must rebuild in one command.
+   */
+  function softCommands(ctx, frameIndex) {
+    var out = [];
+    if (!ctx.softsByNode) return out;
+    var g = ctx.sdk;
+
+    for (var n = 0; n < ctx.softsByNode.length; n++) {
+      var entry = ctx.softsByNode[n];
+      var poly = g.PolyCurve.create();
+      var built = 0;
+
+      for (var s = 0; s < entry.softs.length; s++) {
+        var soft = entry.softs[s];
+        var rings = soft.rings || [];
+        if (!soft.mesh || !rings.length) continue;
+
+        try {
+          // Every ring of one softbody is driven by the same lattice, so the poses are gathered once
+          // per body rather than once per ring.
+          var positions = [];
+          for (var p = 0; p < soft.nodes.length; p++) {
+            var pose = GR.poseAt(ctx.frames, frameIndex, soft.nodes[p].frameIndex);
+            positions.push(pose.x, pose.y);
+          }
+
+          for (var r = 0; r < rings.length; r++) {
+            var pts = GR.evalSoftOutline(rings[r], soft.mesh, positions);
+            if (pts.length < 6) continue;   // fewer than three points is not a ring
+
+            // Back into the node's own space, AFTER evaluating — the binding was built in the space
+            // the physics ran in, and so are the poses driving it.
+            if (entry.toBase) GR.transformRing(pts, entry.toBase);
+
+            var cb = g.CurveBuilder.create();
+            cb.beginXY(pts[0], pts[1]);
+            for (var k = 2; k < pts.length; k += 2) cb.lineToXY(pts[k], pts[k + 1]);
+            // The real closing call, probed 2026-08-15. Repeating the first point instead builds a
+            // curve that reports `isClosed false`: it draws closed but fills wrong, and `isClosed`
+            // is read-only, so nothing downstream can repair it.
+            cb.close();
+            poly.addCurve(cb.createCurve());
+            built++;
+          }
+        } catch (e) { /* one jelly that will not rebuild must not stop the rest */ }
+      }
+
+      if (!built) continue;
+      try {
+        out.push(g.DocumentCommand.createSetCurves(entry.node.curvesInterface, poly));
+      } catch (e) { /* nor may a node that will not take curves */ }
+    }
+    return out;
+  }
+
+  /**
    * Prepares playback for a finished simulation.
    *
    * `bodies` must be in the SAME order as the recording, because poses are addressed by index.
+   *
+   * Each entry of `softs` describes one softbody to redraw:
+   *
+   *     { node, mesh, rings: [binding, ...], nodes: [bodyRecord, ...] }
+   *
+   * `mesh` is the rest lattice, `rings` are `GR.bindOutline` results — one per drawn ring — and
+   * `nodes` are the body records driving it, in mesh node order. All three must be in SPREAD
+   * points, the units poses come back in, because `softCommands` feeds the poses straight into
+   * `evalSoftOutline` and converts nothing on the way. `softbody.js` keeps each node's rest position
+   * in exactly those units as `ox`/`oy` for that reason.
    */
-  function prepare(doc, bodies, frames, ropes) {
+  function prepare(doc, bodies, frames, ropes, softs) {
     var sdk = loadSdk();
 
     for (var i = 0; i < bodies.length; i++) {
@@ -3201,8 +4073,11 @@ GR.planck = (function () {
       bodies[i].frameIndex = i;
 
       // A rope link must NOT get a selection: it is drawn by rewriting its node's geometry, and
-      // transforming that node as well would move the rope twice.
-      var node = bodies[i].isRopeLink ? null : (bodies[i].node || (bodies[i].object && bodies[i].object.node));
+      // transforming that node as well would move the rope twice. A softbody's mesh nodes are the
+      // same case — and worse, since there are hundreds of them all pointing at one node.
+      var node = (bodies[i].isRopeLink || bodies[i].isSoftNode)
+        ? null
+        : (bodies[i].node || (bodies[i].object && bodies[i].object.node));
       if (!node) { bodies[i].selection = null; continue; }
       var sel = sdk.Selection.createEmpty(doc);
       sel.addNode(node);
@@ -3228,9 +4103,28 @@ GR.planck = (function () {
       entry.ropes.push(rope);
     }
 
+    // Same grouping, same reason: two jellies on one node rebuild together or the second erases the
+    // first. The inverse matrix is taken once per node here rather than per frame, since nothing
+    // transforms a softbody's node during playback — the node is only ever redrawn.
+    var softByNode = [];
+    for (var s = 0; s < (softs || []).length; s++) {
+      var soft = softs[s];
+      if (!soft || !soft.node || !soft.nodes || !soft.nodes.length) continue;
+      var se = null;
+      for (var k = 0; k < softByNode.length; k++) {
+        if (softByNode[k].node === soft.node) { se = softByNode[k]; break; }
+      }
+      if (!se) {
+        se = { node: soft.node, softs: [], toBase: GR.invertMatrix(GR.matrixOf(soft.node)) };
+        softByNode.push(se);
+      }
+      se.softs.push(soft);
+    }
+
     return {
       doc: doc, sdk: sdk, bodies: bodies, frames: frames,
       ropesByNode: byNode,
+      softsByNode: softByNode,
       lastIndex: frames.frameCount - 1
     };
   }
@@ -3746,7 +4640,8 @@ GR.planck = (function () {
     friction: 40,      // %
     seconds: 10,
     seed: 1,
-    slack: 0        // % - a straight rope has no spare length, so drape is opt-in
+    slack: 0,       // % - a straight rope has no spare length, so drape is opt-in
+    softness: 50    // % - the middle of the log-spaced frequency range, a firm jelly
   };
 
   /**
@@ -3809,6 +4704,10 @@ GR.planck = (function () {
     // told it is longer than it looks.
     var slackCtl = mat.addUnitValueEditor('Rope slack %', UnitType.Number, UnitType.Number, d.slack, 0, 100);
     slackCtl.setShowPopupSlider(true); slackCtl.precision = 0;
+    // Softness lives with Material because it is a property of the object, not of the world. It is
+    // mapped log-spaced onto frequency downstream, because droop is strongly non-linear in Hz.
+    var softCtl = mat.addUnitValueEditor('Jelly softness %', UnitType.Number, UnitType.Number, d.softness, 0, 100);
+    softCtl.setShowPopupSlider(true); softCtl.precision = 0;
 
     var beh = col.addGroup('Objects');
     var convertCtl = beh.addCheckBox('Split text into letters', false);
@@ -3825,6 +4724,8 @@ GR.planck = (function () {
       '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
     help.addStaticText('', 'Live text drops as one piece. "Split text into letters" converts it to ' +
       'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
+    help.addStaticText('', 'Name a closed shape "jelly", "soft" or "squish" to make it wobble ' +
+      'instead of staying rigid. Chunky shapes work best; thin artwork stays rigid.').setIsFullWidth(true);
     help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
       'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
@@ -3846,6 +4747,7 @@ GR.planck = (function () {
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
       equaliseMass: !!equaliseCtl.value,
       ropeSlack: Math.max(0, Math.min(1, (slackCtl.value === undefined ? d.slack : slackCtl.value) / 100)),
+      softness: Math.max(0, Math.min(1, (softCtl.value === undefined ? d.softness : softCtl.value) / 100)),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
@@ -4249,6 +5151,31 @@ GR.planck = (function () {
     console.log('== bodies ==');
     var made = [];
     var ropes = [];
+    var softs = [];
+
+    /**
+     * The rig's rest lattice back in SPREAD points.
+     *
+     * `addSoftBody` meshes in SIM units, so `soft.mesh` cannot be handed to playback as it stands —
+     * the binding, the poses and the mesh all have to be in one space, and poses come back in spread
+     * points. Each node record already carries its own rest position in those units as `ox`/`oy`
+     * (softbody.js keeps it for exactly this), so the lattice is rebuilt from the records rather
+     * than rescaled from the sim mesh, and the y flip comes along for free.
+     *
+     * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
+     * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
+     */
+    function spreadMeshOf(soft, scale) {
+      var pts = [];
+      for (var sn = 0; sn < soft.nodes.length; sn++) pts.push(soft.nodes[sn].ox, soft.nodes[sn].oy);
+      var springs = [];
+      for (var sp = 0; sp < soft.mesh.springs.length; sp++) {
+        var spr = soft.mesh.springs[sp];
+        springs.push([spr[0], spr[1], spr[2] * scale]);
+      }
+      return { nodes: pts, springs: springs, cell: soft.cell * scale };
+    }
+
     for (var k = 0; k < ex.objects.length; k++) {
       var obj = ex.objects[k];
 
@@ -4293,6 +5220,66 @@ GR.planck = (function () {
             : '') +
           (obj.anchored ? ' PINNED' : ''));
         continue;
+      }
+
+      // AFTER the rope branch and BEFORE the rigid one, deliberately: an open path named "jelly"
+      // carries both flags, and rope has to win because an open path has no interior to mesh.
+      if (obj.isSoft) {
+        var madeSoft = GR.addSoftBody(W, obj.faces, {
+          softness: o.softness === undefined ? 0.5 : o.softness,
+          density: o.density === undefined ? 1 : o.density,
+          equaliseMass: !!o.equaliseMass,
+          friction: o.friction === undefined ? 0.4 : o.friction,
+          restitution: o.restitution === undefined ? 0.15 : o.restitution,
+          name: obj.name,
+          node: obj.node
+        });
+
+        if (madeSoft && !madeSoft.fallback) {
+          for (var sn2 = 0; sn2 < madeSoft.nodes.length; sn2++) made.push(madeSoft.nodes[sn2]);
+
+          // The outline is bound ONCE, at rest, against the spread-space lattice. Every face's outer
+          // ring is bound before its own holes, and the faces in extraction order, because
+          // `softCommands` walks this same array and emits one curve per entry into one PolyCurve —
+          // a different order there would draw the holes against the wrong outlines.
+          var spreadM = spreadMeshOf(madeSoft, W.scale);
+          var bound = [];
+          for (var sf = 0; sf < obj.faces.length; sf++) {
+            var sface = obj.faces[sf];
+            bound.push(GR.bindOutline(sface.outer, spreadM));
+            var sholes = sface.holes || [];
+            for (var sh = 0; sh < sholes.length; sh++) bound.push(GR.bindOutline(sholes[sh], spreadM));
+          }
+
+          softs.push({
+            node: obj.node,
+            mesh: spreadM,
+            rings: bound,
+            nodes: madeSoft.nodes,
+            name: obj.name,
+            object: obj,
+            rig: madeSoft
+          });
+
+          console.log('  soft    ' + (obj.name || '(unnamed)') +
+            '  cells=' + madeSoft.cellsAcross +
+            ' cell=' + fmt(madeSoft.cell * W.scale, 1) + 'pt' +
+            ' nodes=' + madeSoft.nodes.length +
+            ' springs=' + madeSoft.springCount +
+            ' rings=' + bound.length +
+            ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
+            ' mass=' + fmt(madeSoft.totalMass, 4) +
+            ' limit=' + madeSoft.limit);
+          continue;
+        }
+
+        // Refusing is a real outcome, not an error: a shape whose wall cannot hold two cells at a
+        // size the solver can work with is not jelly, and falling through to a rigid body is the
+        // honest result. The reason is reported because "extent" and "thin" have different fixes.
+        // No `continue` here on purpose — control drops out of this branch into the rigid path
+        // below, so the shape still becomes an ordinary body via GR.addBody.
+        console.log('  soft    ' + (obj.name || '(unnamed)') +
+          '  NOT MESHED (' + (madeSoft ? madeSoft.fallback : 'unknown') + ') -> rigid');
       }
 
       // One body per object, with every face's parts on it, so a two-part glyph like "i" stays
@@ -4399,14 +5386,23 @@ GR.planck = (function () {
 
     // -------------------------------------------------------------------- sim
     var t0 = Date.now();
+    // A jelly is a lattice of springs, and the default 8/3 iterations leave it visibly stretchy —
+    // the sag then measures solver error rather than the softness that was asked for. Raised only
+    // when a softbody exists, so every scene that had none steps exactly as it did before.
     var frames = GR.run(W, {
       maxFrames: o.maxFrames === undefined ? 900 : o.maxFrames,
-      seed: o.seed === undefined ? 1 : o.seed
+      seed: o.seed === undefined ? 1 : o.seed,
+      velocityIterations: softs.length ? 24 : undefined,
+      positionIterations: softs.length ? 8 : undefined
     });
     var ms = Date.now() - t0;
 
     console.log('');
     console.log('== simulation ==');
+    if (softs.length) {
+      console.log('  solver iterations raised to 24 velocity / 8 position (default 8 / 3) for ' +
+                  softs.length + ' softbody/ies — that is where the extra time went');
+    }
     console.log('  bodies=' + frames.bodyCount +
       ' frames=' + frames.frameCount +
       ' settledBy=' + frames.settledBy +
@@ -4441,12 +5437,38 @@ GR.planck = (function () {
 
     console.log('');
     console.log('== final poses ==');
+    // A softbody reports ONE line, not one per node. Its nodes are in `made` like everything else,
+    // so the obvious loop prints ~164 lines for a single jelly and buries the rest of the report -
+    // and the per-node numbers say nothing anyway, since no single node is the object. The centroid
+    // is the honest summary: it is where the shape ended up. Rotation is omitted because a jelly
+    // has none to report; every node carries its own angle and the object as a whole has no pose.
+    var softCentroids = {};
     for (var m = 0; m < made.length; m++) {
+      var rec = made[m];
       var pose = GR.poseAt(frames, frames.frameCount - 1, m);
-      console.log('  ' + (made[m].name || '(unnamed)') +
-        '  from (' + fmt(made[m].ox) + ',' + fmt(made[m].oy) + ')' +
+      if (rec.isSoftNode) {
+        var key = rec.softGroup;
+        if (!softCentroids[key]) {
+          softCentroids[key] = { name: rec.name, n: 0, ox: 0, oy: 0, x: 0, y: 0 };
+        }
+        var acc = softCentroids[key];
+        acc.n++; acc.ox += rec.ox; acc.oy += rec.oy; acc.x += pose.x; acc.y += pose.y;
+        continue;
+      }
+      console.log('  ' + (rec.name || '(unnamed)') +
+        '  from (' + fmt(rec.ox) + ',' + fmt(rec.oy) + ')' +
         '  to (' + fmt(pose.x) + ',' + fmt(pose.y) + ')' +
         '  turned ' + fmt(pose.angle * 180 / Math.PI, 1) + ' deg');
+    }
+    for (var sc in softCentroids) {
+      if (!Object.prototype.hasOwnProperty.call(softCentroids, sc)) continue;
+      var a = softCentroids[sc];
+      // The node names are "<object> [0]", "<object> [1]" and so on, so strip the index back off.
+      var soleName = String(a.name || '(unnamed)').replace(/ \[\d+\]$/, '');
+      console.log('  ' + soleName +
+        '  from (' + fmt(a.ox / a.n) + ',' + fmt(a.oy / a.n) + ')' +
+        '  to (' + fmt(a.x / a.n) + ',' + fmt(a.y / a.n) + ')' +
+        '  centroid of ' + a.n + ' nodes');
     }
 
     // --------------------------------------------------------------- playback
@@ -4458,7 +5480,7 @@ GR.planck = (function () {
 
     var ctx;
     try {
-      ctx = GR.playbackPrepare(doc, made, frames, ropes);
+      ctx = GR.playbackPrepare(doc, made, frames, ropes, softs);
     } catch (e) {
       console.log('');
       console.log('gravity: playback unavailable (' + e + '); document untouched.');
