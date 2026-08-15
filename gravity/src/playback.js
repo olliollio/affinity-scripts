@@ -112,6 +112,10 @@
     var ropeCmds = ropeCommands(ctx, frameIndex);
     for (var r = 0; r < ropeCmds.length; r++) { cc.addCommand(ropeCmds[r]); any = true; }
 
+    // Softbodies deform too, so they ride along the same way for the same reason.
+    var softCmds = softCommands(ctx, frameIndex);
+    for (var sc = 0; sc < softCmds.length; sc++) { cc.addCommand(softCmds[sc]); any = true; }
+
     return any ? cc.createCommand() : null;
   }
 
@@ -197,11 +201,94 @@
   }
 
   /**
+   * Commands that rewrite each softbody's geometry for a frame.
+   *
+   * The two-dimensional sibling of ropeCommands, and for the same reason: a jelly DEFORMS, so no
+   * transform can express it — every outline point moves on its own. Its rings are re-evaluated from
+   * the mesh node poses and written with `createSetCurves`, which replaces a curve node's geometry
+   * outright and works as a preview, so a jelly scrubs like everything else.
+   *
+   * Two things are deliberately NOT done here, both of which ropes do:
+   *
+   *  - nothing is smoothed. A rope interpolates because its solver link count is capped for
+   *    stability and the drawn curve should not be a faceted chain. A jelly's outline is not built
+   *    from its nodes, it is BOUND to them, so it already has whatever resolution the artwork had.
+   *  - nothing is simplified. The rope tolerance exists to keep smoothing from dumping ~200 invented
+   *    vertices onto the user's path. A jelly's outline IS the user's own points, so simplifying
+   *    would only lose them — and frame 0 has to give the flattened rings back exactly.
+   *
+   * Softbodies are grouped by node first, exactly as ropes are: `createSetCurves` replaces ALL
+   * curves on a node, so two jellies sharing one node must rebuild in one command.
+   */
+  function softCommands(ctx, frameIndex) {
+    var out = [];
+    if (!ctx.softsByNode) return out;
+    var g = ctx.sdk;
+
+    for (var n = 0; n < ctx.softsByNode.length; n++) {
+      var entry = ctx.softsByNode[n];
+      var poly = g.PolyCurve.create();
+      var built = 0;
+
+      for (var s = 0; s < entry.softs.length; s++) {
+        var soft = entry.softs[s];
+        var rings = soft.rings || [];
+        if (!soft.mesh || !rings.length) continue;
+
+        try {
+          // Every ring of one softbody is driven by the same lattice, so the poses are gathered once
+          // per body rather than once per ring.
+          var positions = [];
+          for (var p = 0; p < soft.nodes.length; p++) {
+            var pose = GR.poseAt(ctx.frames, frameIndex, soft.nodes[p].frameIndex);
+            positions.push(pose.x, pose.y);
+          }
+
+          for (var r = 0; r < rings.length; r++) {
+            var pts = GR.evalSoftOutline(rings[r], soft.mesh, positions);
+            if (pts.length < 6) continue;   // fewer than three points is not a ring
+
+            // Back into the node's own space, AFTER evaluating — the binding was built in the space
+            // the physics ran in, and so are the poses driving it.
+            if (entry.toBase) GR.transformRing(pts, entry.toBase);
+
+            var cb = g.CurveBuilder.create();
+            cb.beginXY(pts[0], pts[1]);
+            for (var k = 2; k < pts.length; k += 2) cb.lineToXY(pts[k], pts[k + 1]);
+            // The real closing call, probed 2026-08-15. Repeating the first point instead builds a
+            // curve that reports `isClosed false`: it draws closed but fills wrong, and `isClosed`
+            // is read-only, so nothing downstream can repair it.
+            cb.close();
+            poly.addCurve(cb.createCurve());
+            built++;
+          }
+        } catch (e) { /* one jelly that will not rebuild must not stop the rest */ }
+      }
+
+      if (!built) continue;
+      try {
+        out.push(g.DocumentCommand.createSetCurves(entry.node.curvesInterface, poly));
+      } catch (e) { /* nor may a node that will not take curves */ }
+    }
+    return out;
+  }
+
+  /**
    * Prepares playback for a finished simulation.
    *
    * `bodies` must be in the SAME order as the recording, because poses are addressed by index.
+   *
+   * Each entry of `softs` describes one softbody to redraw:
+   *
+   *     { node, mesh, rings: [binding, ...], nodes: [bodyRecord, ...] }
+   *
+   * `mesh` is the rest lattice, `rings` are `GR.bindOutline` results — one per drawn ring — and
+   * `nodes` are the body records driving it, in mesh node order. All three must be in SPREAD
+   * points, the units poses come back in, because `softCommands` feeds the poses straight into
+   * `evalSoftOutline` and converts nothing on the way. `softbody.js` keeps each node's rest position
+   * in exactly those units as `ox`/`oy` for that reason.
    */
-  function prepare(doc, bodies, frames, ropes) {
+  function prepare(doc, bodies, frames, ropes, softs) {
     var sdk = loadSdk();
 
     for (var i = 0; i < bodies.length; i++) {
@@ -209,8 +296,11 @@
       bodies[i].frameIndex = i;
 
       // A rope link must NOT get a selection: it is drawn by rewriting its node's geometry, and
-      // transforming that node as well would move the rope twice.
-      var node = bodies[i].isRopeLink ? null : (bodies[i].node || (bodies[i].object && bodies[i].object.node));
+      // transforming that node as well would move the rope twice. A softbody's mesh nodes are the
+      // same case — and worse, since there are hundreds of them all pointing at one node.
+      var node = (bodies[i].isRopeLink || bodies[i].isSoftNode)
+        ? null
+        : (bodies[i].node || (bodies[i].object && bodies[i].object.node));
       if (!node) { bodies[i].selection = null; continue; }
       var sel = sdk.Selection.createEmpty(doc);
       sel.addNode(node);
@@ -236,9 +326,28 @@
       entry.ropes.push(rope);
     }
 
+    // Same grouping, same reason: two jellies on one node rebuild together or the second erases the
+    // first. The inverse matrix is taken once per node here rather than per frame, since nothing
+    // transforms a softbody's node during playback — the node is only ever redrawn.
+    var softByNode = [];
+    for (var s = 0; s < (softs || []).length; s++) {
+      var soft = softs[s];
+      if (!soft || !soft.node || !soft.nodes || !soft.nodes.length) continue;
+      var se = null;
+      for (var k = 0; k < softByNode.length; k++) {
+        if (softByNode[k].node === soft.node) { se = softByNode[k]; break; }
+      }
+      if (!se) {
+        se = { node: soft.node, softs: [], toBase: GR.invertMatrix(GR.matrixOf(soft.node)) };
+        softByNode.push(se);
+      }
+      se.softs.push(soft);
+    }
+
     return {
       doc: doc, sdk: sdk, bodies: bodies, frames: frames,
       ropesByNode: byNode,
+      softsByNode: softByNode,
       lastIndex: frames.frameCount - 1
     };
   }

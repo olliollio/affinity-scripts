@@ -149,4 +149,234 @@ module.exports = function (GR, h) {
   // Swallowing was the expensive part, so this is stated as its own assertion rather than left
   // implied by the one above.
   h.assert('so the failure cannot be silent', alerts3.length > 0);
+
+  // ------------------------------------------------------------------ softbodies
+  //
+  // A softbody DEFORMS, so it cannot be drawn by transforming its node the way a rigid body is:
+  // every outline point moves on its own. Its geometry is rewritten every frame with
+  // createSetCurves, exactly as a rope's is.
+  //
+  // What is checkable headlessly is OUR side of that: which bodies get a selection, how softbodies
+  // are grouped by node, which pose each mesh node reads, and the exact sequence of builder calls
+  // one frame produces. What Affinity DRAWS from those calls is not checkable here at all — the
+  // fake below records arguments, it does not render. So "closed" and "in base space" below mean
+  // closed and in base space IN THE ARGUMENTS HANDED TO THE SDK, which is as far as a headless
+  // test can go; only a live document can say the fill is right.
+
+  /** A stand-in for /geometry, /commands and /selections that records what playback asks of it. */
+  function makeSdk() {
+    var rec = { setCurves: [], transforms: [], selections: [], failOn: null };
+    rec.host = {
+      '/geometry': {
+        Transform: {
+          createTranslate: function (x, y) { return { x: x, y: y, multiply: function () { return this; } }; },
+          createRotate: function (a) { return { angle: a, around: function () { return this; } }; }
+        },
+        PolyCurve: {
+          create: function () {
+            var p = { curves: [] };
+            p.addCurve = function (c) { p.curves.push(c); };
+            return p;
+          }
+        },
+        CurveBuilder: {
+          create: function () {
+            var cb = { pts: [], closes: 0, created: 0 };
+            cb.beginXY = function (x, y) { cb.pts.push(x, y); };
+            cb.lineToXY = function (x, y) { cb.pts.push(x, y); };
+            cb.close = function () { cb.closes++; };
+            cb.createCurve = function () { cb.created++; return cb; };
+            return cb;
+          }
+        }
+      },
+      '/commands': {
+        DocumentCommand: {
+          createSetCurves: function (ci, poly) {
+            if (rec.failOn && ci === rec.failOn) throw new Error('this node will not take curves');
+            var c = { ci: ci, poly: poly };
+            rec.setCurves.push(c);
+            return c;
+          },
+          createTransform: function (sel, xf) {
+            var c = { sel: sel, xf: xf };
+            rec.transforms.push(c);
+            return c;
+          }
+        },
+        CompoundCommandBuilder: {
+          create: function () {
+            var cc = { cmds: [] };
+            cc.addCommand = function (c) { cc.cmds.push(c); };
+            cc.createCommand = function () { return cc; };
+            return cc;
+          }
+        }
+      },
+      '/selections': {
+        Selection: {
+          createEmpty: function (doc) {
+            var s = { doc: doc, nodes: [] };
+            s.addNode = function (n) { s.nodes.push(n); };
+            rec.selections.push(s);
+            return s;
+          }
+        }
+      }
+    };
+    return rec;
+  }
+
+  /** Runs `fn` with the whole SDK stubbed. Same shape as withHost, one module list wider. */
+  function withSdk(sdk, fn) {
+    var saved = globalThis.require;
+    globalThis.require = function (id) {
+      if (sdk.host[id]) return sdk.host[id];
+      throw new Error('unexpected require: ' + id);
+    };
+    try { return fn(); } finally { globalThis.require = saved; }
+  }
+
+  /** A curve node carrying a base-to-spread transform, so the trip back to base space is visible. */
+  function makeNode(tx, ty) {
+    return {
+      curvesInterface: { id: 'ci' + tx + ',' + ty },
+      baseToSpreadTransform: { data: [1, 0, tx, 0, 1, ty] }
+    };
+  }
+
+  /**
+   * A four-node square lattice with its own outline bound to it, in SPREAD points.
+   *
+   * The outline points sit exactly on the mesh nodes, so at rest — and under any pure translation —
+   * evalSoftOutline must give the square back unchanged. That is what makes an exact coordinate
+   * assertion possible at all.
+   */
+  function makeSoft(node, x0, y0, size) {
+    var diag = Math.sqrt(2) * size;
+    var mesh = {
+      nodes: [x0, y0, x0 + size, y0, x0 + size, y0 + size, x0, y0 + size],
+      springs: [[0, 1, size], [1, 2, size], [2, 3, size], [3, 0, size], [0, 2, diag], [1, 3, diag]]
+    };
+    var ring = mesh.nodes.slice();
+    var recs = [];
+    for (var i = 0; i < 4; i++) recs.push({ isSoftNode: true, node: node, name: 'jelly[' + i + ']' });
+    return { node: node, mesh: mesh, rings: [GR.bindOutline(ring, mesh)], nodes: recs, ring: ring };
+  }
+
+  /** A one-frame recording placing every body at `positions` (flat x,y, in body order). */
+  function makeFrames(positions) {
+    var frames = [];
+    for (var i = 0; i < positions.length; i += 2) frames.push(positions[i], positions[i + 1], 0);
+    return { frameCount: 1, bodyCount: positions.length / 2, frames: frames };
+  }
+
+  /** Largest coordinate error between a built curve and `ring` shifted by (dx, dy). */
+  function ringError(curve, ring, dx, dy) {
+    if (curve.pts.length !== ring.length) return Infinity;
+    var worst = 0;
+    for (var i = 0; i < ring.length; i += 2) {
+      worst = Math.max(worst,
+        Math.abs(curve.pts[i] - (ring[i] + dx)),
+        Math.abs(curve.pts[i + 1] - (ring[i + 1] + dy)));
+    }
+    return worst;
+  }
+
+  h.group('playback: a softbody is drawn, not transformed');
+
+  var sdkSel = makeSdk();
+  var fakeSoft = [{ isSoftNode: true, node: {}, body: null }];
+  withSdk(sdkSel, function () {
+    GR.playbackPrepare(null, fakeSoft, { frameCount: 1, bodyCount: 1, frames: [0, 0, 0] }, [], []);
+  });
+  // The node is redrawn by createSetCurves; transforming it as well would move the shape twice.
+  h.assert('a soft node gets no selection', !fakeSoft[0].selection);
+  h.assertEqual('so nothing is selected at all', sdkSel.selections.length, 0);
+
+  h.group('playback: softbodies are grouped by node');
+
+  var nodeA = makeNode(50, 20);
+  var nodeB = makeNode(0, 0);
+  var softA1 = makeSoft(nodeA, 0, 0, 10);
+  var softA2 = makeSoft(nodeA, 40, 0, 10);
+  var softB = makeSoft(nodeB, 0, 0, 10);
+  var softBodies = softA1.nodes.concat(softA2.nodes, softB.nodes);
+  var rest = softA1.mesh.nodes.concat(softA2.mesh.nodes, softB.mesh.nodes);
+  var restFrames = makeFrames(rest);
+
+  var matrixCalls = 0;
+  var realMatrixOf = GR.matrixOf;
+  GR.matrixOf = function (n) { matrixCalls++; return realMatrixOf(n); };
+  var ctxG = null;
+  try {
+    withSdk(makeSdk(), function () {
+      ctxG = GR.playbackPrepare(null, softBodies, restFrames, [], [softA1, softA2, softB]);
+    });
+  } finally { GR.matrixOf = realMatrixOf; }
+
+  // createSetCurves replaces EVERY curve on a node, so two jellies sharing a node have to rebuild
+  // in one command or the second would erase the first.
+  h.assertEqual('two nodes make two entries', ctxG.softsByNode.length, 2);
+  h.assertEqual('and the shared node holds both softbodies', ctxG.softsByNode[0].softs.length, 2);
+  h.assertEqual('the inverse matrix is taken once per node, not per body', matrixCalls, 2);
+  h.assert('and it is the inverse of the node matrix', Math.abs(ctxG.softsByNode[0].toBase[2] + 50) < 1e-12,
+    String(ctxG.softsByNode[0].toBase));
+
+  h.group('playback: a rest frame rebuilds the rings in base space');
+
+  var sdkR = makeSdk();
+  withSdk(sdkR, function () {
+    var c = GR.playbackPrepare(null, softBodies, restFrames, [], [softA1, softA2, softB]);
+    GR.playbackCommandForFrame(c, 0);
+  });
+
+  h.assertEqual('one createSetCurves per node', sdkR.setCurves.length, 2);
+  var polyA = sdkR.setCurves[0].poly;
+  h.assertEqual('with one curve per ring on the shared node', polyA.curves.length, 2);
+  h.assert('each built by its own CurveBuilder', polyA.curves[0] !== polyA.curves[1]);
+  h.assertEqual('every ring is closed with close()', polyA.curves[0].closes, 1);
+  // Closing by repeating the first point instead would leave isClosed false — it draws closed but
+  // fills wrong, and isClosed is read-only so nothing downstream could repair it. It would show up
+  // here as one extra point, which is why the count is asserted exactly.
+  h.assertEqual('and carries exactly the ring points, none added', polyA.curves[0].pts.length, softA1.ring.length);
+  // Nothing is simplified: a jelly's outline IS the user's own points, and frame 0 has to give the
+  // flattened rings back unchanged.
+  h.assertClose('frame 0 reproduces the ring, mapped into base space',
+    ringError(polyA.curves[0], softA1.ring, -50, -20), 0, 1e-9);
+  h.assertClose('and the second ring on that node too',
+    ringError(polyA.curves[1], softA2.ring, -50, -20), 0, 1e-9);
+  // The worst bug available here is skipping the inverse: it displaces every shape by exactly its
+  // own node transform, which is invisible on a freshly drawn node and reads as a PHYSICS fault on
+  // any node that has been moved. Stated as its own assertion because it is that expensive.
+  h.assert('spread coordinates are not written through unmapped',
+    ringError(polyA.curves[0], softA1.ring, 0, 0) > 1);
+
+  h.group('playback: the outline follows its own mesh nodes');
+
+  var moved = rest.slice();
+  for (var mi = 0; mi < 8; mi += 2) { moved[mi] += 7; moved[mi + 1] -= 3; }
+  var sdkM = makeSdk();
+  withSdk(sdkM, function () {
+    var c = GR.playbackPrepare(null, softBodies, makeFrames(moved), [], [softA1, softA2, softB]);
+    GR.playbackCommandForFrame(c, 0);
+  });
+  var polyM = sdkM.setCurves[0].poly;
+  h.assertClose('a moved lattice carries its ring with it',
+    ringError(polyM.curves[0], softA1.ring, 7 - 50, -3 - 20), 0, 1e-9);
+  // Poses are addressed by index into the recording, so a body reading the wrong index would drag
+  // the neighbouring jelly along with it.
+  h.assertClose('and the jelly that did not move stays put',
+    ringError(polyM.curves[1], softA2.ring, -50, -20), 0, 1e-9);
+
+  h.group('playback: a softbody that will not rebuild does not stop the frame');
+
+  var sdkF = makeSdk();
+  withSdk(sdkF, function () {
+    var c = GR.playbackPrepare(null, softBodies, restFrames, [], [softA1, softA2, softB]);
+    sdkF.failOn = nodeA.curvesInterface;
+    GR.playbackCommandForFrame(c, 0);
+  });
+  h.assertEqual('the node that threw is skipped', sdkF.setCurves.length, 1);
+  h.assert('and the rest of the frame still draws', sdkF.setCurves[0].ci === nodeB.curvesInterface);
 };
