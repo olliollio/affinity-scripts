@@ -171,4 +171,30 @@ module.exports = function (GR, h) {
   h.assert('every softness sags more than rigid', soft0 > stiff);
   h.assert('softer sags more (0 -> 0.25)', soft25 > soft0);
   h.assert('softer sags more (0.25 -> 0.75)', soft75 > soft25);
+
+  h.group('softbody: seed jitter');
+
+  var Wj = GR.makeWorld({ scale: 100 });
+  var jb = GR.addSoftBody(Wj, [{ outer: square(0, 0, 300, 300), holes: [] }], { name: 'blob', softness: 0.8 });
+  h.assert('the jitter fixture meshed', !jb.fallback);
+  GR.seedJitter(Wj, 7, 0.01);
+
+  // Every node of one softbody must receive the SAME nudge, or the jitter deforms the shape at
+  // frame 0 instead of breaking a symmetry. A 2Hz structure holds injected energy for a long time,
+  // so this does not wash out on its own.
+  var v0 = jb.nodes[0].body.getLinearVelocity();
+  var same = true;
+  for (var vi = 1; vi < jb.nodes.length; vi++) {
+    var v = jb.nodes[vi].body.getLinearVelocity();
+    if (Math.abs(v.x - v0.x) > 1e-12 || Math.abs(v.y - v0.y) > 1e-12) same = false;
+  }
+  h.assert('one softbody is jittered as a whole', same);
+
+  // Two softbodies must still get DIFFERENT nudges, or the jitter stops breaking symmetry between
+  // objects — which is the entire reason it exists.
+  var jb2 = GR.addSoftBody(Wj, [{ outer: square(500, 0, 300, 300), holes: [] }], { name: 'blob2', softness: 0.8 });
+  GR.seedJitter(Wj, 7, 0.01);
+  var a = jb.nodes[0].body.getLinearVelocity();
+  var b = jb2.nodes[0].body.getLinearVelocity();
+  h.assert('two softbodies get different nudges', Math.abs(a.x - b.x) > 1e-12);
 };
