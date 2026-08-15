@@ -353,4 +353,14 @@ module.exports = function (GR, h) {
   h.assert('tries every word', GR.hasWord('a squish b', ['soft', 'squish']) === true);
   h.assert('empty name matches nothing', GR.hasWord('', ['jelly']) === false);
   h.assert('null name matches nothing', GR.hasWord(null, ['jelly']) === false);
+
+  h.group('extract: soft naming');
+
+  h.assert('"jelly" is soft', GR.isSoftName('jelly') === true);
+  h.assert('"soft" is soft', GR.isSoftName('soft') === true);
+  h.assert('"squish" is soft', GR.isSoftName('squish') === true);
+  h.assert('"Soft Blob" is soft', GR.isSoftName('Soft Blob') === true);
+  h.assert('"software" is not soft', GR.isSoftName('software') === false);
+  h.assert('"jellyfish" is not soft', GR.isSoftName('jellyfish') === false);
+  h.assert('an unnamed thing is not soft', GR.isSoftName('') === false);
 };

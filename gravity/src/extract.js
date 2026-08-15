@@ -32,6 +32,14 @@
   // A node whose name contains one of these is scenery: it collides but never moves.
   var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground', 'collider'];
 
+  // A closed path named for one of these becomes a deformable lattice instead of a rigid body.
+  // Static still wins: locking or naming something scenery is an explicit act.
+  var SOFT_WORDS = ['soft', 'jelly', 'squish'];
+
+  function isSoftName(name) {
+    return hasWord(name, SOFT_WORDS);
+  }
+
   /**
    * Is `word` present in `name` as a whole word?
    *
@@ -523,7 +531,11 @@
       name: safeName(node),
       rings: rings,
       faces: faces,
-      isStatic: !!forcedStatic || isStaticNode(node)
+      isStatic: !!forcedStatic || isStaticNode(node),
+      // Set here rather than in the rope branch: `anchored` lives there because an open path has
+      // no closed rings, and soft requires them. main.js tests rope BEFORE soft, so an open path
+      // named "jelly" stays a rope — there is no interior to mesh.
+      isSoft: isSoftName(safeName(node))
     };
   }
 
@@ -655,6 +667,7 @@
   GR.mergeNodeLists = mergeNodeLists;
   GR.convertTextToCurves = convertTextToCurves;
   GR.isStaticName = isStaticName;
+  GR.isSoftName = isSoftName;
   GR.hasWord = hasWord;
   GR.classifyNode = classify;
   GR.matrixOf = matrixOf;
@@ -666,5 +679,6 @@
   GR.lineWeightOf = lineWeightOf;
   GR.extract = extract;
   GR.STATIC_WORDS = STATIC_WORDS;
+  GR.SOFT_WORDS = SOFT_WORDS;
 
 })(GR);
