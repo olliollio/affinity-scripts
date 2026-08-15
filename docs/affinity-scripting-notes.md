@@ -75,6 +75,63 @@ dialog opens otherwise aborts silently, and the script appears to do nothing.
 
 ---
 
+## The testing environment is not the same runtime
+
+**`/fs` and `doc.export` work in an INSTALLED script and are denied in the Script
+Manager's testing environment.** The same file, unchanged, exports frames once
+installed and is `PERMISSION_DENIED` every time it is run from the testing
+environment.
+
+So when a filesystem or export call is refused: **install the script and run it
+again before changing a single line.** Plausible-looking theories that all fitted
+the evidence and were all wrong — path separators, call timing, script size,
+export preset names, a per-script grant, a blanket capability gate — came out of
+never varying the one variable that mattered.
+
+Access can also lapse mid-session and return after restarting Affinity, so
+confirm the current state with a known-good script before concluding anything.
+
+---
+
+## Deforming geometry can be animated
+
+`DocumentCommand.createSetCurves(curvesInterface, polyCurve)` works as a **preview** —
+`executeCommand(cmd, true)` — and is cheap: measured at 0.2ms per rewrite at 7 points, 0.7ms at
+193, against a **15.4ms** frame budget, with `clearPreviews()` restoring the original.
+
+That matters because a rigid `createTransform` can only move a node, not reshape it. Rewriting the
+curve each frame is what makes ropes, cloth or any soft body possible at the full ~64fps the timer
+can deliver.
+
+**`createSetCurves` writes into the node's BASE space.** Curve coordinates always are — see the
+coordinate rule in the SDK reference — so geometry you computed in spread space must have the
+inverse of `node.baseToSpreadTransform` applied before you write it back, or the artwork lands displaced by
+exactly that transform.
+
+This is worth stating loudly because of how it hides. A **freshly drawn path has an identity
+transform and round-trips correctly whether or not you apply the inverse**, so a single object
+looks perfect and nothing appears wrong until a second, moved node is involved. It then presents
+as a *simulation* bug — objects that "don't move" or "don't fall" — rather than a drawing one. The
+cheap discriminator: **check frame 0**. Frame 0 must reproduce the artwork exactly, so if it is
+already wrong the fault is in the write-back, not in whatever is driving the animation.
+
+Objects moved with `createTransform` never hit this, since that command already works in spread
+space. Only geometry rewrites do.
+
+Three more caveats, all learned the expensive way:
+
+- **Time the rewrite inside a real timer callback, not a `for` loop.** A tight loop never yields,
+  so it measures command construction and submission only. The numbers above come from a paced
+  loop, which is the only honest measurement.
+- **The frame budget is 15.4ms, not the interval you requested** — see the quantisation note under
+  [Timers](affinity-sdk-reference.md#20-timers). Drawing is rarely what limits an animation here;
+  asking for the wrong interval usually is.
+
+It replaces **every** curve on the node, so several paths on one node must be rebuilt together in a
+single command.
+
+---
+
 ## Verified API facts
 
 ### Document
@@ -143,6 +200,12 @@ bottomRight, centre, area, offset, moveTo, clone, ...`.
 - `Dialog.create(title)`, `dlg.initialWidth`, `dlg.runModal()` → returns
   `DialogResult.Ok` / else. Dialog is **not resizable/scrollable**; content
   clips if too tall.
+- ⚠️ **Never call `runModal()` from a timer callback that has done real work.**
+  The dialog never appears, the call never returns, and every later `runModal()`
+  in any script fails with `INVALID_OP` until Affinity is restarted. Hand it to
+  a fresh `setTimeout` and let the callback return first. `app.alert` still
+  works when `Dialog` does not, which makes it the only way to report a failure
+  once this has happened. Full account in §20 of the SDK reference.
 - `dlg.addColumn()`, `col.widthProportion = n`, `col.addGroup(title)`.
   Columns are the only horizontal unit and divide the dialog by
   `widthProportion` (a ratio, not pixels); each control added to a group is a new
@@ -168,7 +231,34 @@ bottomRight, centre, area, offset, moveTo, clone, ...`.
   linked fields need a re-entrancy guard or they ping-pong.
 - Labels do not reflow the layout: a label wider than its column is clipped, and
   one that wraps to a second line is clipped vertically because the group's
-  height doesn't grow. Treat label length as a layout constraint.
+  height doesn't grow. Treat label length as a layout constraint. Checkbox
+  labels in particular must fit **one line** — roughly "Keep groups as one
+  object" is the ceiling.
+- **Height is the scarce resource.** OK/Cancel sit below the content, and the
+  dialog neither scrolls nor resizes, so a dialog that grows too tall puts its
+  own buttons out of reach. Merge help text into fewer, longer full-width
+  paragraphs (`ctrl.setIsFullWidth(true)` — a method) rather than one line per
+  thought.
+- `UnitType` is re-exported from `/dialog`, so a dialog module needn't require
+  `/units` separately. For a plain numeric slider:
+  `addUnitValueEditor(label, UnitType.Number, UnitType.Number, v, min, max)`,
+  then `.setShowPopupSlider(true)` and `.precision = 0`.
+
+### Geometry, text & images
+
+- **Every** node exposes `curvesInterface` — live `ShapeNode` and `ImageNode`
+  included. Curve coordinates are in **BASE** space; `node.baseToSpreadTransform` maps them
+  to the spread. ⚠️ `node.localToSpreadTransform` is **identity on every node**
+  and `node.transform` is only the node’s LOCAL matrix — right only when every
+  ancestor is identity.
+- Live text: `polyCurve` reports `curveCount === 1` for a whole string (one
+  glyph). Per-glyph outlines, counters included, come from
+  `curvesInterface.polyPolyCurves` → `getTransformedPolyCurve(i)`, which is in
+  base space. No conversion to curves is needed to *read* them.
+- An `ImageNode`'s curves are only its placement rectangle. Real pixels:
+  `node.createCompatibleBitmap(true)` then
+  `require('/pixelaccessor').PixelReaderRGBA8.create(bm)` →
+  `readPixel(x, y).alpha`. Call `reader.dispose()` — it holds native memory.
 
 ---
 
