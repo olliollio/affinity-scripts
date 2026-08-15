@@ -159,7 +159,12 @@ module.exports = function (GR, h) {
   var stiff = beamSag({ frequencyHz: 0 }, 24, 8);
   h.assert('a rigid lattice holds at the cap', stiff !== null && Math.abs(stiff) < 0.30);
 
-  // Monotonic, or the slider is not a control. Measured: about 1.96 / 2.52 / 3.76.
+  // Monotonic, or the slider is not a control. Measured on THIS rig: 1.07 / 2.06 / 3.32 sim units
+  // at softness 0 / 0.25 / 0.75, against 0.11 rigid. Only the ordering is asserted, because the
+  // absolute values belong to this fixture and would drift with any change to it.
+  //
+  // Note that softness 0 sags TEN TIMES the rigid case: 0 maps to 30Hz, which is a stiff spring
+  // and not a rigid constraint. Measuring solver convergence through it would measure the spring.
   var soft0 = beamSag({ softness: 0 }, 24, 8);
   var soft25 = beamSag({ softness: 0.25 }, 24, 8);
   var soft75 = beamSag({ softness: 0.75 }, 24, 8);
