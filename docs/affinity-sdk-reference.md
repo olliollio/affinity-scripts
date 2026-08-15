@@ -423,13 +423,43 @@ is not. Reading `node.transform` here would squash the geometry horizontally by 
 third and leave it the right height — a distortion that looks like a bug in
 whatever consumed it, and is entirely an artefact of reading the wrong matrix.
 
-**`spreadBaseBox` is the oracle.** Whatever matrix you use, transformed geometry
-must reproduce it in both position and size; assert that and this whole class of
-bug becomes impossible to ship.
+### `spreadBaseBox` is a rotated box, not a tight one
 
-Further cross-checks: a grouped child's `baseBox.x` 251.99 → `spreadBaseBox.x`
-471.99 (= 251.99 + 220.0034); an image's 599×301 base box → 357.93×179.86 spread
-box under a 0.5976 scale.
+`spreadBaseBox` is the oracle for checking a matrix, but only if you compare it
+against the right thing. It is **the four corners of `baseBox` pushed through
+the matrix and then re-boxed** — so under rotation it grows while the artwork
+does not. A square rotated by `t` boxes to `side × (|cos t| + |sin t|)`, peaking
+at `√2` — 41% — at 45°.
+
+A rotated circle makes the trap obvious: its true bounding box never changes,
+while its reported one inflates by that whole factor. Measured on six circles in
+one document, all with a 23.88pt base box under a uniform 2.513 scale:
+
+| rotation | none | 2.7° | 22° | 56° | ~45° | 104° |
+|---|---|---|---|---|---|---|
+| **tight box** | 60.00 | 59.93 | 60.00 | 59.99 | 59.95 | 59.94 |
+| **`spreadBaseBox`** | 60.00 | 62.76 | 78.05 | 83.14 | 83.85 | 72.96 |
+
+Predicting each one by transforming the `baseBox` corners matched the reported
+value to within 0.18pt, which is the rounding in a three-decimal matrix.
+
+So assert in two separate steps, each comparing like with like:
+
+- **The matrix** — apply your `baseToSpreadTransform` to `baseBox` *the same way*
+  (four corners, then box) and compare that to `spreadBaseBox`. Rotation-safe,
+  and it still catches the local-vs-base-to-spread mistake above.
+- **The geometry** — pull your spread-space rings **back** through the inverse
+  and compare their box to `baseBox`. In base space the node box *is* tight, so
+  two tight boxes meet and a wrong scale still shows. Pull the *rings* back, not
+  the box: an already-boxed shape re-inflates on the return trip, which is the
+  same mistake mirrored.
+
+Comparing a tight geometry box straight against `spreadBaseBox` works only while
+every matrix is axis-aligned, which is why it can look correct for a long time —
+a 180° flip has `|cos| + |sin| = 1` and hides the effect completely. The
+cross-checks that follow are all of that kind: a grouped child's `baseBox.x`
+251.99 → `spreadBaseBox.x` 471.99 (= 251.99 + 220.0034); an image's 599×301 base
+box → 357.93×179.86 spread box under a 0.5976 scale.
 
 ### Glyph outlines from live text
 
@@ -1133,8 +1163,7 @@ setInterval(33, (err) => {
 ```
 
 `Timer.cancelAll()` is the stop. Driving a long job from a timer rather than a
-`for` loop is what keeps the UI responsive for its duration — and modal dialogs
-can be raised from inside the callback.
+`for` loop is what keeps the UI responsive for its duration.
 
 `setInterval` also **returns a `Timer`** with its own `.cancel()`, which is what
 you want whenever more than one timer might be alive — `cancelAll()` reaches
@@ -1177,6 +1206,55 @@ quantum. A `createSetCurves` rewrite of a 193-point path submits in 0.7ms, and
 
 Reproduce with `probes/probe_timer_floor.js`.
 
+### Do not open a modal from inside a working callback
+
+A dialog raised from a timer callback that has been doing real work **never
+appears**. `runModal()` does not return and does not throw; it simply sits
+there. The app is left holding a modal it never drew, so the Scripts panel stops
+responding to Run, and every later `runModal()` — in any script — fails with
+`INVALID_OP` until Affinity is restarted. The only sign it left behind is an
+`Error: ABORTED` (`errorCode.value === 6`) reported at **shutdown**, which is
+when the pending call is finally torn down.
+
+The timer shape is not what breaks it. A modal opened from a *trivial* interval
+callback is fine, cancel included — all four of these work:
+
+```js
+tryModal();                                        // straight from the script body
+setTimeout(50, () => tryModal());                  // from a timeout callback
+setInterval(200, () => { tryModal(); t.cancel(); }) // interval, cancel after
+setInterval(200, () => { t.cancel(); tryModal(); }) // interval, cancel first
+```
+
+What breaks it is the callback's own **work**. `intervalCallback` re-arms the
+timer *before* invoking your callback, so once a tick costs more than the
+interval the waits pile up, and the modal is raised into that backlog. This is
+why it only shows on heavy documents: the cost that outruns the interval is
+usually per-object, so a small file never reaches it and a large one always does.
+
+**Hand the dialog to a fresh timer and let the callback return first:**
+
+```js
+function finish() {
+  handle.cancel();
+  setTimeout(300, (err) => {
+    if (err) return;                  // cancelled during the handoff
+    showMyDialog();                   // now on a callback that has done no work
+  });
+}
+```
+
+Two things make this expensive to diagnose, so both are worth knowing up front:
+
+- **`app.alert` keeps working when `Dialog.runModal` does not.** In a session
+  already holding a stuck modal, `alert` is the only channel left. Use it, not a
+  dialog, to report anything that fails after your script's main body returns.
+- **Do not let the throw disappear.** If `finish()` is called from inside the
+  callback's own `try`, a throw from the dialog lands in that `catch`, re-enters
+  `finish()`, hits the already-stopped guard and vanishes with no message at all.
+
+Reproduce all four cases with `probes/probe_modal_from_timer.js`.
+
 ---
 
 ## 21. Known bugs & gotchas
@@ -1211,6 +1289,8 @@ Reproduce with `probes/probe_timer_floor.js`.
 | 26 | `generatePolygon()` output is unreadable | Returns a `PolygonHandle` whose members don't enumerate. Flatten `curve.beziers` yourself, by arc length. |
 | 27 | Tall dialogs hide their own buttons | The dialog neither scrolls nor resizes and OK/Cancel sit below the content, so excess height puts them out of reach — not merely clipping cosmetic text. |
 | 28 | One node can only hold one transform | Deriving several independently-moving objects from a single node (e.g. per-glyph bodies from a live text node) applies conflicting transforms to it; the artwork lurches while the geometry is correct and invisible. |
+| 29 | A modal from a working timer callback never opens | `runModal()` neither returns nor throws; the app holds a modal it never drew, the Scripts panel stops responding, and every later `runModal()` gives `INVALID_OP` until Affinity restarts. Only an `ABORTED` at shutdown marks it. Hand the dialog to a fresh `setTimeout` and let the callback return first. `app.alert` still works when `Dialog` does not. |
+| 30 | `spreadBaseBox` inflates under rotation | It is `baseBox`'s four corners transformed and re-boxed, not a tight box: a square rotated by `t` reports `side × (\|cos t\| + \|sin t\|)`, up to 41% larger at 45°. Comparing it against a tight geometry box flags every rotated object. Compare corner-box to corner-box, or pull your geometry back to base space. |
 | 29 | `setInterval` rounds the interval up to a ~15.4ms quantum | So `16` delivers 30.5ms and `33` delivers 46.2ms — half and a third of the rate you asked for, silently. Ask for `8`. See [Timers](#20-timers). |
 | 30 | Cancelling a timer reports `ABORTED` through its own callback | It is the confirmation of the cancel, not a failure. Calling `Timer.cancelAll()` in response kills any timer armed since. Prefer the `Timer` handle's own `.cancel()`. |
 | 31 | `createSetCurves` writes BASE space, not spread | Geometry computed in spread space needs the inverse of `node.baseToSpreadTransform` applied first — the same matrix you read with, or the round trip does not close. A freshly drawn node has an identity transform and round-trips either way, so this stays invisible until a second, *moved* node is involved — and then it looks like a simulation bug. Check frame 0: it must reproduce the artwork exactly. |
