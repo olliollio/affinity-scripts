@@ -85,19 +85,7 @@
 
   /** Is this path pinned at its ends? Pure, so it is unit-tested like the scenery names. */
   function isAnchoredName(name) {
-    if (!name) return false;
-    var s = String(name).toLowerCase();
-    for (var i = 0; i < ANCHOR_WORDS.length; i++) {
-      var w = ANCHOR_WORDS[i];
-      var at = s.indexOf(w);
-      while (at >= 0) {
-        var before = at === 0 ? '' : s.charAt(at - 1);
-        var after = s.charAt(at + w.length);
-        if ((at === 0 || !/[a-z0-9]/.test(before)) && (!after || !/[a-z0-9]/.test(after))) return true;
-        at = s.indexOf(w, at + 1);
-      }
-    }
-    return false;
+    return GR.hasWord(name, ANCHOR_WORDS);
   }
 
   /** Total length of a polyline given as a flat `[x0, y0, x1, y1, ...]` array. */
