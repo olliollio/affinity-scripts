@@ -124,25 +124,77 @@
         }
       } catch (e) { /* geometry may be empty */ }
 
-      // `spreadBaseBox` is the app's own answer for where the node is, so extracted geometry has to
-      // reproduce it — position AND size. Size is the half that was missing: using the local matrix
-      // instead of the base-to-spread one left every object the right shape in the wrong scale, and
-      // a position-only check said nothing because the error scaled the box about a corner that
-      // barely moved. Tolerance is proportional because the polyline is a flattened approximation
-      // and the node box includes the stroke, so exact equality is not on offer.
+      // Two checks, in two different spaces, because `spreadBaseBox` cannot be compared against a
+      // tight geometry box at all. It is the four corners of `baseBox` pushed through the matrix and
+      // then re-boxed, so it INFLATES under rotation while the artwork does not — a rotated circle
+      // reports up to 41% larger than it is. Comparing the two directly is what made every rotated
+      // object in an 85-node scene shout SUSPECT while the extraction was exactly right.
+      //
+      // So compare like with like:
+      //
+      //   MATRIX    our base-to-spread matrix applied to `baseBox` the same way the app does it,
+      //             against `spreadBaseBox`. Rotation-safe, and still the check that catches a wrong
+      //             matrix — extraction once used the node's LOCAL matrix, which is only the whole
+      //             map while every ancestor is identity, and a resized artboard is not.
+      //
+      //   GEOMETRY  our spread rings pulled BACK through the inverse, against `baseBox`. In base
+      //             space the node box is a tight box, so this compares two tight boxes and a wrong
+      //             scale still shows up. Pulling the rings back rather than the box matters: an
+      //             already-boxed shape re-inflates on the return trip, which is the same mistake
+      //             in the other direction.
+      //
+      // Tolerance stays proportional. The polyline is a flattened approximation and the node box
+      // includes the stroke, so exact equality was never on offer.
       var space = '';
       try {
         var sb = ob.node.spreadBaseBox;
-        if (obox && sb) {
-          var span = Math.max(sb.width, sb.height, 1);
-          var tol = Math.max(1, 0.02 * span);
-          var offPos = Math.max(Math.abs(obox.x0 - sb.x), Math.abs(obox.y0 - sb.y));
-          var offSize = Math.max(Math.abs((obox.x1 - obox.x0) - sb.width),
-                                 Math.abs((obox.y1 - obox.y0) - sb.height));
-          if (offSize > tol) {
-            space = '  <-- SUSPECT: geometry is ' + fmt(offSize) + 'pt off the node box in SIZE';
-          } else if (offPos > tol) {
-            space = '  <-- SUSPECT: geometry is ' + fmt(offPos) + 'pt off the node box in POSITION';
+        var bb = ob.node.baseBox;
+        var mx = GR.matrixOf(ob.node);
+
+        var predicted = GR.boxUnderMatrix(bb, mx);
+        if (sb && predicted) {
+          var mspan = Math.max(sb.width, sb.height, 1);
+          var mtol = Math.max(1, 0.02 * mspan);
+          var offM = Math.max(Math.abs(predicted.x0 - sb.x), Math.abs(predicted.y0 - sb.y),
+                              Math.abs((predicted.x1 - predicted.x0) - sb.width),
+                              Math.abs((predicted.y1 - predicted.y0) - sb.height));
+          if (offM > mtol) {
+            space = '  <-- SUSPECT: our base-to-spread matrix disagrees with the node box by ' +
+                    fmt(offM) + 'pt';
+          }
+        }
+
+        if (!space && bb && ob.rings.length) {
+          var inv = GR.invertMatrix(mx);
+          // A null inverse means a singular matrix — the node is scaled to nothing on some axis, so
+          // there is no base box to compare against and nothing useful to say.
+          if (inv) {
+            var back = null;
+            for (var bi = 0; bi < ob.rings.length; bi++) {
+              var copy = ob.rings[bi].slice();
+              GR.transformRing(copy, inv);
+              var rb = GR.ringsBBox([copy]);
+              if (!rb) continue;
+              if (!back) back = rb;
+              else {
+                if (rb.x0 < back.x0) back.x0 = rb.x0;
+                if (rb.y0 < back.y0) back.y0 = rb.y0;
+                if (rb.x1 > back.x1) back.x1 = rb.x1;
+                if (rb.y1 > back.y1) back.y1 = rb.y1;
+              }
+            }
+            if (back) {
+              var gspan = Math.max(bb.width, bb.height, 1);
+              var gtol = Math.max(1, 0.02 * gspan);
+              var offSize = Math.max(Math.abs((back.x1 - back.x0) - bb.width),
+                                     Math.abs((back.y1 - back.y0) - bb.height));
+              var offPos = Math.max(Math.abs(back.x0 - bb.x), Math.abs(back.y0 - bb.y));
+              if (offSize > gtol) {
+                space = '  <-- SUSPECT: geometry is ' + fmt(offSize) + 'pt off the node box in SIZE';
+              } else if (offPos > gtol) {
+                space = '  <-- SUSPECT: geometry is ' + fmt(offPos) + 'pt off the node box in POSITION';
+              }
+            }
           }
         }
       } catch (e) { /* not every node reports a box */ }

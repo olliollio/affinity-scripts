@@ -863,6 +863,38 @@ GR.planck = (function () {
   }
 
   /**
+   * The axis-aligned box a RECTANGLE occupies after a transform, as `{x0, y0, x1, y1}`.
+   *
+   * This is not the same thing as transforming a shape and boxing the result, and the difference is
+   * the whole reason this exists. Affinity's `node.spreadBaseBox` is computed exactly this way —
+   * the four corners of `node.baseBox` pushed through the matrix, then boxed — so it INFLATES under
+   * rotation even when the artwork does not. A circle is the clearest case: rotate it and its true
+   * box is unchanged, while its bounding square's box grows by `|cos t| + |sin t|`, up to 41% at
+   * 45 degrees.
+   *
+   * Verified against six nodes from a real run, matching `spreadBaseBox` to within 0.18pt — which
+   * is itself just the rounding in the 3-decimal matrix those numbers were read from.
+   *
+   * `box` is `{x, y, width, height}`, the shape Affinity's box objects have.
+   */
+  function boxUnderMatrix(box, m) {
+    if (!box) return null;
+    var x = box.x, y = box.y, w = box.width, h = box.height;
+    if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h)) return null;
+    // A null matrix means base and spread already agree, so the box passes through unchanged.
+    var corners = [x, y, x + w, y, x, y + h, x + w, y + h];
+    if (m) transformRing(corners, m);
+    var x0 = corners[0], y0 = corners[1], x1 = corners[0], y1 = corners[1];
+    for (var i = 2; i < corners.length; i += 2) {
+      if (corners[i] < x0) x0 = corners[i];
+      if (corners[i] > x1) x1 = corners[i];
+      if (corners[i + 1] < y0) y0 = corners[i + 1];
+      if (corners[i + 1] > y1) y1 = corners[i + 1];
+    }
+    return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+
+  /**
    * Inverts a row-major 2x3 transform, so spread-space coordinates can be written back as base.
    *
    * Extraction only ever goes one way — base to spread — because a rigid body is moved with
@@ -890,6 +922,7 @@ GR.planck = (function () {
   GR.flattenCubic = flattenCubic;
   GR.flattenSegments = flattenSegments;
   GR.transformRing = transformRing;
+  GR.boxUnderMatrix = boxUnderMatrix;
   GR.invertMatrix = invertMatrix;
   GR.FLATTEN_TOL = FLATTEN_TOL;
 
@@ -2986,6 +3019,43 @@ GR.planck = (function () {
   // that has no multiple at 16.7ms, and it is well worth paying against 21.6fps.
   var PLAYBACK_MS = 15.4;
 
+  // ── How long to wait after playback before opening the Finished panel. ───────────────────────
+  //
+  // This is not a cosmetic pause. A modal opened from INSIDE the playback interval callback never
+  // appears at all: `runModal` does not return, and reports ABORTED (errorCode 6) only when
+  // Affinity shuts down. The app is then holding a modal it never drew — the Script panel stops
+  // responding and every later `runModal` fails with INVALID_OP until Affinity is restarted.
+  //
+  // The timer shape is not the culprit. A modal raised from a trivial interval callback, cancel
+  // included, opens fine — probes/probe_modal_from_timer.js still asks that question, four ways.
+  // Nor is it the live previews: clearing every one of them before the modal does not help. Nor the
+  // panel's own controls: a bare modal opened from the same place does not appear either. Each of
+  // those was a build of this script with one line changed, kept only long enough to answer.
+  //
+  // What breaks it is this callback's WORK. `intervalCallback` re-arms the timer BEFORE invoking
+  // the callback (JSLib/timers.js:125-126), so once a preview costs more than the interval the
+  // waits pile up, and the modal is raised into that backlog. It only ever showed on heavy scenes
+  // because preview cost is the one thing here that scales with the artwork.
+  //
+  // 300 is the value that was verified end to end against the scene that failed. It is generous on
+  // purpose: it is imperceptible after a drop that just played, and a smaller number would be
+  // guessing against a backlog whose length depends on the scene.
+  var HANDOFF_MS = 300;
+
+  /**
+   * Reports a failure that happens after the script's main body has already returned.
+   *
+   * Both channels, deliberately. The console is the useful one — it keeps the text, and it sits
+   * next to the rest of the run's report. But this whole class of failure happens once `runModal`
+   * is unavailable, and a console nobody opens is indistinguishable from nothing going wrong: the
+   * modal bug above cost days precisely because it was silent. `app.alert` is the one channel that
+   * was still working when Dialog was not, so it is what guarantees the user finds out at all.
+   */
+  function report(message) {
+    try { console.log(message); } catch (e) { /* no console in this host */ }
+    try { require('/application').app.alert(message); } catch (e) { /* no alert either */ }
+  }
+
   /**
    * One transform command per body for a given frame.
    *
@@ -3193,7 +3263,22 @@ GR.planck = (function () {
       // them stopping must not silently kill the other.
       try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
       catch (e) { /* already gone */ }
-      if (onDone) onDone();
+      if (!onDone) return;
+
+      // Hand the finish off to a fresh timer so THIS callback returns first. onDone opens a modal,
+      // and a modal opened from inside this callback never appears at all — see HANDOFF_MS above
+      // for why, and for what was ruled out before landing on it.
+      //
+      // The error is reported rather than swallowed. It used to vanish: finish() was called from
+      // inside the interval callback's try, so a throw from onDone was caught by the catch, which
+      // called finish() again, hit the `stopped` guard and returned. The one symptom that would
+      // have named this bug on day one — a panel that failed loudly — was the one thing the code
+      // made impossible.
+      timers.setTimeout(HANDOFF_MS, function (timerErr) {
+        if (timerErr) return;   // cancelled during the handoff; there is nothing left to finish
+        try { onDone(); }
+        catch (e) { report('gravity: the Finished panel could not open: ' + e); }
+      });
     }
 
     handle = timers.setInterval(o.intervalMs || FRAME_MS, function (err) {
@@ -3888,25 +3973,77 @@ GR.planck = (function () {
         }
       } catch (e) { /* geometry may be empty */ }
 
-      // `spreadBaseBox` is the app's own answer for where the node is, so extracted geometry has to
-      // reproduce it — position AND size. Size is the half that was missing: using the local matrix
-      // instead of the base-to-spread one left every object the right shape in the wrong scale, and
-      // a position-only check said nothing because the error scaled the box about a corner that
-      // barely moved. Tolerance is proportional because the polyline is a flattened approximation
-      // and the node box includes the stroke, so exact equality is not on offer.
+      // Two checks, in two different spaces, because `spreadBaseBox` cannot be compared against a
+      // tight geometry box at all. It is the four corners of `baseBox` pushed through the matrix and
+      // then re-boxed, so it INFLATES under rotation while the artwork does not — a rotated circle
+      // reports up to 41% larger than it is. Comparing the two directly is what made every rotated
+      // object in an 85-node scene shout SUSPECT while the extraction was exactly right.
+      //
+      // So compare like with like:
+      //
+      //   MATRIX    our base-to-spread matrix applied to `baseBox` the same way the app does it,
+      //             against `spreadBaseBox`. Rotation-safe, and still the check that catches a wrong
+      //             matrix — extraction once used the node's LOCAL matrix, which is only the whole
+      //             map while every ancestor is identity, and a resized artboard is not.
+      //
+      //   GEOMETRY  our spread rings pulled BACK through the inverse, against `baseBox`. In base
+      //             space the node box is a tight box, so this compares two tight boxes and a wrong
+      //             scale still shows up. Pulling the rings back rather than the box matters: an
+      //             already-boxed shape re-inflates on the return trip, which is the same mistake
+      //             in the other direction.
+      //
+      // Tolerance stays proportional. The polyline is a flattened approximation and the node box
+      // includes the stroke, so exact equality was never on offer.
       var space = '';
       try {
         var sb = ob.node.spreadBaseBox;
-        if (obox && sb) {
-          var span = Math.max(sb.width, sb.height, 1);
-          var tol = Math.max(1, 0.02 * span);
-          var offPos = Math.max(Math.abs(obox.x0 - sb.x), Math.abs(obox.y0 - sb.y));
-          var offSize = Math.max(Math.abs((obox.x1 - obox.x0) - sb.width),
-                                 Math.abs((obox.y1 - obox.y0) - sb.height));
-          if (offSize > tol) {
-            space = '  <-- SUSPECT: geometry is ' + fmt(offSize) + 'pt off the node box in SIZE';
-          } else if (offPos > tol) {
-            space = '  <-- SUSPECT: geometry is ' + fmt(offPos) + 'pt off the node box in POSITION';
+        var bb = ob.node.baseBox;
+        var mx = GR.matrixOf(ob.node);
+
+        var predicted = GR.boxUnderMatrix(bb, mx);
+        if (sb && predicted) {
+          var mspan = Math.max(sb.width, sb.height, 1);
+          var mtol = Math.max(1, 0.02 * mspan);
+          var offM = Math.max(Math.abs(predicted.x0 - sb.x), Math.abs(predicted.y0 - sb.y),
+                              Math.abs((predicted.x1 - predicted.x0) - sb.width),
+                              Math.abs((predicted.y1 - predicted.y0) - sb.height));
+          if (offM > mtol) {
+            space = '  <-- SUSPECT: our base-to-spread matrix disagrees with the node box by ' +
+                    fmt(offM) + 'pt';
+          }
+        }
+
+        if (!space && bb && ob.rings.length) {
+          var inv = GR.invertMatrix(mx);
+          // A null inverse means a singular matrix — the node is scaled to nothing on some axis, so
+          // there is no base box to compare against and nothing useful to say.
+          if (inv) {
+            var back = null;
+            for (var bi = 0; bi < ob.rings.length; bi++) {
+              var copy = ob.rings[bi].slice();
+              GR.transformRing(copy, inv);
+              var rb = GR.ringsBBox([copy]);
+              if (!rb) continue;
+              if (!back) back = rb;
+              else {
+                if (rb.x0 < back.x0) back.x0 = rb.x0;
+                if (rb.y0 < back.y0) back.y0 = rb.y0;
+                if (rb.x1 > back.x1) back.x1 = rb.x1;
+                if (rb.y1 > back.y1) back.y1 = rb.y1;
+              }
+            }
+            if (back) {
+              var gspan = Math.max(bb.width, bb.height, 1);
+              var gtol = Math.max(1, 0.02 * gspan);
+              var offSize = Math.max(Math.abs((back.x1 - back.x0) - bb.width),
+                                     Math.abs((back.y1 - back.y0) - bb.height));
+              var offPos = Math.max(Math.abs(back.x0 - bb.x), Math.abs(back.y0 - bb.y));
+              if (offSize > gtol) {
+                space = '  <-- SUSPECT: geometry is ' + fmt(offSize) + 'pt off the node box in SIZE';
+              } else if (offPos > gtol) {
+                space = '  <-- SUSPECT: geometry is ' + fmt(offPos) + 'pt off the node box in POSITION';
+              }
+            }
           }
         }
       } catch (e) { /* not every node reports a box */ }

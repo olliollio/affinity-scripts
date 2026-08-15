@@ -157,6 +157,51 @@ module.exports = function (GR, h) {
   h.assertEqual('a singular matrix has no inverse', GR.invertMatrix([0, 0, 5, 0, 0, 5]), null);
   h.assertEqual('and a collapsed axis is singular too', GR.invertMatrix([2, 1, 0, 4, 2, 0]), null);
 
+  h.group('flatten: a box under a transform');
+
+  // `spreadBaseBox` is not a tight box around the artwork. It is the four corners of `baseBox`
+  // pushed through the matrix and re-boxed, so it grows under rotation while the shape does not.
+  // Comparing it against a tight geometry box made every rotated object in an 85-node scene report
+  // SUSPECT while the extraction was exactly right — a diagnostic crying wolf is worse than none,
+  // because it teaches you to ignore the one run where it means something.
+  //
+  // The six matrices below are read from that run's log, alongside the sizes Affinity reported for
+  // the same nodes. Base box is 23.88pt square in every case; the scale is uniform at ~2.513.
+  var BASE_BOX = { x: 309.52, y: 213.41, width: 23.88, height: 23.88 };
+
+  [
+    ['unrotated',      [2.513, -0.000, 191.94, 0.000, 2.513, 31.23],      60.00],
+    ['rotated 2.7deg', [-2.510, 0.118, 1569.28, -0.118, -2.510, 1187.95], 62.76],
+    ['rotated 22deg',  [2.332, -0.937, 1091.63, 0.937, 2.332, -380.08],   78.05],
+    ['rotated 104deg', [-0.620, 2.435, 1409.67, -2.435, -0.620, 1501.74], 72.96],
+    ['rotated 56deg',  [1.386, -2.096, 1288.53, 2.096, 1.386, -261.76],   83.14],
+    ['near 45deg',     [-1.484, -2.028, 2552.16, 2.028, -1.484, -56.16],  83.85]
+  ].forEach(function (row) {
+    var b = GR.boxUnderMatrix(BASE_BOX, row[1]);
+    // 0.2pt: the matrices are quoted to three decimals, and that rounding alone moves a corner by
+    // about 0.15pt at these coordinates. Anything tighter would be testing the log's formatting.
+    h.assert('a ' + row[0] + ' node boxes to ' + row[2] + 'pt',
+      Math.abs((b.x1 - b.x0) - row[2]) < 0.2 && Math.abs((b.y1 - b.y0) - row[2]) < 0.2,
+      'got ' + (b.x1 - b.x0).toFixed(2) + 'x' + (b.y1 - b.y0).toFixed(2));
+  });
+
+  // The property behind those numbers, stated directly: a square rotated by t boxes to
+  // side * (|cos t| + |sin t|), peaking at sqrt(2) — 41% — at 45 degrees.
+  var unit = { x: 0, y: 0, width: 1, height: 1 };
+  var t45 = Math.PI / 4;
+  var r45 = GR.boxUnderMatrix(unit, [Math.cos(t45), -Math.sin(t45), 0, Math.sin(t45), Math.cos(t45), 0]);
+  h.assertClose('45 degrees is the worst case, at sqrt(2)', r45.x1 - r45.x0, Math.SQRT2, 1e-12);
+
+  var r90 = GR.boxUnderMatrix(unit, [0, -1, 0, 1, 0, 0]);
+  h.assertClose('90 degrees is back to unchanged', r90.x1 - r90.x0, 1, 1e-12);
+
+  // Rotation is the whole point, so the degenerate paths are worth pinning too.
+  var idBox = GR.boxUnderMatrix(BASE_BOX, null);
+  h.assertClose('a null matrix leaves the box alone', idBox.x1 - idBox.x0, BASE_BOX.width, 1e-12);
+  h.assertEqual('a missing box has no answer', GR.boxUnderMatrix(null, [1, 0, 0, 0, 1, 0]), null);
+  h.assertEqual('nor does a box with a NaN edge',
+    GR.boxUnderMatrix({ x: 0, y: 0, width: NaN, height: 1 }, null), null);
+
   h.group('flatten: end to end');
 
   // The whole point: a flattened circle with a flattened hole must decompose into planck parts.
