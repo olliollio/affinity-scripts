@@ -442,6 +442,110 @@
     return components;
   }
 
+  // How many mesh nodes each outline point follows. Four is enough to be smooth and few enough to
+  // stay cheap; the weights fall off fast, so more adds little.
+  var BIND_K = 4;
+
+  /**
+   * Binds a drawn outline to the mesh, once, at rest.
+   *
+   * Weighted skinning rather than barycentric coordinates, for robustness: barycentric needs a
+   * containing triangle, and a triangle that INVERTS under jelly deformation turns its bound points
+   * inside out, while a thin feature may fall outside the mesh entirely and have no triangle at
+   * all. Weighted binding has neither failure and simply gets smoother as the mesh gets sparser.
+   */
+  function bindOutline(points, mesh, opts) {
+    var o = opts || {};
+    var k = o.k === undefined ? BIND_K : o.k;
+    var eps = o.eps === undefined ? 1e-12 : o.eps;
+    var nodes = mesh.nodes;
+    var count = nodes.length / 2;
+    var out = [];
+
+    for (var p = 0; p < points.length; p += 2) {
+      var px = points[p], py = points[p + 1];
+      var best = [];
+      for (var n = 0; n < count; n++) {
+        var dx = nodes[n * 2] - px, dy = nodes[n * 2 + 1] - py;
+        best.push([dx * dx + dy * dy, n]);
+      }
+      best.sort(function (a, b) { return a[0] - b[0]; });
+      var take = Math.min(k, best.length);
+
+      var idx = [], w = [], ox = [], oy = [], sum = 0;
+      for (var i = 0; i < take; i++) {
+        var node = best[i][1];
+        // The epsilon matters: an outline point can land exactly on a mesh node.
+        var weight = 1 / (best[i][0] + eps);
+        idx.push(node);
+        w.push(weight);
+        ox.push(px - nodes[node * 2]);
+        oy.push(py - nodes[node * 2 + 1]);
+        sum += weight;
+      }
+      for (var j = 0; j < w.length; j++) w[j] /= sum;
+      out.push({ idx: idx, w: w, ox: ox, oy: oy });
+    }
+    return out;
+  }
+
+  /**
+   * Per-node best-fit rotation, from rest neighbours against current ones.
+   *
+   * In 2D this is one atan2 over a sum of cross and dot products — no matrix decomposition. Without
+   * it, a jelly that ROTATES has its outline shrink toward the mesh centroid, because averaging
+   * several rotated positions cuts the corner. That is the classic candy-wrapper collapse.
+   */
+  function nodeRotations(mesh, positions) {
+    var count = mesh.nodes.length / 2;
+    // Keyed on the spring count so a re-sprung mesh cannot silently reuse stale adjacency.
+    if (!mesh._adj || mesh._adjFor !== mesh.springs.length) {
+      var adj = [];
+      for (var a = 0; a < count; a++) adj.push([]);
+      for (var s = 0; s < mesh.springs.length; s++) {
+        adj[mesh.springs[s][0]].push(mesh.springs[s][1]);
+        adj[mesh.springs[s][1]].push(mesh.springs[s][0]);
+      }
+      mesh._adj = adj;
+      mesh._adjFor = mesh.springs.length;
+    }
+    var rest = mesh.nodes, adjacency = mesh._adj;
+    var out = new Array(count);
+    for (var n = 0; n < count; n++) {
+      var cross = 0, dot = 0;
+      var list = adjacency[n];
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        var rx = rest[m * 2] - rest[n * 2], ry = rest[m * 2 + 1] - rest[n * 2 + 1];
+        var nx = positions[m * 2] - positions[n * 2], ny = positions[m * 2 + 1] - positions[n * 2 + 1];
+        cross += rx * ny - ry * nx;
+        dot += rx * nx + ry * ny;
+      }
+      out[n] = (cross === 0 && dot === 0) ? 0 : Math.atan2(cross, dot);
+    }
+    return out;
+  }
+
+  /** Rebuilds the drawn outline from current node positions. */
+  function evalSoftOutline(binding, mesh, positions) {
+    var rot = nodeRotations(mesh, positions);
+    var out = [];
+    for (var b = 0; b < binding.length; b++) {
+      var bind = binding[b];
+      var x = 0, y = 0;
+      for (var i = 0; i < bind.idx.length; i++) {
+        var n = bind.idx[i];
+        var th = rot[n], c = Math.cos(th), s = Math.sin(th);
+        var lx = bind.ox[i] * c - bind.oy[i] * s;
+        var ly = bind.ox[i] * s + bind.oy[i] * c;
+        x += bind.w[i] * (positions[n * 2] + lx);
+        y += bind.w[i] * (positions[n * 2 + 1] + ly);
+      }
+      out.push(x, y);
+    }
+    return out;
+  }
+
   GR.ringArea = ringArea;
   GR.ringPerimeter = ringPerimeter;
   GR.faceArea = faceArea;
@@ -455,6 +559,9 @@
   GR.buildSoftMesh = buildSoftMesh;
   GR.addSoftSprings = addSoftSprings;
   GR.softMeshComponents = softMeshComponents;
+  GR.bindOutline = bindOutline;
+  GR.nodeRotations = nodeRotations;
+  GR.evalSoftOutline = evalSoftOutline;
   GR.SOFT_MAX_CELLS = MAX_CELLS;
   GR.SOFT_MIN_CELL_SIM = MIN_CELL_SIM;
   GR.SOFT_MIN_WALL_CELLS = MIN_WALL_CELLS;
