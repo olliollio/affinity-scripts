@@ -46,6 +46,43 @@
   // that has no multiple at 16.7ms, and it is well worth paying against 21.6fps.
   var PLAYBACK_MS = 15.4;
 
+  // ── How long to wait after playback before opening the Finished panel. ───────────────────────
+  //
+  // This is not a cosmetic pause. A modal opened from INSIDE the playback interval callback never
+  // appears at all: `runModal` does not return, and reports ABORTED (errorCode 6) only when
+  // Affinity shuts down. The app is then holding a modal it never drew — the Script panel stops
+  // responding and every later `runModal` fails with INVALID_OP until Affinity is restarted.
+  //
+  // The timer shape is not the culprit. A modal raised from a trivial interval callback, cancel
+  // included, opens fine — probes/probe_modal_from_timer.js still asks that question, four ways.
+  // Nor is it the live previews: clearing every one of them before the modal does not help. Nor the
+  // panel's own controls: a bare modal opened from the same place does not appear either. Each of
+  // those was a build of this script with one line changed, kept only long enough to answer.
+  //
+  // What breaks it is this callback's WORK. `intervalCallback` re-arms the timer BEFORE invoking
+  // the callback (JSLib/timers.js:125-126), so once a preview costs more than the interval the
+  // waits pile up, and the modal is raised into that backlog. It only ever showed on heavy scenes
+  // because preview cost is the one thing here that scales with the artwork.
+  //
+  // 300 is the value that was verified end to end against the scene that failed. It is generous on
+  // purpose: it is imperceptible after a drop that just played, and a smaller number would be
+  // guessing against a backlog whose length depends on the scene.
+  var HANDOFF_MS = 300;
+
+  /**
+   * Reports a failure that happens after the script's main body has already returned.
+   *
+   * Both channels, deliberately. The console is the useful one — it keeps the text, and it sits
+   * next to the rest of the run's report. But this whole class of failure happens once `runModal`
+   * is unavailable, and a console nobody opens is indistinguishable from nothing going wrong: the
+   * modal bug above cost days precisely because it was silent. `app.alert` is the one channel that
+   * was still working when Dialog was not, so it is what guarantees the user finds out at all.
+   */
+  function report(message) {
+    try { console.log(message); } catch (e) { /* no console in this host */ }
+    try { require('/application').app.alert(message); } catch (e) { /* no alert either */ }
+  }
+
   /**
    * One transform command per body for a given frame.
    *
@@ -253,7 +290,22 @@
       // them stopping must not silently kill the other.
       try { if (handle && handle.cancel) handle.cancel(); else timers.Timer.cancelAll(); }
       catch (e) { /* already gone */ }
-      if (onDone) onDone();
+      if (!onDone) return;
+
+      // Hand the finish off to a fresh timer so THIS callback returns first. onDone opens a modal,
+      // and a modal opened from inside this callback never appears at all — see HANDOFF_MS above
+      // for why, and for what was ruled out before landing on it.
+      //
+      // The error is reported rather than swallowed. It used to vanish: finish() was called from
+      // inside the interval callback's try, so a throw from onDone was caught by the catch, which
+      // called finish() again, hit the `stopped` guard and returned. The one symptom that would
+      // have named this bug on day one — a panel that failed loudly — was the one thing the code
+      // made impossible.
+      timers.setTimeout(HANDOFF_MS, function (timerErr) {
+        if (timerErr) return;   // cancelled during the handoff; there is nothing left to finish
+        try { onDone(); }
+        catch (e) { report('gravity: the Finished panel could not open: ' + e); }
+      });
     }
 
     handle = timers.setInterval(o.intervalMs || FRAME_MS, function (err) {
