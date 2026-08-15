@@ -15,11 +15,43 @@
   // Node circles overlap so the union has no gap for a corner to pass through.
   var RADIUS_FRAC = 0.6;
 
-  // Softness in Hz. Below about 2 the sheet stretches absurdly rather than reading as soft; above
-  // 30 it is indistinguishable from rigid and starts fighting the timestep.
-  var MIN_FREQ = 2;
+  // Softness in Hz. Above 30 a spring is indistinguishable from rigid and starts fighting the
+  // timestep, so that is the stiff end.
+  //
+  // The soft end is 8, not 2. Settled height as a fraction of rest height, no drop, 30s at 24/8:
+  //
+  //     freqHz     blob      bold "O"
+  //         30    0.980        0.831
+  //         28    0.976        0.801
+  //         26    0.970        0.756
+  //         24    0.966        0.495
+  //         22    0.961        0.227
+  //         20    0.953        0.210
+  //         16    0.932        0.184
+  //         12    0.883        0.147
+  //          8    0.755        0.120
+  //          6    0.452        0.115
+  //          4    0.131        0.110
+  //          2    0.086        0.075
+  //
+  // A solid blob degrades smoothly down to 8 and then collapses. Nothing below 8 holds its shape at
+  // all, so the old 30..2 range spent half the slider on settings that were never usable — and the
+  // old default of 0.5 landed on 7.7Hz, which flattens a ring to 12% of its height before it has
+  // even landed.
+  var MIN_FREQ = 8;
   var MAX_FREQ = 30;
   var DAMPING_RATIO = 0.4;
+
+  // The floor for a shape with a hole in it, however soft the user asked for.
+  //
+  // Read the "O" column above: a ring holds from 30 to 26 and then falls off a cliff, losing half
+  // its height between 26 and 22. It BUCKLES. A mass-spring lattice has no area preservation, so
+  // nothing at all resists the hole ovalising once the wall starts to fold, and the collapse is
+  // structural rather than a tuning failure — the known fix is a pressure or volume-preservation
+  // term, which this rig does not have. Until it does, the softness setting is a REQUEST that the
+  // shape's own structure can override, the same idiom rope slack already uses when measured
+  // clearance clamps the slack that was asked for.
+  var SHELL_MIN_FREQ = 26;
 
   // A large soft structure has a very long tail of small motion, and a run ends only when EVERY
   // body is quiet at once. Same lever, same reason, as the rope link damping.
@@ -70,7 +102,8 @@
     function give(reason, limit) {
       return {
         nodes: [], mesh: null, groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
-        frequency: 0, springCount: 0, totalMass: 0, fallback: reason,
+        frequency: 0, frequencyRequested: 0, frequencyFloored: null,
+        springCount: 0, totalMass: 0, fallback: reason,
         node: o.node || null, name: name
       };
     }
@@ -105,7 +138,24 @@
     // than a very stiff spring. Rigid is not a position on the user's slider — the spec is explicit
     // that rigid means not naming the object — but the tests need it, because "does the solver hold
     // this span" is a question about the solver and must not be asked through a spring.
-    var freq = o.frequencyHz === undefined ? softnessToFrequency(o.softness) : o.frequencyHz;
+    var requested = o.frequencyHz === undefined ? softnessToFrequency(o.softness) : o.frequencyHz;
+    var freq = requested;
+    var floored = null;
+
+    // The shell floor applies to the SETTING only. An explicit `frequencyHz` is a caller taking
+    // control of the solver, and flooring it would silently turn a test's rigid constraint into a
+    // 26Hz spring — the one thing that would make every stiffness measurement meaningless.
+    if (o.frequencyHz === undefined) {
+      var hasHoles = false;
+      for (var hf = 0; hf < simFaces.length; hf++) {
+        if (simFaces[hf].holes.length) hasHoles = true;
+      }
+      var shellFloor = o.shellMinFrequency === undefined ? SHELL_MIN_FREQ : o.shellMinFrequency;
+      if (hasHoles && freq < shellFloor) {
+        freq = shellFloor;
+        floored = 'shell';
+      }
+    }
 
     var nodes = [];
     for (var n = 0; n < nodeCount; n++) {
@@ -165,6 +215,10 @@
       cellsAcross: sized.cellsAcross,
       limit: sized.limit,
       frequency: freq,
+      // What the softness setting asked for, and why it did not get it. The report prints both,
+      // because a user who asked for goo and got a firm shell has to be able to see that.
+      frequencyRequested: requested,
+      frequencyFloored: floored,
       springCount: mesh.springs.length,
       totalMass: totalMass,
       fallback: null,
@@ -176,4 +230,7 @@
   GR.addSoftBody = addSoftBody;
   GR.softnessToFrequency = softnessToFrequency;
   GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
+  GR.SOFT_MIN_FREQ = MIN_FREQ;
+  GR.SOFT_MAX_FREQ = MAX_FREQ;
+  GR.SOFT_SHELL_MIN_FREQ = SHELL_MIN_FREQ;
 })(GR);

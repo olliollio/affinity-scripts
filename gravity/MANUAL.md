@@ -135,8 +135,16 @@ more nodes than a shallow one, and only a rope that genuinely ended up straight 
 Put `jelly`, `soft` or `squish` in the name of a **closed** shape. It stops being rigid and becomes a
 wobbling, squashing blob that keeps its own outline — holes and counters included.
 
-**Jelly softness %** decides how soft. 0 is a firm rubber stamp that barely deforms; 100 is goo that
-splats and keeps moving. The default 50 is a firm jelly that visibly squashes on landing and settles.
+**Jelly softness %** decides how soft. 0 is a firm rubber stamp that barely deforms. 100 is a soft
+jelly that squashes to about three quarters of its height and stays there. The default 50 sits
+between them and squashes a little on landing — if you want an obvious wobble, push it up.
+
+**Hollow shapes stay firmer than solid ones, whatever the slider says.** A shape with a counter — an
+"O", an "e", a ring — has nothing holding its hole open except the springs around it, so past a
+certain softness the hole simply folds shut and the letter flattens instead of squashing. Rather than
+let that happen, Gravity refuses to take a hollow shape below a set firmness and writes a line to the
+console saying it did. A solid blob has the whole slider; a ring uses the top of it. If you want a
+counter that really squashes, the honest answer today is to draw it as a solid shape.
 
 **Chunky artwork works, thin artwork does not.** Gravity has to fit a grid of springs *inside* the
 shape, and a shape that is all edge and no middle has nowhere to put one. As a rule of thumb the
@@ -270,7 +278,7 @@ for the anchor words: a path called `hanging cable` is pinned, one called `Shang
 | **Friction %** | 40 | How much they grip. Low values make piles slide apart; high values let them stack. |
 | **Equalise mass** | off | Gives every object comparable weight regardless of size, so large artwork stops bulldozing small artwork. |
 | **Rope slack %** | 0 | How much longer than it looks a rope is. 0 leaves ropes exactly as drawn, so a straight pinned line cannot drape. Raise it to make ropes hang. |
-| **Jelly softness %** | 50 | How soft shapes named `jelly`, `soft` or `squish` are. 0 is firm rubber that barely deforms; 100 is goo. Affects nothing else in the scene. |
+| **Jelly softness %** | 50 | How soft shapes named `jelly`, `soft` or `squish` are. 0 is firm rubber that barely deforms; 100 squashes to about three quarters of its height. Hollow shapes stay firmer than the slider asks, because a counter folds shut instead of squashing. Affects nothing else in the scene. |
 
 There is deliberately no density control. One density applied to everything leaves every weight
 *ratio* unchanged, and collisions only depend on ratios — so it would do nothing at all. Equalise

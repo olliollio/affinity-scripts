@@ -309,7 +309,7 @@ sag stops meaning what the softness control says it means. Measured rigid droop 
 
 The knee is between 12 and 13, and 12 is what the raised iterations buy: **a scene containing any
 softbody steps at 24/8 instead of the default 8/3**, which is what earns 12 rather than 8. On the
-shipped rig the same measurement is 0.112 rigid, against **1.07 / 2.06 / 3.32** at softness 0 / 0.25
+shipped rig the same measurement is 0.112 rigid, against **1.07 / 1.62 / 2.42** at softness 0 / 0.25
 / 0.75 — an order of magnitude of headroom between solver error and the softest setting. At the
 default 8/3 that same rigid beam sags **0.575**, five times worse and over the test's threshold, so
 the iteration raise is not an optimisation but a correctness requirement. It is applied only when a
@@ -334,6 +334,43 @@ The honest consequence is a shape rule: staying inside the cap needs `thickness 
 **jelly wants chunky artwork**. A bold 300pt "O" with a 60pt wall meshes at exactly 12 cells. A
 hairline face has nowhere to put an interior node, falls back to a rigid body rather than pretending,
 and the report says which limit refused it.
+
+**The softness slider covers 30Hz..8Hz, and it used to cover 30Hz..2Hz.** Settled height as a
+fraction of rest height, dropped from nowhere — the floor starts at the bottom of the shape — and
+stepped 30s at 24/8. 1.00 is undeformed:
+
+| freqHz | blob | bold "O" |
+|---|---|---|
+| 30 | 0.980 | 0.831 |
+| 28 | 0.976 | 0.801 |
+| 26 | 0.970 | 0.756 |
+| 24 | 0.966 | 0.495 |
+| 22 | 0.961 | 0.227 |
+| 20 | 0.953 | 0.210 |
+| 16 | 0.932 | 0.184 |
+| 12 | 0.883 | 0.147 |
+| 8 | 0.755 | 0.120 |
+| 6 | 0.452 | 0.115 |
+| 4 | 0.131 | 0.110 |
+| 2 | 0.086 | 0.075 |
+
+A solid blob degrades smoothly from 30 down to 8 and then collapses: **0.452 at 6Hz and 0.131 at 4**
+are puddles, not jelly. Nothing below 8 holds its shape, so the bottom half of the old slider was
+never usable, and the old default of 50% landed on **7.7Hz**. The range is log-spaced, so 50% is now
+the geometric mean, **15.5Hz**.
+
+**A shape with a hole in it BUCKLES, and is floored at 26Hz.** Read the "O" column: a ring holds from
+30 to 26 and then falls off a cliff, losing two thirds of its height between 26 and 22 and reaching
+0.120 by 8Hz — flatter than the shape ever gets by landing. This is structural, not a tuning failure.
+A mass-spring lattice has no area preservation and nothing at all resists the hole ovalising, so once
+the wall starts to fold there is no restoring force for the shape as a whole, only for each spring's
+own length. The known fix is a pressure or volume-preservation term — a per-face constraint that
+resists a change in enclosed area — and it is not built. Until it is, `SHELL_MIN_FREQ = 26` clamps
+any face with holes to at least 26Hz however soft the user asked for, and the report says so. The
+softness setting is a REQUEST that the shape's own structure can override, the same idiom rope slack
+already uses when measured clearance clamps the slack that was asked for. The floor applies to the
+SETTING only: an explicit `frequencyHz` is a caller taking control of the solver and is never
+floored, or every stiffness measurement in the tests would silently become a 26Hz spring.
 
 **The drawn outline is not the mesh.** Meshing at 12 cells would destroy the artwork if the lattice
 were drawn directly, so every original point is BOUND once, at rest, to its 4 nearest nodes with
