@@ -132,7 +132,10 @@
         bullet: false,
         name: name + ' [' + n + ']',
         node: o.node || null,
-        isSoftNode: true
+        isSoftNode: true,
+        // Which softbody this node belongs to. seedJitter draws once per group, so a lattice is
+        // nudged as one object rather than shaken node by node.
+        softGroup: groupIndex
       };
       W.dynamics.push(rec);
       nodes.push(rec);

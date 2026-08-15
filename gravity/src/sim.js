@@ -74,10 +74,18 @@
     var r = rng(seed);
     var amt = amount === undefined ? 0.01 : amount;
     if (!amt) return;
+    // One draw per SOFTBODY rather than per node. A lattice given an independent velocity per node
+    // is shaken rather than nudged, and a soft structure holds that energy for a long time — the
+    // jitter exists to break a symmetry, not to deform anything.
+    var groups = {};
     for (var i = 0; i < W.dynamics.length; i++) {
-      var b = W.dynamics[i].body;
-      b.setAngularVelocity((r() - 0.5) * 2 * amt);
-      b.setLinearVelocity(new W.planck.Vec2((r() - 0.5) * 2 * amt, 0));
+      var rec = W.dynamics[i];
+      var key = rec.isSoftNode ? ('soft:' + rec.softGroup) : ('body:' + i);
+      if (groups[key] === undefined) {
+        groups[key] = { av: (r() - 0.5) * 2 * amt, lv: (r() - 0.5) * 2 * amt };
+      }
+      rec.body.setAngularVelocity(groups[key].av);
+      rec.body.setLinearVelocity(new W.planck.Vec2(groups[key].lv, 0));
     }
   }
 
