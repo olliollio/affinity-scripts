@@ -3604,7 +3604,18 @@ GR.planck = (function () {
     for (var n = 0; n < nodeCount; n++) {
       var body = W.world.createDynamicBody({
         position: new pl.Vec2(mesh.nodes[n * 2], mesh.nodes[n * 2 + 1]),
-        linearDamping: o.linearDamping === undefined ? NODE_LINEAR_DAMPING : o.linearDamping
+        linearDamping: o.linearDamping === undefined ? NODE_LINEAR_DAMPING : o.linearDamping,
+        // A node's own SPIN is not part of the model and is never drawn: the outline follows node
+        // POSITIONS, and evalSoftOutline derives each node's orientation from where its neighbours
+        // ended up rather than from the body's angle. Left free, that spurious degree of freedom
+        // does real damage - the circles roll against each other and the walls and never stop, so
+        // no island can ever sleep and every run burns the full frame cap. Measured on a real
+        // 717-body scene: linear motion had fallen to 0.152 pt/s, comfortably UNDER the 0.504
+        // threshold, while spin sat at 51.76 rad/s against a 0.0349 tolerance - 1500x over, and the
+        // sole reason 717 of 717 bodies were still awake. Measured on a 609-body headless pile,
+        // fixing rotation takes peak spin from 0.4398 to 0.0023 rad/s and the awake count from 507
+        // to 302. It also removes a rotational constraint per node from the solver.
+        fixedRotation: true
       });
       body.createFixture(new pl.Circle(radius), {
         density: nodeDensity,
