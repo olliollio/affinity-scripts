@@ -210,6 +210,83 @@ module.exports = function (GR, h) {
   h.assert('a bold ring has about perimeter/cell boundary nodes',
     Math.abs(rmesh.boundaryCount - wantB) <= 4);
 
+  h.group('softmesh: multi-face objects');
+
+  // Two discs, the shape of an "i". `buildFaces` returns two faces for "i", and also for "!", "%",
+  // ":" and quote marks, so this is the ordinary case rather than an exotic one.
+  var discA = { outer: circle(0.6, 0.6, 0.6, 64), holes: [] };
+  var discB = { outer: circle(0.6, 2.4, 0.6, 64), holes: [] };
+  var twoMesh = GR.buildSoftMesh([discA, discB], { cell: 0.25 });
+  GR.addSoftSprings(twoMesh);
+
+  // faceOf covers EVERY node, boundary and interior alike, and each one is inside the face it
+  // claims. This is the record the cross-face join is built on, so a wrong entry there would stitch
+  // a face to itself and leave the other loose.
+  var faceOk = true, faceLen = twoMesh.faceOf.length === twoMesh.nodes.length / 2;
+  for (var fo = 0; fo < twoMesh.faceOf.length; fo++) {
+    var whichFace = twoMesh.faceOf[fo] === 0 ? discA : discB;
+    if (twoMesh.faceOf[fo] !== 0 && twoMesh.faceOf[fo] !== 1) faceOk = false;
+    if (!GR.pointInFace(twoMesh.nodes[fo * 2], twoMesh.nodes[fo * 2 + 1], whichFace)) faceOk = false;
+  }
+  h.assert('faceOf has one entry per node', faceLen);
+  h.assert('every node maps to the face it lies inside', faceOk);
+
+  // Both kinds of node are covered, not just the boundary — an interior-blind faceOf would still
+  // pass the test above on a mesh whose interiors all defaulted to face 0.
+  var bFaces = {}, iFaces = {};
+  for (var fb = 0; fb < twoMesh.boundaryCount; fb++) bFaces[twoMesh.faceOf[fb]] = 1;
+  for (var fi3 = twoMesh.boundaryCount; fi3 < twoMesh.faceOf.length; fi3++) iFaces[twoMesh.faceOf[fi3]] = 1;
+  h.assert('boundary nodes come from both faces', bFaces[0] === 1 && bFaces[1] === 1);
+  h.assert('interior nodes come from both faces', iFaces[0] === 1 && iFaces[1] === 1);
+
+  // THE assertion for multi-face objects. Without cross-face springs this is 2, and the two halves
+  // of an "i" are two unattached heaps that also cannot collide, because they share one negative
+  // filter group. Measured before this existed: two 120pt discs 300pt overall started 1.800 sim
+  // units apart and settled 0.018 apart — the dot ended up inside the stem.
+  h.assertEqual('a two-face mesh is ONE connected component', GR.softMeshComponents(twoMesh), 1);
+  h.assertEqual('a two-face mesh gets three cross-face springs', twoMesh.crossFaceSprings, 3);
+
+  // Three, not one, because one spring is a hinge and the dot would swing about it. And they must
+  // not all meet at one node, or three is a hinge too: assert the anchors are spread on BOTH sides.
+  var cross = twoMesh.springs.slice(twoMesh.springs.length - twoMesh.crossFaceSprings);
+  var crossOk = true, spreadOk = true;
+  for (var cx2 = 0; cx2 < cross.length; cx2++) {
+    if (twoMesh.faceOf[cross[cx2][0]] === twoMesh.faceOf[cross[cx2][1]]) crossOk = false;
+    for (var cy2 = cx2 + 1; cy2 < cross.length; cy2++) {
+      var pA = cross[cx2], pB = cross[cy2];
+      if (pA[0] === pB[0] || pA[1] === pB[1]) spreadOk = false;
+    }
+  }
+  h.assert('every cross-face spring joins two different faces', crossOk);
+  h.assert('no two cross-face springs share an anchor', spreadOk);
+
+  // Rest length is the CURRENT distance, so the faces hold the separation they were drawn with
+  // rather than being dragged together on the first step.
+  var restOk = true;
+  for (var cr2 = 0; cr2 < cross.length; cr2++) {
+    var ca = cross[cr2][0], cb = cross[cr2][1];
+    var rdx = twoMesh.nodes[ca * 2] - twoMesh.nodes[cb * 2];
+    var rdy = twoMesh.nodes[ca * 2 + 1] - twoMesh.nodes[cb * 2 + 1];
+    if (Math.abs(Math.sqrt(rdx * rdx + rdy * rdy) - cross[cr2][2]) > 1e-9) restOk = false;
+  }
+  h.assert('a cross-face spring rests at the drawn separation', restOk);
+
+  // Three faces get three springs EACH, so a stack cannot leave the top one hanging off the bottom.
+  var threeMesh = GR.buildSoftMesh([discA, discB, { outer: circle(0.6, 4.2, 0.6, 64), holes: [] }],
+    { cell: 0.25 });
+  GR.addSoftSprings(threeMesh);
+  h.assertEqual('a three-face mesh is one connected component', GR.softMeshComponents(threeMesh), 1);
+  h.assertEqual('each extra face adds three cross-face springs', threeMesh.crossFaceSprings, 6);
+
+  // A single-face mesh is untouched by any of this — no cross springs, and the spring count is
+  // exactly what it was before cross-face joining existed.
+  var oneMesh = GR.buildSoftMesh([discA], { cell: 0.25 });
+  GR.addSoftSprings(oneMesh);
+  h.assertEqual('a single-face mesh has no cross-face springs', oneMesh.crossFaceSprings, 0);
+  h.assertEqual('a single-face mesh is still one component', GR.softMeshComponents(oneMesh), 1);
+  h.assert('a single-face mesh maps every node to face 0',
+    oneMesh.faceOf.length === oneMesh.nodes.length / 2 && Math.max.apply(null, oneMesh.faceOf) === 0);
+
   h.group('softmesh: binding');
 
   var bface = { outer: square(0, 0, 4, 4), holes: [] };

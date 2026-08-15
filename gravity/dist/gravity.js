@@ -2775,6 +2775,17 @@ GR.planck = (function () {
   // union of the node circles rather than the drawn curve.
   var INSET_FRAC = 0.6;
 
+  // How many springs join a face to the faces before it.
+  //
+  // ONE is a hinge: a dot hung on a single spring swings about it like a pendulum, which is not what
+  // an "i" does. THREE is the smallest count that pins position and resists rotation at once, and
+  // the pairs are chosen with DISTINCT endpoints so the three cannot all meet at one node and
+  // collapse back into that same hinge.
+  var CROSS_FACE_LINKS = 3;
+
+  // How far apart the anchors of those three springs must be, in cells, measured on BOTH faces.
+  var CROSS_FACE_SPREAD = 2;
+
   /** Absolute area of one closed ring, by the shoelace formula. */
   function ringArea(ring) {
     var a = 0;
@@ -3020,6 +3031,11 @@ GR.planck = (function () {
    *
    * Boundary nodes are emitted FIRST, so indices `0 .. boundaryCount-1` are the ones whose motion
    * the drawn outline follows most closely, and interior nodes follow.
+   *
+   * `faceOf` maps every node — boundary and interior alike — back to the face it came from. Nothing
+   * inside a face needs it, because both the grid keys and the ring spans are already per-face; it
+   * exists so `addSoftSprings` can find the faces and JOIN them, which is the one step that has to
+   * reason across the boundary between two of them.
    */
   function buildSoftMesh(faces, opts) {
     var o = opts || {};
@@ -3027,10 +3043,12 @@ GR.planck = (function () {
     var inset = (o.insetFrac === undefined ? INSET_FRAC : o.insetFrac) * cell;
     var clear = (o.interiorClear === undefined ? INTERIOR_CLEAR : o.interiorClear) * cell;
 
-    var boundary = [];    // flat x,y
-    var ringSpans = [];   // { start, count } per ring, for the ring springs
-    var interior = [];    // flat x,y
-    var grid = {};        // "col,row" -> interior node index, for arithmetic adjacency
+    var boundary = [];      // flat x,y
+    var boundaryFace = [];  // face index per boundary node
+    var ringSpans = [];     // { start, count } per ring, for the ring springs
+    var interior = [];      // flat x,y
+    var interiorFace = [];  // face index per interior node
+    var grid = {};          // "face:col,row" -> interior node index, for arithmetic adjacency
 
     for (var f = 0; f < faces.length; f++) {
       var face = faces[f];
@@ -3044,6 +3062,7 @@ GR.planck = (function () {
           var bis = bisectorAt(pts, i);
           var p = insetPoint(pts[i], pts[i + 1], bis[0], bis[1], inset, face);
           boundary.push(p[0], p[1]);
+          boundaryFace.push(f);
           placed++;
         }
         ringSpans.push({ start: start, count: placed });
@@ -3059,6 +3078,7 @@ GR.planck = (function () {
           if (distanceToRings(gx, gy, face) < clear) continue;
           grid[f + ':' + c + ',' + w] = interior.length / 2;
           interior.push(gx, gy);
+          interiorFace.push(f);
         }
       }
     }
@@ -3068,11 +3088,81 @@ GR.planck = (function () {
       nodes: nodes,
       boundaryCount: boundary.length / 2,
       interiorCount: interior.length / 2,
+      // Concatenated in the same order the coordinates are, so `faceOf[n]` indexes `nodes[n*2]`.
+      faceOf: boundaryFace.concat(interiorFace),
+      faceCount: faces.length,
       ringSpans: ringSpans,
       grid: grid,
       cell: cell,
       springs: []
     };
+  }
+
+  /** Squared distance between two node indices. */
+  function nodeDist2(nodes, a, b) {
+    var dx = nodes[a * 2] - nodes[b * 2], dy = nodes[a * 2 + 1] - nodes[b * 2 + 1];
+    return dx * dx + dy * dy;
+  }
+
+  /**
+   * The `want` closest node pairs between face `face` and every face BEFORE it, SPREAD APART.
+   *
+   * Greedy over the shortest pairs, refusing any candidate whose endpoints sit within `spread` of an
+   * endpoint already chosen, on EITHER side. Merely requiring distinct node indices was tried first
+   * and is not enough: the three globally shortest pairs are three ways of joining the same
+   * neighbourhood, and they came out anchored on three consecutive boundary nodes of one face. That
+   * is a hinge with extra steps. Measured on the two-disc fixture with every spring made perfectly
+   * rigid, so that the only thing under test is the join: consecutive anchors settled at 0.979
+   * against a rest separation of 1.800 — the faces still ended up on top of each other — and spread
+   * anchors settled at 1.797.
+   *
+   * `spread` halves each time no full set can be found, and the last pass asks for none at all, so a
+   * face too small to offer three separated nodes is still joined rather than left loose.
+   *
+   * Pair count is |face| x |earlier faces|, and MAX_CELLS bounds a mesh to a few hundred nodes, so
+   * the quadratic scan is cheaper than any structure that would avoid it.
+   */
+  function crossFacePairs(nodes, faceOf, face, want, cell) {
+    var mine = [], theirs = [];
+    for (var i = 0; i < faceOf.length; i++) {
+      if (faceOf[i] === face) mine.push(i);
+      else if (faceOf[i] < face) theirs.push(i);
+    }
+    var pairs = [];
+    for (var a = 0; a < mine.length; a++) {
+      var ax = nodes[mine[a] * 2], ay = nodes[mine[a] * 2 + 1];
+      for (var b = 0; b < theirs.length; b++) {
+        var dx = nodes[theirs[b] * 2] - ax, dy = nodes[theirs[b] * 2 + 1] - ay;
+        pairs.push([dx * dx + dy * dy, mine[a], theirs[b]]);
+      }
+    }
+    pairs.sort(function (p, q) { return p[0] - q[0]; });
+
+    var best = [];
+    var spread = CROSS_FACE_SPREAD * (cell || 0);
+    for (var pass = 0; ; pass++) {
+      var min2 = spread * spread;
+      var takenA = [], takenB = [], out = [];
+      for (var k = 0; k < pairs.length && out.length < want; k++) {
+        var na = pairs[k][1], nb = pairs[k][2], ok = true;
+        for (var t = 0; t < takenA.length; t++) {
+          if (na === takenA[t] || nb === takenB[t] ||
+              nodeDist2(nodes, na, takenA[t]) < min2 || nodeDist2(nodes, nb, takenB[t]) < min2) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
+        takenA.push(na);
+        takenB.push(nb);
+        out.push([na, nb]);
+      }
+      if (out.length > best.length) best = out;
+      if (best.length >= want || spread === 0) break;
+      spread /= 2;
+      if (spread < 1e-6) spread = 0;
+    }
+    return best;
   }
 
   /**
@@ -3083,6 +3173,15 @@ GR.planck = (function () {
    * optional: a grid without them is a mechanism rather than a structure and shears flat under its
    * own weight. Boundary nodes are not on the grid, so their attachment is the one genuinely
    * geometric step here, and the one a connectivity test has to guard.
+   *
+   * A multi-face object is then STITCHED into one structure. `buildFaces` returns two faces for an
+   * "i", and also for "!", "%", ":" and quote marks, and neither of the two things that could hold
+   * them together happens on its own: the grid keys are per-face so no lattice spring ever crosses,
+   * and every face shares one negative `filterGroupIndex`, which means the faces cannot even collide
+   * with each other. Measured on two 120pt discs stacked 300pt overall (54 nodes at 12 cells): they
+   * start 1.800 sim units apart and after 15s of falling the gap is 0.018 — the dot lands INSIDE the
+   * stem. The rigid path never had this problem because it puts every face's parts on ONE body; the
+   * cross-face springs are how the soft path says the same thing.
    */
   function addSoftSprings(mesh, opts) {
     var o = opts || {};
@@ -3146,6 +3245,22 @@ GR.planck = (function () {
       if (!within && nearest >= 0) { add(b, nearest); fallbacks++; }
     }
     mesh.attachFallbacks = fallbacks;
+
+    // Face to face. Rest length is whatever the two nodes are ALREADY apart, which `add` measures,
+    // so the faces hold the separation they were drawn with rather than being pulled together.
+    var links = o.crossFaceLinks === undefined ? CROSS_FACE_LINKS : o.crossFaceLinks;
+    var faceOf = mesh.faceOf || [];
+    var faceCount = 0;
+    for (var q = 0; q < faceOf.length; q++) if (faceOf[q] + 1 > faceCount) faceCount = faceOf[q] + 1;
+    var crossFaceSprings = 0;
+    for (var fc = 1; fc < faceCount; fc++) {
+      var pairs = crossFacePairs(nodes, faceOf, fc, links, cell);
+      for (var p = 0; p < pairs.length; p++) {
+        add(pairs[p][0], pairs[p][1]);
+        crossFaceSprings++;
+      }
+    }
+    mesh.crossFaceSprings = crossFaceSprings;
 
     mesh.springs = springs;
     return mesh;
@@ -3303,6 +3418,7 @@ GR.planck = (function () {
   GR.SOFT_INTERIOR_CLEAR = INTERIOR_CLEAR;
   GR.SOFT_ATTACH_RADIUS = ATTACH_RADIUS;
   GR.SOFT_INSET_FRAC = INSET_FRAC;
+  GR.SOFT_CROSS_FACE_LINKS = CROSS_FACE_LINKS;
 })(GR);
 
 // -------------------------------------------------------------------------
@@ -5266,6 +5382,9 @@ GR.planck = (function () {
             ' cell=' + fmt(madeSoft.cell * W.scale, 1) + 'pt' +
             ' nodes=' + madeSoft.nodes.length +
             ' springs=' + madeSoft.springCount +
+            // Only when there are several faces, because on the ordinary one-face object it is
+            // always 0 and says nothing. On an "i" it is what holds the dot onto the stem.
+            (madeSoft.mesh.crossFaceSprings ? ' cross=' + madeSoft.mesh.crossFaceSprings : '') +
             ' rings=' + bound.length +
             ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
             ' mass=' + fmt(madeSoft.totalMass, 4) +

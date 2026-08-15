@@ -350,6 +350,18 @@ each node's density derived from it. It honours Equalise mass for the same reaso
 does — a jelly that ignored it would be the one heavy object in the scene and would bulldoze the
 rigid letter beside it. A two-face "i" weighs **1** in total, not 2.
 
+**A multi-face object is stitched into one lattice.** `buildFaces` returns two faces for an "i", and
+also for "!", "%", ":" and quote marks, and the soft path did neither of the two things that could
+hold them together: the interior grid is keyed per face so no lattice spring crosses, and all faces
+share one negative `filterGroupIndex`, which means they cannot even collide. Measured on two 120pt
+discs stacked 300pt overall: they start **1.800** sim units apart and after 15s the gap is **0.018** —
+the dot ends up inside the stem. So each face after the first is joined to the ones before it by
+**three** springs at the current distance. One spring is a hinge and the dot swings about it; three
+is the smallest count that pins position and resists rotation. They must also be SPREAD — with the
+three globally shortest pairs the anchors landed on three consecutive boundary nodes, which is a
+hinge with extra steps, and the same fixture with perfectly rigid springs still settled at **0.979**
+instead of 1.800. Requiring two cells of clearance between anchors on both faces gives **1.797**.
+
 `seedJitter` now draws **once per softbody** rather than once per node. An independent nudge per node
 does not nudge a lattice, it SHAKES it, and a soft structure holds that energy rather than shrugging
 it off the way a rigid body does. Measured velocity spread across one lattice: **0.0198** before,
