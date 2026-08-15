@@ -15,6 +15,16 @@ function square(x0, y0, w, hgt) {
   return [x0, y0, x0 + w, y0, x0 + w, y0 + hgt, x0, y0 + hgt];
 }
 
+/** A closed ring approximating a circle, in SOURCE units. */
+function disc(cx, cy, r, n) {
+  var p = [];
+  for (var i = 0; i < n; i++) {
+    var a = i / n * Math.PI * 2;
+    p.push(cx + r * Math.cos(a), cy + r * Math.sin(a));
+  }
+  return p;
+}
+
 module.exports = function (GR, h) {
 
   h.group('softbody: rig');
@@ -79,8 +89,8 @@ module.exports = function (GR, h) {
 
   h.group('softbody: filter groups');
 
-  // One group index for the whole object, so the two faces of an "i" do not collide with each
-  // other, and a DIFFERENT one per object, so two jellies still collide normally.
+  // One group index for the whole object, so a lattice does not inflate itself apart on its own
+  // overlapping node circles, and a DIFFERENT one per object, so two jellies still collide normally.
   var W4 = GR.makeWorld({ scale: 100 });
   var a = GR.addSoftBody(W4, faces, { name: 'a', softness: 0.5 });
   var b = GR.addSoftBody(W4, faces, { name: 'b', softness: 0.5 });
@@ -91,6 +101,56 @@ module.exports = function (GR, h) {
     if (a.nodes[g].body.getFixtureList().getFilterGroupIndex() !== a.groupIndex) sameGroup = false;
   }
   h.assert('every node of one softbody shares its group', sameGroup);
+
+  h.group('softbody: multi-face objects');
+
+  /**
+   * Drops the two faces of an "i" on a floor and returns their centroid separation, in sim units.
+   *
+   * The shared filter group means the two faces CANNOT collide with each other. That is deliberate
+   * — they are one object, exactly as the rigid path puts every face's parts on one body — but it
+   * means nothing except the cross-face springs stops the dot from ending up inside the stem. This
+   * is the measurement that says whether they exist and work.
+   */
+  function discGap(opts) {
+    var Wd = GR.makeWorld({ scale: 100, gravity: 10 });
+    var cfg = { name: 'i', density: 1 };
+    for (var key in opts) cfg[key] = opts[key];
+    // Two 120pt discs, 300pt overall: 54 nodes at 12 cells, centroids 1.800 sim units apart.
+    var pair = [
+      { outer: disc(60, 60, 60, 64), holes: [] },
+      { outer: disc(60, 240, 60, 64), holes: [] }
+    ];
+    var sb = GR.addSoftBody(Wd, pair, cfg);
+    if (sb.fallback) return null;
+    var floor = Wd.world.createBody();
+    floor.createFixture(new GR.planck.Edge(new GR.planck.Vec2(-50, -6), new GR.planck.Vec2(50, -6)),
+      { friction: 0.4 });
+    for (var s = 0; s < 900; s++) Wd.world.step(1 / 60, 24, 8);
+    var c0 = { n: 0, x: 0, y: 0 }, c1 = { n: 0, x: 0, y: 0 };
+    for (var i = 0; i < sb.nodes.length; i++) {
+      var p = sb.nodes[i].body.getPosition();
+      var t = sb.mesh.faceOf[i] === 0 ? c0 : c1;
+      t.n++; t.x += p.x; t.y += p.y;
+    }
+    var dx = c0.x / c0.n - c1.x / c1.n, dy = c0.y / c0.n - c1.y / c1.n;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  // THE assertion this group exists for. Before the cross-face springs, this fixture settled at
+  // 0.018 sim units from a rest separation of 1.800 — the two faces were coincident, having passed
+  // straight through each other for 15 seconds. At softness 0 the springs are stiff enough that the
+  // separation is essentially held: measured 1.791, against 1.797 with the springs made perfectly
+  // rigid. This number cannot be recovered by any spring tuning if the springs are not there.
+  var stiffGap = discGap({ softness: 0 });
+  h.assert('two faces of one softbody stay apart', stiffGap !== null && stiffGap > 1.7);
+
+  // At the DEFAULT softness the faces do sink into each other — the springs are soft, ground
+  // friction resists the restoring pull, and there is no collision to stop it. Measured 1.788.
+  // The claim here is only that they are not coincident, which is the failure being fixed; the
+  // sharp number above is what guards the join itself.
+  var softGap = discGap({ softness: 0.5 });
+  h.assert('two faces stay apart at the default softness too', softGap !== null && softGap > 0.5);
 
   h.group('softbody: fallback');
 

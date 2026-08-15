@@ -496,6 +496,9 @@
             ' cell=' + fmt(madeSoft.cell * W.scale, 1) + 'pt' +
             ' nodes=' + madeSoft.nodes.length +
             ' springs=' + madeSoft.springCount +
+            // Only when there are several faces, because on the ordinary one-face object it is
+            // always 0 and says nothing. On an "i" it is what holds the dot onto the stem.
+            (madeSoft.mesh.crossFaceSprings ? ' cross=' + madeSoft.mesh.crossFaceSprings : '') +
             ' rings=' + bound.length +
             ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
             ' mass=' + fmt(madeSoft.totalMass, 4) +
