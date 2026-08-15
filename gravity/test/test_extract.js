@@ -341,4 +341,16 @@ module.exports = function (GR, h) {
   h.assert('an extracted object becomes a body', body !== null);
   h.assert('with fixtures', body.fixtures > 0, 'got ' + body.fixtures);
   h.assertEqual('and no rejected parts', body.rejected.length, 0);
+
+  h.group('extract: hasWord');
+
+  h.assert('matches a bare word', GR.hasWord('jelly', ['jelly']) === true);
+  h.assert('matches inside a phrase', GR.hasWord('big jelly thing', ['jelly']) === true);
+  h.assert('matches with punctuation around it', GR.hasWord('shape (jelly)', ['jelly']) === true);
+  h.assert('does not match a substring', GR.hasWord('jellyfish', ['jelly']) === false);
+  h.assert('does not match a suffix', GR.hasWord('myjelly', ['jelly']) === false);
+  h.assert('is case insensitive', GR.hasWord('JELLY', ['jelly']) === true);
+  h.assert('tries every word', GR.hasWord('a squish b', ['soft', 'squish']) === true);
+  h.assert('empty name matches nothing', GR.hasWord('', ['jelly']) === false);
+  h.assert('null name matches nothing', GR.hasWord(null, ['jelly']) === false);
 };

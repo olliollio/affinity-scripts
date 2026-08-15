@@ -33,6 +33,29 @@
   var STATIC_WORDS = ['wall', 'floor', 'ramp', 'static', 'ground', 'collider'];
 
   /**
+   * Is `word` present in `name` as a whole word?
+   *
+   * Three naming conventions now use this — scenery, rope anchoring and softbodies — and it was
+   * written twice before the third arrived. Whole-word matching is what stops "jellyfish" being
+   * jelly and "grounded" being ground.
+   */
+  function hasWord(name, words) {
+    if (!name) return false;
+    var s = String(name).toLowerCase();
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      var at = s.indexOf(w);
+      while (at >= 0) {
+        var before = at === 0 ? '' : s.charAt(at - 1);
+        var after = s.charAt(at + w.length);
+        if ((at === 0 || !/[a-z0-9]/.test(before)) && (!after || !/[a-z0-9]/.test(after))) return true;
+        at = s.indexOf(w, at + 1);
+      }
+    }
+    return false;
+  }
+
+  /**
    * Static by name convention. Pure, so it is unit-tested rather than discovered in Affinity.
    *
    * Matched on word boundaries: "Wall 3" and "left-wall" are scenery, "Wallpaper" is not. Names
@@ -40,21 +63,7 @@
    * rule rather than the primary mechanism.
    */
   function isStaticName(name) {
-    if (!name) return false;
-    var s = String(name).toLowerCase();
-    for (var i = 0; i < STATIC_WORDS.length; i++) {
-      var w = STATIC_WORDS[i];
-      var at = s.indexOf(w);
-      while (at >= 0) {
-        var before = at === 0 ? '' : s.charAt(at - 1);
-        var after = s.charAt(at + w.length);
-        var okBefore = at === 0 || !/[a-z0-9]/.test(before);
-        var okAfter = !after || !/[a-z0-9]/.test(after);
-        if (okBefore && okAfter) return true;
-        at = s.indexOf(w, at + 1);
-      }
-    }
-    return false;
+    return hasWord(name, STATIC_WORDS);
   }
 
   /** What kind of thing is this, in terms of what we can do with it? */
@@ -646,6 +655,7 @@
   GR.mergeNodeLists = mergeNodeLists;
   GR.convertTextToCurves = convertTextToCurves;
   GR.isStaticName = isStaticName;
+  GR.hasWord = hasWord;
   GR.classifyNode = classify;
   GR.matrixOf = matrixOf;
   GR.ringsOf = ringsOf;
