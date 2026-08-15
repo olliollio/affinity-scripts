@@ -237,38 +237,44 @@ transforms a rope's node during playback — and `ropeCommands` applies it after
 > amount of looking at the solver will find it.
 
 Ropes take `slack`, which lengthens the path before the link count and layout are decided. The
-extra length goes into a shallow RIPPLE along the path rather than a deep arc, and that distinction
-is the design: a rope needs extra LENGTH, not extra DEPTH. A deep starting arc put a 20% slack rope
-485pt below the path it was drawn on, which is below any collider it was drawn above — and geometry
-you start past can never be hit, which read as "slack breaks collision". The ripple carries the same
-length within a few percent of the span.
+extra length goes into a single ARC — `4*d*t*(1-t)`, zero at both ends, so the anchor pins stay
+exactly where they were drawn. Depth is solved by bisection, because the curve's arc length has no
+useful closed form and the control has to mean what it says.
 
-`A*sin(2*PI*waves*t)` is zero at both ends, so the anchor pins stay exactly where they were drawn.
-The amplitude is solved by bisection because a sine's arc length is an elliptic integral and the
-control has to mean what it says. `waves` is tied to the link count at `n/8`: too few and the ripple
-must be deep, too many and the links alias it — at four links per wave the centres land on sin(45),
-sin(135), sin(225), sin(315) and the rope starts as a blocky square comb rather than a wave.
+The interesting decision is which WAY the arc goes. `main.js` measures the clear depth from the
+static rings under the rope's span, less 20pt, and passes it as `maxSagDepth`. Within that, the arc
+hangs down, because that is how a rope hangs. Beyond it the arc goes **up** instead — the surplus is
+carried above the drawn line, where nothing constrains it.
+
+Upward looks wrong for a frame and is the only direction that always works. The rule it protects is
+that a rope must never be initialised below the thing it should land on: geometry you start past can
+never be hit, which reads as "slack breaks collision" rather than as a bad starting pose. A deep
+unclamped arc put a 20% slack rope 485pt below its own path and under the artwork it was drawn
+above. Measured on a 2470pt rope with lettering 512pt below: unclamped at 25% slack it started 832pt
+down, past the lettering, and 11 links finished underneath it; clamped, none did and 41 links rested
+on it instead of 4.
+
+Two shapes were tried before this one and both looked right first. The deep arc is above. The other
+was a RIPPLE — the surplus as `A*sin(2*PI*waves*t)`, which keeps the rope near its path. Its
+waviness is set by the slack alone: amplitude/wavelength measures `sqrt(slack)/pi` at every wave
+count, so no tuning hides it. A rope drawn close above artwork therefore started as a visible comb —
+on a real scene, two ropes over a headline with 300pt and 35pt of clearance both did, even at 10%
+slack, because 25% on a 1623pt rope wants 547pt of arc. Worse, the comb did not wash out: at rest on
+a surface with friction it is a stable shape, so it survived into the settled frame, which is the
+one the user keeps. `waves` remains in the signature as a sampling-resolution hint and no longer
+names a shape.
 
 `slackenPolyline` densifies its input first: the offset is zero at both ends by construction, so a
-two-point straight line — the exact input the feature exists for — cannot ripple at all otherwise.
+two-point straight line — the exact input the feature exists for — cannot bend at all otherwise.
 Eight passing assertions on the length identity meant nothing until an end-to-end test fed it one.
-
-The arc is capped by what is underneath it. `main.js` measures the clear depth from the static
-rings under the rope's span, less 20pt, and passes it as `maxSagDepth`; the arc takes what that
-allows and a ripple carries the remainder. Unobstructed, the rope starts as a clean catenary with no
-ripple at all. Measured on a 2470pt rope with lettering 512pt below: unclamped at 25% slack it
-started 832pt down, past the lettering, and 11 links finished underneath it; clamped, none did and
-41 links rested on it instead of 4. At 10% slack the clamped start is smooth (waviness 5pt) because
-a 492pt gap can absorb about 10.6% of extra length as an arc — beyond that the rope genuinely does
-not fit and must bunch, which is a statement about the rope rather than about the code.
 
 There are THREE link caps, because what tears a chain apart is tension and being pinned is only the
 worst case while also taut. Taut and pinned keeps 32. Free keeps 96. Pinned WITH slack sits between
 at 64: measured on a 1640pt rope, stable through 72 links at 35%, 50% and 80% slack, tearing at 76
 for two of the three — the same chaotic boundary the taut cap refuses to chase, so it takes margin.
 
-A pinned rope also needs the walls to allow for where it will END, not where it starts: it begins as
-a ripple on its path and only hangs once it settles. `reach` is half the chain's length, which
+A pinned rope also needs the walls to allow for where it will END, not where it starts: it begins on
+or above its path — never below it — and only hangs once it settles. `reach` is half the chain's length, which
 bounds how far it can fall below its pins. Sizing the box to the starting positions put the floor
 through the middle of the finished drape and the rope kinked 30 degrees at each anchor.
 

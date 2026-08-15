@@ -106,15 +106,17 @@ is longer than it looks. On a 1640pt line pinned at both ends:
 | 35 | 645pt |
 
 Gravity checks how much clear room is under the rope and hangs it as far as that allows. With
-nothing below, it starts as a clean curve. With artwork below, it starts above that artwork so it
-still lands on it — and if you have asked for more slack than the gap can hold, the surplus shows as
-a ripple for the first second or so. On a rope with artwork about 500pt beneath it, 10% starts
-smooth and 25% starts visibly bunched. That is the rope not fitting, not a fault.
+nothing below, it starts as a clean downward curve. With artwork below, it hangs only as deep as the
+gap, so it still starts above what it has to land on.
 
-The ends stay exactly where you drew them at any setting. The rope starts as a shallow ripple along
-the path rather than as the straight line you drew — a rope that is longer than the gap between its
-ends has to put that extra length somewhere, and the first frame is where it goes. It stays close to
-your path, so it still falls onto whatever you drew it over.
+If you ask for more slack than the gap can hold, the rope **arches upward** for the first moment
+instead, then falls. That looks odd for a frame or two and it is deliberate: the extra length has to
+go somewhere, and above is the only direction nothing is in the way. A rope drawn 30pt above a
+headline simply has nowhere to sag, so at 25% slack it will lift before it drapes.
+
+The ends stay exactly where you drew them at any setting, whichever way the slack goes. The rope
+never starts below the artwork it was drawn over — a rope that begins underneath its collider can
+never land on it, which would look like slack breaking collision.
 
 If you would rather not use the setting, draw the path as a curve that is genuinely longer than the
 gap between its ends. That has always worked and needs nothing switched on.

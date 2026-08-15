@@ -105,10 +105,15 @@ module.exports = function (GR, h) {
   }
   // With something underneath, the arc is capped and the rope must respect it — this is the
   // measurement that decides whether it starts above its collider or past it.
+  //
+  // Measured DOWNWARD, not as a distance. Slack that will not fit below the rope is carried above
+  // it instead, so an absolute offset cannot tell an arch from a droop and would fail a rope that
+  // is behaving perfectly. What matters is only that nothing starts below the clearance.
+  function belowLine(pts) { var m = 0; for (var i = 1; i < pts.length; i += 2) m = Math.max(m, pts[i]); return m; }
   [0.1, 0.2, 0.35, 0.5].forEach(function (s) {
     var r2 = GR.slackenPolyline(GR.resamplePolyline(straight, 200), s, 8, 60);
     h.assert('at ' + (s * 100) + '% slack a clamped rope respects the clearance',
-      maxOffset(r2) < 60 + 40, 'strayed ' + maxOffset(r2).toFixed(0) + 'pt with 60pt of room');
+      belowLine(r2) <= 60 + 1, 'sagged ' + belowLine(r2).toFixed(0) + 'pt into 60pt of room');
   });
 
   // With nothing underneath it hangs freely, and then it must be a smooth ARC rather than a
@@ -125,12 +130,20 @@ module.exports = function (GR, h) {
   h.assert('and it hangs properly deep', maxOffset(freeHang) > 200,
     'only ' + maxOffset(freeHang).toFixed(0) + 'pt');
 
-  // More waves carry the same length with a shallower ripple, which is why the wave count is tied
-  // to the link count. Forced to a pure ripple with no room for an arc.
-  var few = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 3, 0));
-  var many = maxOffset(GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 12, 0));
-  h.assert('more waves means a shallower ripple', many < few,
-    '3 waves strayed ' + few.toFixed(0) + ', 12 waves ' + many.toFixed(0));
+  // The wave count used to decide how a clamped rope looked, because the surplus became a ripple
+  // and more waves made it shallower. There is no ripple now — the surplus goes up as one arc — so
+  // the shape is the same however many waves are asked for. Asserted rather than dropped, because
+  // a wave count silently coming back to life is exactly the regression that would restore the comb.
+  //
+  // Compared as a worst-point distance rather than as joined strings: two 400-number arrays
+  // stringified into a failure message say nothing a reader can act on, and the number that
+  // matters — how far apart the two shapes actually are — is exactly what gets lost.
+  var few = GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 3, 0);
+  var many = GR.slackenPolyline(GR.resamplePolyline(straight, 200), 0.3, 12, 0);
+  var apart = few.length === many.length ? 0 : Infinity;
+  for (var wq = 0; wq < few.length && isFinite(apart); wq++) apart = Math.max(apart, Math.abs(few[wq] - many[wq]));
+  h.assert('the wave count no longer changes a clamped rope', apart < 1e-9,
+    isFinite(apart) ? 'shapes differ by up to ' + apart.toFixed(2) + 'pt' : 'different point counts');
 
   h.assert('slack is capped',
     GR.polylineLength(GR.slackenPolyline(straight, 99, 8)) / 1000 <= 1 + GR.ROPE_MAX_SLACK + 0.02);
@@ -141,6 +154,62 @@ module.exports = function (GR, h) {
   var sagged2 = GR.slackenPolyline([0, 0, 1000, 0], 0.2, 8);
   h.assertClose('a raw two-point line still lengthens', GR.polylineLength(sagged2) / 1000, 1.2, 0.01);
   h.assert('by growing vertices to ripple with', sagged2.length / 2 > 2, 'got ' + sagged2.length / 2 + ' points');
+
+  h.group('rope: slack goes UP when there is no room to go down');
+
+  // A rope drawn just above artwork has almost no clearance, and slack used to be carried purely
+  // downward — so everything the arc could not absorb became a ripple. On a 1623pt rope at 25%
+  // slack the arc wants 547pt; two ropes drawn over a headline had 300pt and 35pt of room, so both
+  // started as a high-frequency comb, the upper one sagging straight through the lower one. The
+  // comb also never washed out: resting on a surface with friction it is a stable shape, so it was
+  // still visible in the settled frame.
+  //
+  // Down is not the only direction. Extra length carried ABOVE the drawn line is unconstrained by
+  // whatever sits below, stays a single smooth curve, and still falls onto the collider — a rope
+  // that starts above what it must land on can always reach it, which is the property the whole
+  // depth clamp exists to protect.
+  function turnsIn(pts) {
+    var t = 0;
+    for (var i = 2; i < pts.length / 2; i++) {
+      var d1 = pts[i * 2 - 1] - pts[i * 2 - 3];
+      var d2 = pts[i * 2 + 1] - pts[i * 2 - 1];
+      if (d1 * d2 < 0) t++;
+    }
+    return t;
+  }
+  // Signed, unlike maxOffset above: which SIDE of the drawn line the rope strays to is now the
+  // whole question, and an absolute distance cannot tell an arch from a droop.
+  function sagDown(pts) { var m = 0; for (var i = 1; i < pts.length; i += 2) m = Math.max(m, pts[i]); return m; }
+  function riseUp(pts) { var m = 0; for (var i = 1; i < pts.length; i += 2) m = Math.max(m, -pts[i]); return m; }
+
+  var flat = GR.resamplePolyline(line(0, 0, 1000, 0, 1), 200);
+
+  [0.1, 0.25, 0.5].forEach(function (s) {
+    var tight = GR.slackenPolyline(flat, s, 8, 35);
+    h.assert('at ' + (s * 100) + '% slack over a 35pt gap it is one smooth curve, not a comb',
+      turnsIn(tight) <= 1, turnsIn(tight) + ' direction changes');
+    h.assert('at ' + (s * 100) + '% slack it never starts below the clearance',
+      sagDown(tight) <= 35 + 1, 'sagged ' + sagDown(tight).toFixed(0) + 'pt into a 35pt gap');
+    h.assert('at ' + (s * 100) + '% slack the surplus is carried above the line',
+      riseUp(tight) > 1, 'rose only ' + riseUp(tight).toFixed(1) + 'pt');
+    h.assertClose('at ' + (s * 100) + '% slack a clamped rope is still exactly that much longer',
+      GR.polylineLength(tight) / 1000, 1 + s, 0.01);
+  });
+
+  // The pins do not care which way the slack went.
+  var clamped = GR.slackenPolyline(flat, 0.25, 8, 35);
+  h.assertClose('a clamped rope still starts where it was drawn (x)', clamped[0], 0, 1e-9);
+  h.assertClose('a clamped rope still starts where it was drawn (y)', clamped[1], 0, 1e-9);
+  h.assertClose('and still ends there (x)', clamped[clamped.length - 2], 1000, 1e-6);
+  h.assertClose('and still ends there (y)', clamped[clamped.length - 1], 0, 1e-6);
+
+  // Going up is the FALLBACK, not the new default. With room below, a rope must still hang the way
+  // a rope hangs — a slack rope that arched upward over open space would be plainly wrong.
+  var roomy = GR.slackenPolyline(flat, 0.25, 8, 600);
+  h.assert('with room below it still hangs downward', sagDown(roomy) > 100,
+    'only sagged ' + sagDown(roomy).toFixed(0) + 'pt');
+  h.assert('and does not arch upward at all', riseUp(roomy) < 1,
+    'rose ' + riseUp(roomy).toFixed(1) + 'pt');
 
   h.group('rope: a slack rope still lands on its collider');
 
@@ -285,24 +354,27 @@ module.exports = function (GR, h) {
   h.assert('but still fewer than a free one', pinnedSlack < free, pinnedSlack + ' vs ' + free);
   h.assertEqual('and it uses the pinned-slack cap', pinnedSlack, GR.ROPE_MAX_SEGMENTS_PINNED);
 
-  // The frame-0 shape must read as a WAVE, not a comb. At four links per wave the link centres land
-  // on sin(45), sin(135), sin(225), sin(315) - two up, two down - and a 32-link rope started as a
-  // blocky square. The wave count is tied to the link count so a wave always has links to be drawn
-  // with; this asserts the sampling directly.
+  // The frame-0 shape as the LINKS actually sample it, which is the only version the user sees.
+  // This used to guard the ripple's sampling: at four links per wave the centres landed on sin(45),
+  // sin(135), sin(225), sin(315) — two up, two down — and a 32-link rope started as a blocky square
+  // comb. With the surplus carried upward as one arc there is no wave left to alias, so the guard
+  // becomes the stronger one: no reversals at all, and nothing below the line it was told to keep
+  // clear of. `maxSagDepth: 0` is the hardest case there is — no room below whatsoever.
   var Ww = GR.makeWorld({ scale: 100, gravityY: -10 });
   var rw = GR.addRope(Ww, [0, 0, 2470, 0], { thickness: 20, anchored: true, slack: 0.5,
                                              maxSagDepth: 0, name: 'hang' });
   var ys = rw.links.map(function (l) { return GR.bodyState(Ww, l).y; });
-  var runLen = 1, worstRun = 1;
-  for (var wi = 1; wi < ys.length; wi++) {
-    if (Math.abs(ys[wi] - ys[wi - 1]) < 0.5) { runLen++; worstRun = Math.max(worstRun, runLen); }
-    else runLen = 1;
+  var reversals = 0;
+  for (var wi = 2; wi < ys.length; wi++) {
+    var e1 = ys[wi - 1] - ys[wi - 2], e2 = ys[wi] - ys[wi - 1];
+    if (e1 * e2 < 0) reversals++;
   }
-  h.assert('the starting ripple is sampled as a wave, not a square comb', worstRun <= 2,
-    'found a flat run of ' + worstRun + ' links');
-  var stray = 0;
-  for (var si = 0; si < ys.length; si++) stray = Math.max(stray, Math.abs(ys[si]));
-  h.assert('and it stays shallow', stray < 0.05 * 2470, 'strayed ' + stray.toFixed(0) + 'pt');
+  h.assert('a clamped rope starts as one arc in link space, with no comb', reversals <= 1,
+    'found ' + reversals + ' direction changes across ' + ys.length + ' links');
+  var lowest = 0;
+  for (var si = 0; si < ys.length; si++) lowest = Math.max(lowest, ys[si]);
+  h.assert('and no link starts below the clearance it was given', lowest <= 1,
+    'lowest link sat ' + lowest.toFixed(1) + 'pt below the line');
   h.assertEqual('an explicit count wins', GR.ropeSegmentCount(500, 3, { segments: 12 }, 100), 12);
 
   // The stability ceiling. A 400pt rope at scale 100 is 4 sim units, so links may not go below
