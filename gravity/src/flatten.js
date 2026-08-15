@@ -152,6 +152,38 @@
   }
 
   /**
+   * The axis-aligned box a RECTANGLE occupies after a transform, as `{x0, y0, x1, y1}`.
+   *
+   * This is not the same thing as transforming a shape and boxing the result, and the difference is
+   * the whole reason this exists. Affinity's `node.spreadBaseBox` is computed exactly this way —
+   * the four corners of `node.baseBox` pushed through the matrix, then boxed — so it INFLATES under
+   * rotation even when the artwork does not. A circle is the clearest case: rotate it and its true
+   * box is unchanged, while its bounding square's box grows by `|cos t| + |sin t|`, up to 41% at
+   * 45 degrees.
+   *
+   * Verified against six nodes from a real run, matching `spreadBaseBox` to within 0.18pt — which
+   * is itself just the rounding in the 3-decimal matrix those numbers were read from.
+   *
+   * `box` is `{x, y, width, height}`, the shape Affinity's box objects have.
+   */
+  function boxUnderMatrix(box, m) {
+    if (!box) return null;
+    var x = box.x, y = box.y, w = box.width, h = box.height;
+    if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h)) return null;
+    // A null matrix means base and spread already agree, so the box passes through unchanged.
+    var corners = [x, y, x + w, y, x, y + h, x + w, y + h];
+    if (m) transformRing(corners, m);
+    var x0 = corners[0], y0 = corners[1], x1 = corners[0], y1 = corners[1];
+    for (var i = 2; i < corners.length; i += 2) {
+      if (corners[i] < x0) x0 = corners[i];
+      if (corners[i] > x1) x1 = corners[i];
+      if (corners[i + 1] < y0) y0 = corners[i + 1];
+      if (corners[i + 1] > y1) y1 = corners[i + 1];
+    }
+    return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+
+  /**
    * Inverts a row-major 2x3 transform, so spread-space coordinates can be written back as base.
    *
    * Extraction only ever goes one way — base to spread — because a rigid body is moved with
@@ -179,6 +211,7 @@
   GR.flattenCubic = flattenCubic;
   GR.flattenSegments = flattenSegments;
   GR.transformRing = transformRing;
+  GR.boxUnderMatrix = boxUnderMatrix;
   GR.invertMatrix = invertMatrix;
   GR.FLATTEN_TOL = FLATTEN_TOL;
 
