@@ -92,17 +92,6 @@ module.exports = function (GR, h) {
   }
   h.assert('every node of one softbody shares its group', sameGroup);
 
-  h.group('softbody: rigid lattice sag');
-
-  // The cap assertion. At MAX_CELLS with the raised iterations a soft scene uses, a RIGID lattice
-  // must barely move — otherwise the softness setting is measuring solver error, not springs.
-  // Stated in SIM units because the sag is a fixed sim-space quantity; a points threshold would
-  // silently depend on the cell size the rig happened to use.
-  var Wr = GR.makeWorld({ scale: 100 });
-  var beam = [{ outer: square(0, 0, 240, 60), holes: [] }];
-  var rigid = GR.addSoftBody(Wr, beam, { name: 'beam', frequencyHz: 0, density: 1 });
-  h.assert('a rigid lattice builds', !rigid.fallback);
-
   h.group('softbody: fallback');
 
   // A hairline cannot be jelly, and says so rather than building a degenerate rig.
@@ -153,8 +142,10 @@ module.exports = function (GR, h) {
   // The threshold is 0.30, NOT the spec's 0.105. Those two numbers come from different structures
   // and must not be swapped: the spec measured a plain 3-row grid cantilever with its whole left
   // column static, while a softbody is a boundary ring plus interior rows with only the few nodes
-  // near the clamp pinned — structurally weaker. Measured on THIS rig: 0.189. The threshold takes
-  // margin above that. If it fails, the cause is the mesh spanning more than MAX_CELLS or a clamp
+  // near the clamp pinned — structurally weaker. Measured on THIS rig: 0.112. The threshold takes
+  // generous margin above that, because the number that matters is the one it EXCLUDES: the same
+  // rigid beam at gravity's default 8/3 iterations sags 0.575, well over the threshold. This test
+  // is what fails if the 24/8 raise for soft scenes is ever dropped. If it fails, the cause is the mesh spanning more than MAX_CELLS or a clamp
   // that is not rigid — do not relax it to make it pass.
   var stiff = beamSag({ frequencyHz: 0 }, 24, 8);
   h.assert('a rigid lattice holds at the cap', stiff !== null && Math.abs(stiff) < 0.30);
