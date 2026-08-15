@@ -93,4 +93,14 @@ module.exports = function (GR, h) {
   // Below MIN_CELL_SIM the mesh would fight linearSlop, so it refuses rather than shrinking.
   var tiny = GR.softCellSize([{ outer: square(0, 0, 0.2, 0.2), holes: [] }]);
   h.assertEqual('artwork below the cell floor refuses', tiny.fallback, 'thin');
+
+  h.group('softmesh: inside tests');
+
+  var ring = { outer: square(0, 0, 4, 4), holes: [square(1, 1, 2, 2)] };
+  h.assert('a point in the wall is inside', GR.pointInFace(0.5, 2, ring) === true);
+  h.assert('a point in the hole is outside', GR.pointInFace(2, 2, ring) === false);
+  h.assert('a point beyond the outline is outside', GR.pointInFace(-1, 2, ring) === false);
+
+  h.assertClose('distance to the nearest ring, from the wall', GR.distanceToRings(0.5, 2, ring), 0.5, 1e-9);
+  h.assertClose('distance measures the HOLE when it is nearer', GR.distanceToRings(0.9, 2, ring), 0.1, 1e-9);
 };
