@@ -340,6 +340,108 @@
     };
   }
 
+  /**
+   * Springs: grid adjacency for the interior, ring order for the boundary, and a radius search to
+   * join the two.
+   *
+   * Interior adjacency is arithmetic — right, up, and BOTH diagonals. The diagonals are not
+   * optional: a grid without them is a mechanism rather than a structure and shears flat under its
+   * own weight. Boundary nodes are not on the grid, so their attachment is the one genuinely
+   * geometric step here, and the one a connectivity test has to guard.
+   */
+  function addSoftSprings(mesh, opts) {
+    var o = opts || {};
+    var cell = mesh.cell;
+    var reach = (o.attachRadius === undefined ? ATTACH_RADIUS : o.attachRadius) * cell;
+    var nodes = mesh.nodes;
+    var bCount = mesh.boundaryCount;
+    var springs = [];
+    var seen = {};
+
+    function add(a, b) {
+      if (a === b) return;
+      var key = (a < b ? a : b) + '-' + (a < b ? b : a);
+      if (seen[key]) return;
+      seen[key] = 1;
+      var dx = nodes[a * 2] - nodes[b * 2], dy = nodes[a * 2 + 1] - nodes[b * 2 + 1];
+      springs.push([a, b, Math.sqrt(dx * dx + dy * dy)]);
+    }
+
+    // Interior lattice, by arithmetic.
+    for (var key in mesh.grid) {
+      if (!Object.prototype.hasOwnProperty.call(mesh.grid, key)) continue;
+      var parts = key.split(':');
+      var fi = parts[0];
+      var cr = parts[1].split(',');
+      var c = parseInt(cr[0], 10), w = parseInt(cr[1], 10);
+      var self = mesh.grid[key] + bCount;
+      var neighbours = [[c + 1, w], [c, w + 1], [c + 1, w + 1], [c - 1, w + 1]];
+      for (var n = 0; n < neighbours.length; n++) {
+        var nk = fi + ':' + neighbours[n][0] + ',' + neighbours[n][1];
+        if (mesh.grid[nk] === undefined) continue;
+        add(self, mesh.grid[nk] + bCount);
+      }
+    }
+
+    // Boundary rings, in order and closed.
+    for (var r = 0; r < mesh.ringSpans.length; r++) {
+      var span = mesh.ringSpans[r];
+      for (var i = 0; i < span.count; i++) {
+        add(span.start + i, span.start + ((i + 1) % span.count));
+      }
+    }
+
+    // Boundary to interior, by radius.
+    var fallbacks = 0;
+    for (var b = 0; b < bCount; b++) {
+      var bx = nodes[b * 2], by = nodes[b * 2 + 1];
+      var nearest = -1, nearestD = Infinity, within = 0;
+      for (var k = 0; k < mesh.interiorCount; k++) {
+        var idx = bCount + k;
+        var ddx = nodes[idx * 2] - bx, ddy = nodes[idx * 2 + 1] - by;
+        var d = Math.sqrt(ddx * ddx + ddy * ddy);
+        if (d <= reach) { add(b, idx); within++; }
+        if (d < nearestD) { nearestD = d; nearest = idx; }
+      }
+      // A node with nothing in range still attaches to its nearest interior neighbour, so the mesh
+      // is never disconnected. But that safety net makes an "every boundary node is attached" test
+      // TAUTOLOGICAL - it can never fail while any interior node exists. So the fallback is
+      // COUNTED, and the count is what the test asserts: it says ATTACH_RADIUS was actually wide
+      // enough, which is the property the radius exists to provide.
+      if (!within && nearest >= 0) { add(b, nearest); fallbacks++; }
+    }
+    mesh.attachFallbacks = fallbacks;
+
+    mesh.springs = springs;
+    return mesh;
+  }
+
+  /** Number of connected components over the spring graph. One, or the mesh is not a mesh. */
+  function softMeshComponents(mesh) {
+    var count = mesh.nodes.length / 2;
+    if (!count) return 0;
+    var adj = [];
+    for (var i = 0; i < count; i++) adj.push([]);
+    for (var s = 0; s < mesh.springs.length; s++) {
+      adj[mesh.springs[s][0]].push(mesh.springs[s][1]);
+      adj[mesh.springs[s][1]].push(mesh.springs[s][0]);
+    }
+    var seen = new Array(count), components = 0;
+    for (var n = 0; n < count; n++) {
+      if (seen[n]) continue;
+      components++;
+      var stack = [n];
+      seen[n] = true;
+      while (stack.length) {
+        var cur = stack.pop();
+        for (var a = 0; a < adj[cur].length; a++) {
+          if (!seen[adj[cur][a]]) { seen[adj[cur][a]] = true; stack.push(adj[cur][a]); }
+        }
+      }
+    }
+    return components;
+  }
+
   GR.ringArea = ringArea;
   GR.ringPerimeter = ringPerimeter;
   GR.faceArea = faceArea;
@@ -351,6 +453,8 @@
   GR.distanceToRings = distanceToRings;
   GR.resampleRing = resampleRing;
   GR.buildSoftMesh = buildSoftMesh;
+  GR.addSoftSprings = addSoftSprings;
+  GR.softMeshComponents = softMeshComponents;
   GR.SOFT_MAX_CELLS = MAX_CELLS;
   GR.SOFT_MIN_CELL_SIM = MIN_CELL_SIM;
   GR.SOFT_MIN_WALL_CELLS = MIN_WALL_CELLS;

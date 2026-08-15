@@ -159,4 +159,54 @@ module.exports = function (GR, h) {
     if (d < minDist) minDist = d;
   }
   h.assert('boundary nodes are inset from the rings', minDist > 0.5 * GR.SOFT_INSET_FRAC * 0.5);
+
+  h.group('softmesh: springs and connectivity');
+
+  var smesh = GR.buildSoftMesh([{ outer: square(0, 0, 4, 4), holes: [] }], { cell: 0.5 });
+  GR.addSoftSprings(smesh);
+
+  h.assert('a mesh has springs', smesh.springs.length > 0);
+
+  // No duplicates, no self-springs, and every index in range.
+  var seen = {}, dupes = 0, selfs = 0, oob = 0;
+  for (var si = 0; si < smesh.springs.length; si++) {
+    var s = smesh.springs[si];
+    if (s[0] === s[1]) selfs++;
+    if (s[0] < 0 || s[1] < 0 || s[0] >= smesh.nodes.length / 2 || s[1] >= smesh.nodes.length / 2) oob++;
+    var key = Math.min(s[0], s[1]) + '-' + Math.max(s[0], s[1]);
+    if (seen[key]) dupes++;
+    seen[key] = 1;
+  }
+  h.assertEqual('no spring joins a node to itself', selfs, 0);
+  h.assertEqual('no spring is duplicated', dupes, 0);
+  h.assertEqual('every spring index is in range', oob, 0);
+
+  // THE assertion. Every other check above passes on a lattice with a detached boundary loop.
+  h.assertEqual('the mesh is one connected component', GR.softMeshComponents(smesh), 1);
+
+  // Connectivity alone is not enough: ring springs hold an under-attached boundary in one
+  // component while it behaves as a rope draped on a lattice. This is what ATTACH_RADIUS is for.
+  //
+  // Assert on the FALLBACK COUNT, not on "is every boundary node attached". The latter is
+  // tautological — addSoftSprings attaches any stranded node to its nearest interior neighbour so
+  // the mesh is never disconnected, so that test can never fail while an interior node exists.
+  // `attachFallbacks` counts how many nodes needed that safety net, and zero is the real claim:
+  // ATTACH_RADIUS was wide enough on its own.
+  h.assertEqual('no boundary node needed the attach fallback', smesh.attachFallbacks, 0);
+
+  // The same, on the shape the radius is tightest for: a ring whose wall holds MIN_WALL_CELLS.
+  var ringFace = { outer: circle(0, 0, 1.5, 128), holes: [circleCW(0, 0, 0.9, 128)] };
+  var sized = GR.softCellSize([ringFace]);
+  h.assert('the bold ring meshes at all', sized.fallback === null);
+  var rmesh = GR.buildSoftMesh([ringFace], { cell: sized.cell });
+  GR.addSoftSprings(rmesh);
+  h.assertEqual('a bold ring is one component', GR.softMeshComponents(rmesh), 1);
+  h.assertEqual('a bold ring needs no attach fallback', rmesh.attachFallbacks, 0);
+
+  // A boundary count far below perimeter/cell means the resampler collapsed — the failure that
+  // hides behind every other assertion here. Measured on the fixed version: 61 against ~60.
+  var wantB = Math.round(
+    (GR.ringPerimeter(ringFace.outer) + GR.ringPerimeter(ringFace.holes[0])) / sized.cell);
+  h.assert('a bold ring has about perimeter/cell boundary nodes',
+    Math.abs(rmesh.boundaryCount - wantB) <= 4);
 };
