@@ -73,15 +73,21 @@ module.exports = function (GR, h) {
 
   // A shape with a hole BUCKLES where a solid one squashes: a mass-spring lattice has no area
   // preservation, so nothing resists the hole ovalising. Measured settled height for a bold "O",
-  // same rig: 0.831 at 30Hz, 0.756 at 26, 0.495 at 24, 0.227 at 22, 0.120 at 8. The cliff is
-  // between 26 and 22, so 26 is the floor — and it is a floor rather than a remapping because a
+  // same rig: 0.831 at 30Hz, 0.801 at 28, 0.756 at 26, 0.495 at 24, 0.227 at 22, 0.120 at 8.
+  //
+  // The floor is 28, not 26, because buckling is a BIFURCATION and the cliff does not reproduce.
+  // Perturbing only the flattening resolution of one identical ring, 26Hz gives 0.218 / 0.758 /
+  // 0.756 / 0.763 at n = 96 / 112 / 128 / 160 — a spread of 0.545, so at 26 the same "O" either
+  // squashes or collapses depending on how finely its curves flattened. At 28 the spread is 0.015.
+  // A floor inside the cliff is not a floor. It is a floor rather than a remapping because a
   // SOLID shape is fine all the way down and must keep the range it has.
   var boldO = [{ outer: disc(150, 150, 150, 128), holes: [disc(150, 150, 90, 128)] }];
   var Wsh = GR.makeWorld({ scale: 100 });
   var shell = GR.addSoftBody(Wsh, boldO, { name: 'O', softness: 1 });
   h.assert('a bold ring meshes at all', !shell.fallback);
-  h.assert('a shape with holes is floored at 26Hz even at softness 1', shell.frequency >= 26);
-  h.assertClose('the floored frequency is exactly the floor', shell.frequency, 26, 1e-9);
+  h.assert('a shape with holes is floored above the cliff even at softness 1', shell.frequency >= 28);
+  h.assertClose('the floored frequency is exactly the floor', shell.frequency, GR.SOFT_SHELL_MIN_FREQ, 1e-9);
+  h.assertEqual('the floor sits above the unreproducible cliff', GR.SOFT_SHELL_MIN_FREQ, 28);
   h.assertClose('and it records what was asked for', shell.frequencyRequested, 8, 1e-9);
   h.assertEqual('and says why it did not get it', shell.frequencyFloored, 'shell');
 
@@ -100,7 +106,7 @@ module.exports = function (GR, h) {
   h.assertEqual('and is not marked as floored', String(stiffShell.frequencyFloored), 'null');
 
   // An explicit frequencyHz is a caller taking control of the solver and is NOT floored. Without
-  // this the rigid-lattice measurement below would silently become a 26Hz spring.
+  // this the rigid-lattice measurement below would silently become a 28Hz spring.
   var Wex = GR.makeWorld({ scale: 100 });
   var explicit = GR.addSoftBody(Wex, boldO, { name: 'O', frequencyHz: 0 });
   h.assertClose('an explicit frequency is never floored', explicit.frequency, 0, 1e-9);

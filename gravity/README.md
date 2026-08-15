@@ -365,12 +365,30 @@ the geometric mean, **15.5Hz**.
 A mass-spring lattice has no area preservation and nothing at all resists the hole ovalising, so once
 the wall starts to fold there is no restoring force for the shape as a whole, only for each spring's
 own length. The known fix is a pressure or volume-preservation term — a per-face constraint that
-resists a change in enclosed area — and it is not built. Until it is, `SHELL_MIN_FREQ = 26` clamps
+resists a change in enclosed area — and it is not built. Until it is, `SHELL_MIN_FREQ = 28` clamps
 any face with holes to at least 26Hz however soft the user asked for, and the report says so. The
 softness setting is a REQUEST that the shape's own structure can override, the same idiom rope slack
 already uses when measured clearance clamps the slack that was asked for. The floor applies to the
 SETTING only: an explicit `frequencyHz` is a caller taking control of the solver and is never
 floored, or every stiffness measurement in the tests would silently become a 26Hz spring.
+
+**The cliff is a bifurcation, and mid-cliff numbers are not properties of the shape.** The floor is
+28 rather than the 26 the table above would suggest, because buckling is a threshold phenomenon and
+either side of it reproduces while the middle does not. Measured by perturbing nothing but the
+flattening resolution of one identical 300pt ring:
+
+| freqHz | n=96 | n=112 | n=128 | n=160 | spread |
+|---|---|---|---|---|---|
+| 30 | 0.829 | 0.832 | 0.831 | 0.840 | 0.011 |
+| 28 | 0.799 | 0.797 | 0.801 | 0.812 | 0.015 |
+| 26 | 0.218 | 0.758 | 0.756 | 0.763 | **0.545** |
+| 24 | 0.191 | 0.279 | 0.495 | 0.551 | 0.360 |
+| 8 | 0.117 | 0.121 | 0.120 | 0.120 | 0.004 |
+
+At 26Hz the same "O" either squashes to 0.76 or collapses to 0.22 depending on how finely its curves
+happened to flatten — something the user neither controls nor sees. This is also why two independent
+measurements of the retention table disagreed mid-cliff while agreeing at both ends: neither was
+wrong, the region simply does not reproduce. A floor inside the cliff is not a floor.
 
 **The drawn outline is not the mesh.** Meshing at 12 cells would destroy the artwork if the lattice
 were drawn directly, so every original point is BOUND once, at rest, to its 4 nearest nodes with
