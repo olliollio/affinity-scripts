@@ -19,7 +19,8 @@
     friction: 40,      // %
     seconds: 10,
     seed: 1,
-    slack: 0        // % - a straight rope has no spare length, so drape is opt-in
+    slack: 0,       // % - a straight rope has no spare length, so drape is opt-in
+    softness: 50    // % - the middle of the log-spaced frequency range, a firm jelly
   };
 
   /**
@@ -82,6 +83,10 @@
     // told it is longer than it looks.
     var slackCtl = mat.addUnitValueEditor('Rope slack %', UnitType.Number, UnitType.Number, d.slack, 0, 100);
     slackCtl.setShowPopupSlider(true); slackCtl.precision = 0;
+    // Softness lives with Material because it is a property of the object, not of the world. It is
+    // mapped log-spaced onto frequency downstream, because droop is strongly non-linear in Hz.
+    var softCtl = mat.addUnitValueEditor('Jelly softness %', UnitType.Number, UnitType.Number, d.softness, 0, 100);
+    softCtl.setShowPopupSlider(true); softCtl.precision = 0;
 
     var beh = col.addGroup('Objects');
     var convertCtl = beh.addCheckBox('Split text into letters', false);
@@ -98,6 +103,8 @@
       '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
     help.addStaticText('', 'Live text drops as one piece. "Split text into letters" converts it to ' +
       'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
+    help.addStaticText('', 'Name a closed shape "jelly", "soft" or "squish" to make it wobble ' +
+      'instead of staying rigid. Chunky shapes work best; thin artwork stays rigid.').setIsFullWidth(true);
     help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
       'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
@@ -119,6 +126,7 @@
       friction: Math.max(0, (frictionCtl.value === undefined ? d.friction : frictionCtl.value) / 100),
       equaliseMass: !!equaliseCtl.value,
       ropeSlack: Math.max(0, Math.min(1, (slackCtl.value === undefined ? d.slack : slackCtl.value) / 100)),
+      softness: Math.max(0, Math.min(1, (softCtl.value === undefined ? d.softness : softCtl.value) / 100)),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
