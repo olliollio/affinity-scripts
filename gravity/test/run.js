@@ -45,7 +45,8 @@ var SUITES = [
   require('./test_export'),
   require('./test_engine'),
   require('./test_rope'),
-  require('./test_timing')
+  require('./test_timing'),
+  require('./test_playback_handoff')
 ];
 
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);
