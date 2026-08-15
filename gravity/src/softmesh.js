@@ -152,6 +152,55 @@
     return { cell: cell, cellsAcross: cellsAcross, limit: limit, fallback: null };
   }
 
+  /** Crossing-number test against one closed ring. */
+  function pointInRing(x, y, ring) {
+    var inside = false;
+    for (var i = 0, n = ring.length; i < n; i += 2) {
+      var j = (i + 2) % n;
+      var xi = ring[i], yi = ring[i + 1], xj = ring[j], yj = ring[j + 1];
+      if ((yi > y) !== (yj > y)) {
+        var t = (y - yi) / (yj - yi);
+        if (x < xi + t * (xj - xi)) inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /** Inside the outer ring and outside every hole. */
+  function pointInFace(x, y, face) {
+    if (!pointInRing(x, y, face.outer)) return false;
+    var holes = face.holes || [];
+    for (var i = 0; i < holes.length; i++) if (pointInRing(x, y, holes[i])) return false;
+    return true;
+  }
+
+  /**
+   * Distance from a point to the nearest segment of ANY ring of the face, holes included.
+   *
+   * Holes count because a point deep inside the material but hugging a counter is not clear of the
+   * geometry — an interior node placed there sits on top of the hole's boundary nodes, and a spring
+   * of near-zero length is exactly what the solver cannot resolve.
+   */
+  function distanceToRings(x, y, face) {
+    var best = Infinity;
+    var rings = [face.outer].concat(face.holes || []);
+    for (var r = 0; r < rings.length; r++) {
+      var ring = rings[r];
+      for (var i = 0, n = ring.length; i < n; i += 2) {
+        var j = (i + 2) % n;
+        var ax = ring[i], ay = ring[i + 1], bx = ring[j], by = ring[j + 1];
+        var dx = bx - ax, dy = by - ay;
+        var len2 = dx * dx + dy * dy;
+        var t = len2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / len2 : 0;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        var px = ax + t * dx - x, py = ay + t * dy - y;
+        var d = Math.sqrt(px * px + py * py);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  }
+
   GR.ringArea = ringArea;
   GR.ringPerimeter = ringPerimeter;
   GR.faceArea = faceArea;
@@ -159,6 +208,8 @@
   GR.faceThickness = faceThickness;
   GR.facesBBox = facesBBox;
   GR.softCellSize = softCellSize;
+  GR.pointInFace = pointInFace;
+  GR.distanceToRings = distanceToRings;
   GR.SOFT_MAX_CELLS = MAX_CELLS;
   GR.SOFT_MIN_CELL_SIM = MIN_CELL_SIM;
   GR.SOFT_MIN_WALL_CELLS = MIN_WALL_CELLS;
