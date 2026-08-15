@@ -386,8 +386,18 @@ exactly, and the whole drop stays one undo step.
 The drop **plays on canvas at a steady 64.6fps** before the scrubber opens. physicsdrop animated while
 solving, so a heavy scene ran at whatever rate the solver managed; v2 solves the whole drop first
 — a few hundred milliseconds — and replays from the recording, so playback speed is independent of
-scene weight and rewatching costs nothing. The Finished dialog is raised from the timer callback,
-because `runModal` would otherwise block the timer driving playback.
+scene weight and rewatching costs nothing.
+
+The Finished dialog cannot be raised inline at the end of playback, and it cannot be raised from the
+playback callback either. Inline is wrong because `runModal` blocks, and the timer driving playback
+would stop; from inside the callback is worse, because a modal opened there **never appears at all**.
+`runModal` neither returns nor throws — it sits, the app holds a modal it never drew, the Scripts
+panel stops responding, and every later `runModal` fails with `INVALID_OP` until Affinity restarts.
+The only trace is an `ABORTED` at shutdown. It is the callback's own work that does it: the timer is
+re-armed *before* the callback runs, so once a frame costs more than the interval the waits pile up
+and the modal lands in that backlog — which is why only heavy scenes ever showed it. So `finish()`
+hands the dialog to a fresh `setTimeout` and lets the callback return first. See §20 of the SDK
+reference, and `probes/probe_modal_from_timer.js` for the four cases that clear the timer of blame.
 
 ### Frame rate
 

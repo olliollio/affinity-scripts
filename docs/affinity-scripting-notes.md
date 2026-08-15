@@ -200,6 +200,12 @@ bottomRight, centre, area, offset, moveTo, clone, ...`.
 - `Dialog.create(title)`, `dlg.initialWidth`, `dlg.runModal()` → returns
   `DialogResult.Ok` / else. Dialog is **not resizable/scrollable**; content
   clips if too tall.
+- ⚠️ **Never call `runModal()` from a timer callback that has done real work.**
+  The dialog never appears, the call never returns, and every later `runModal()`
+  in any script fails with `INVALID_OP` until Affinity is restarted. Hand it to
+  a fresh `setTimeout` and let the callback return first. `app.alert` still
+  works when `Dialog` does not, which makes it the only way to report a failure
+  once this has happened. Full account in §20 of the SDK reference.
 - `dlg.addColumn()`, `col.widthProportion = n`, `col.addGroup(title)`.
   Columns are the only horizontal unit and divide the dialog by
   `widthProportion` (a ratio, not pixels); each control added to a group is a new
