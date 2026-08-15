@@ -130,6 +130,31 @@ more nodes than a shallow one, and only a rope that genuinely ended up straight 
 > taut rope tears itself apart. Give it slack and most of that resolution comes back, because the
 > slack is what stops the tension building. The drawn curve stays smooth either way.
 
+### Make something wobble
+
+Put `jelly`, `soft` or `squish` in the name of a **closed** shape. It stops being rigid and becomes a
+wobbling, squashing blob that keeps its own outline — holes and counters included.
+
+**Jelly softness %** decides how soft. 0 is a firm rubber stamp that barely deforms; 100 is goo that
+splats and keeps moving. The default 50 is a firm jelly that visibly squashes on landing and settles.
+
+**Chunky artwork works, thin artwork does not.** Gravity has to fit a grid of springs *inside* the
+shape, and a shape that is all edge and no middle has nowhere to put one. As a rule of thumb the
+thinnest part needs to be at least a sixth of the object's longest side. A bold 300pt "O" with a 60pt
+wall is jelly. The same letter in a hairline weight is not.
+
+When a shape is too thin, Gravity does not fake it: **it drops the shape as a normal rigid object**
+and writes a line to the console saying it refused and why. Nothing breaks, it just does not wobble.
+If that happens, use a heavier weight or a fatter shape.
+
+A jelly deforms, so the path Gravity writes back is your own outline pushed around — the same points
+you drew, in the same order, moved. It is still one undo step.
+
+> Ropes win over jelly. An **open** path named `jelly` stays a rope, because an open path has no
+> inside for the springs to live in.
+
+`[screenshot: a bold "O" landing and squashing, next to a rigid one for comparison]`
+
 ### Drop a word letter by letter
 
 Live text drops as **one piece** by default, because Affinity treats a text object as a single
@@ -192,6 +217,7 @@ a frame, so the *next* run would be reading the result of the last one.
 |---|---|
 | A closed path or shape | One falling object, with its real outline including holes |
 | An **open** path | A rope — a flexible chain that drapes |
+| A closed shape named `jelly`, `soft` or `squish` | A wobbling blob that squashes, if it is thick enough — otherwise a normal falling object |
 | Live text | One falling object, unless you tick Split text into letters |
 | A group | One object per member, unless you tick Keep groups as one object |
 | A placed image | A falling object shaped like the image's **visible silhouette**, traced from its transparency |
@@ -216,6 +242,7 @@ Two sets of words, matched in the object or layer name. Case does not matter.
 |---|---|---|
 | `wall` `floor` `ramp` `ground` `static` `collider` | Becomes scenery: collides, never moves | Anything |
 | `hang` `pin` `anchor` | Pins the ends so it hangs | Open paths only |
+| `jelly` `soft` `squish` | Wobbles and squashes instead of staying rigid | Closed shapes, if thick enough |
 
 Locking a layer does the same as the scenery words, and is usually easier.
 
@@ -243,6 +270,7 @@ for the anchor words: a path called `hanging cable` is pinned, one called `Shang
 | **Friction %** | 40 | How much they grip. Low values make piles slide apart; high values let them stack. |
 | **Equalise mass** | off | Gives every object comparable weight regardless of size, so large artwork stops bulldozing small artwork. |
 | **Rope slack %** | 0 | How much longer than it looks a rope is. 0 leaves ropes exactly as drawn, so a straight pinned line cannot drape. Raise it to make ropes hang. |
+| **Jelly softness %** | 50 | How soft shapes named `jelly`, `soft` or `squish` are. 0 is firm rubber that barely deforms; 100 is goo. Affects nothing else in the scene. |
 
 There is deliberately no density control. One density applied to everything leaves every weight
 *ratio* unchanged, and collisions only depend on ratios — so it would do nothing at all. Equalise
@@ -311,6 +339,11 @@ stop. Expect `settledBy=cap` on a scene that is mostly rope, and keep the frame 
 **Very thin artwork is unstable.** Below roughly 5pt at typical sizes, a shape is thin enough that
 the physics engine cannot hold it steady and it will jitter or sink slightly into what it lands on.
 Hairlines and fine serifs are the usual casualties.
+
+**Jelly is new and least measured.** A scene with a jelly in it is solved harder than one without, so
+it is slower, and how long a wobbling shape takes to come to rest has not been measured on real
+artwork — expect `settledBy=cap` more often. Thin shapes fall back to rigid by design; the console
+says when that happened.
 
 **Artwork that starts inside its container never truly rests.** If a shape overlaps scenery at
 frame 0, it spends the whole run being pushed out and can never come to rest. Gravity notices and

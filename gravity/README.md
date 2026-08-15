@@ -278,6 +278,98 @@ or above its path — never below it — and only hangs once it settles. `reach`
 bounds how far it can fall below its pins. Sizing the box to the starting positions put the floor
 through the middle of the finished drape and the rope kinked 30 degrees at each anchor.
 
+## Softbodies
+
+**planck has no soft bodies at all.** There is no deformable primitive to reach for, so a jelly is a
+RIG: a lattice of small circular point bodies joined by `DistanceJoint` springs with a frequency and
+damping ratio. That is the same trick `addRope` already uses, applied in two dimensions instead of
+one. Name a closed shape **`jelly`**, `soft` or `squish` and it meshes; everything else stays rigid.
+An open path named `jelly` stays a rope, because rope wins deliberately — an open path has no
+interior to mesh.
+
+**There is no triangulation, and that was the first thing to go.** `earcut` triangulates a polygon
+using only the points it is given and cannot introduce interior ones, so a boundary-only
+triangulation of an outline is all edge and no inside: it HINGES rather than resisting squash. Nodes
+are placed on a regular grid clipped to the shape instead, which has the second benefit that
+adjacency becomes arithmetic — a node's neighbours are known from its indices, with no search and no
+tolerance to tune.
+
+The mesh is capped at **12 cells** across the longer axis (`SOFT_MAX_CELLS`). The cap is not about
+node count or speed; past it a lattice sags from SOLVER error rather than from its springs, so the
+sag stops meaning what the softness control says it means. Measured rigid droop in sim units at
+24/8 iterations, with the springs asked to be perfectly stiff:
+
+| Cells across | Rigid droop |
+|---|---|
+| 8 | 0.030 |
+| 10 | 0.058 |
+| 12 | 0.105 |
+| 13 | 0.197 |
+| 14 | 0.340 |
+
+The knee is between 12 and 13, and 12 is what the raised iterations buy: **a scene containing any
+softbody steps at 24/8 instead of the default 8/3**, which is what earns 12 rather than 8. On the
+shipped rig the same measurement is 0.112 rigid, against **1.07 / 2.06 / 3.32** at softness 0 / 0.25
+/ 0.75 — an order of magnitude of headroom between solver error and the softest setting. At the
+default 8/3 that same rigid beam sags **0.575**, five times worse and over the test's threshold, so
+the iteration raise is not an optimisation but a correctness requirement. It is applied only when a
+softbody exists, so every scene that had none steps bit-identically to before.
+
+**The grid is square WITH both diagonals, not triangular.** The triangular grid was built first, on
+the reasoning that one rest length throughout must mean isotropic stiffness. That reasoning is
+wrong: Box2D normalises a soft constraint by the pair's effective mass, so equal rest lengths do not
+imply equal response. Measured by pulling a square patch in pure tension along x and then along y,
+square-plus-diagonals is isotropic to **1.00** at every frequency tested, while the triangular grid
+measured **1.22–1.40** — and it was also softer and less rigid at equal Hz, so it lost on both
+counts.
+
+**Cell size comes from the shape's own WALL, not its bounding box.** The thickness estimate is
+`2 * area / perimeter`, which returns the wall of an annulus exactly. Without it a 200pt "O" with a
+20pt wall is sized from its 200pt box, admits no interior node at all, and silently becomes an
+outline-only mesh that behaves like a rope — a jelly-shaped failure that still runs. Two limits are
+computed, `thickness` and `extent`, and the smaller wins; the report says which one decided, because
+"too thin" and "too big" have different fixes.
+
+The honest consequence is a shape rule: staying inside the cap needs `thickness >= maxDim / 6`, so
+**jelly wants chunky artwork**. A bold 300pt "O" with a 60pt wall meshes at exactly 12 cells. A
+hairline face has nowhere to put an interior node, falls back to a rigid body rather than pretending,
+and the report says which limit refused it.
+
+**The drawn outline is not the mesh.** Meshing at 12 cells would destroy the artwork if the lattice
+were drawn directly, so every original point is BOUND once, at rest, to its 4 nearest nodes with
+`1/d²` weights, and carried each frame through each node's best-fit rotation as well as its
+translation. Dropping the rotation term produces candy-wrapper collapse — the outline shrinks toward
+the mesh centroid, because averaging rotated positions without rotating the offsets loses the radius.
+Measured: a π/3 rotation is off by **0.41 sim units** without the rotation term against **8.9e-16**
+with it. The TRANSLATION test passes either way and catches none of this, which is why it is not the
+test that guards the feature.
+
+**Mass is solved backwards from the target**, not accumulated from the node fixtures. Overlapping
+node circles double-count area, so summing them overshoots; the desired total is chosen first and
+each node's density derived from it. It honours Equalise mass for the same reason everything else
+does — a jelly that ignored it would be the one heavy object in the scene and would bulldoze the
+rigid letter beside it. A two-face "i" weighs **1** in total, not 2.
+
+`seedJitter` now draws **once per softbody** rather than once per node. An independent nudge per node
+does not nudge a lattice, it SHAKES it, and a soft structure holds that energy rather than shrugging
+it off the way a rigid body does. Measured velocity spread across one lattice: **0.0198** before,
+**0** after. Scenes without jelly reproduce bit-identically, since the draw order for rigid bodies is
+unchanged.
+
+Write-back uses `createSetCurves`, exactly as ropes do, with the same per-node inverse matrix to get
+back from spread space into base space, and closes each ring with `CurveBuilder.close()`.
+
+> **Repeating the first point does not close a curve.** Probed: a builder fed a duplicate final point
+> reports `isClosed false`. It would draw closed and FILL wrong, which is the failure mode that
+> matters for a jelly, since a jelly is a filled shape with holes in it.
+
+**What is not verified.** The write-back is tested against a recording SDK fake, so "closed" and "in
+base space" are properties of the CALLS rather than of rendered output — nothing here has been
+compared against pixels. Multi-ring fills are unmeasured on canvas. So is preview cost at jelly point
+counts: ropes have a measured 0.7ms per rewrite, a jelly has no such figure yet and has considerably
+more points. Settling behaviour on real scenes — whether a lattice reliably reaches planck's sleep
+thresholds, or leans on the quiescence backstop — is also unmeasured.
+
 ## Settling
 
 `world.setAllowSleeping(true)` and "every body asleep" replace physicsdrop's `stillFrames` /
