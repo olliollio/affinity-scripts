@@ -103,4 +103,60 @@ module.exports = function (GR, h) {
 
   h.assertClose('distance to the nearest ring, from the wall', GR.distanceToRings(0.5, 2, ring), 0.5, 1e-9);
   h.assertClose('distance measures the HOLE when it is nearer', GR.distanceToRings(0.9, 2, ring), 0.1, 1e-9);
+
+  h.group('softmesh: nodes');
+
+  var face = { outer: square(0, 0, 3, 3), holes: [] };
+  var mesh = GR.buildSoftMesh([face], { cell: 0.5 });
+
+  h.assert('a mesh has nodes', mesh.nodes.length > 0);
+  h.assert('a mesh has interior nodes', mesh.interiorCount > 0);
+  h.assert('a mesh has boundary nodes', mesh.boundaryCount > 0);
+
+  // CURVED rings are the case that matters, and a square cannot test it. Real artwork is flattened
+  // at FLATTEN_TOL 0.1, so its segments are far shorter than a cell — and a resampler that only
+  // places a point when the CURRENT segment is long enough places none at all. Measured on the
+  // broken version: a 128-segment circle of perimeter 9.42 gave ONE point instead of 38, and the
+  // resulting annulus meshed with 2 boundary nodes while every connectivity assertion still passed.
+  var curved = GR.resampleRing(circle(0, 0, 1.5, 128), 0.25);
+  var wantPts = Math.round(GR.ringPerimeter(circle(0, 0, 1.5, 128)) / 0.25);
+  h.assert('a curved ring resamples to about perimeter/step points',
+    Math.abs(curved.length / 2 - wantPts) <= 2);
+
+  // Even spacing is the reason to resample at all: uneven nodes carry uneven mass and stiffness,
+  // the same defect uneven rope links had.
+  var lo = Infinity, hi = 0;
+  for (var ci = 0; ci < curved.length; ci += 2) {
+    var cj = (ci + 2) % curved.length;
+    var cdx = curved[cj] - curved[ci], cdy = curved[cj + 1] - curved[ci + 1];
+    var d = Math.sqrt(cdx * cdx + cdy * cdy);
+    if (d < lo) lo = d;
+    if (d > hi) hi = d;
+  }
+  h.assertClose('a resampled ring is evenly spaced', hi / lo, 1, 0.01);
+
+  // Every node must sit inside the material, or it collides where the shape is not.
+  var allInside = true;
+  for (var ni = 0; ni < mesh.nodes.length; ni += 2) {
+    if (!GR.pointInFace(mesh.nodes[ni], mesh.nodes[ni + 1], face)) allInside = false;
+  }
+  h.assert('every node is inside the face', allInside);
+
+  // A hole must be empty of nodes.
+  var holed = { outer: square(0, 0, 6, 6), holes: [square(2, 2, 2, 2)] };
+  var hmesh = GR.buildSoftMesh([holed], { cell: 0.5 });
+  var inHole = 0;
+  for (var hi = 0; hi < hmesh.nodes.length; hi += 2) {
+    var hx = hmesh.nodes[hi], hy = hmesh.nodes[hi + 1];
+    if (hx > 2.05 && hx < 3.95 && hy > 2.05 && hy < 3.95) inHole++;
+  }
+  h.assertEqual('no node lands inside a hole', inHole, 0);
+
+  // Boundary nodes are inset, so the collision hull hugs the outline instead of bulging past it.
+  var minDist = Infinity;
+  for (var bi = 0; bi < hmesh.boundaryCount; bi++) {
+    var d = GR.distanceToRings(hmesh.nodes[bi * 2], hmesh.nodes[bi * 2 + 1], holed);
+    if (d < minDist) minDist = d;
+  }
+  h.assert('boundary nodes are inset from the rings', minDist > 0.5 * GR.SOFT_INSET_FRAC * 0.5);
 };

@@ -201,6 +201,145 @@
     return best;
   }
 
+  /**
+   * Resamples a CLOSED ring to `perimeter/step` points spaced evenly by ARC LENGTH.
+   *
+   * Walks a single cursor along the ring and places a point every `target` of arc length, carrying
+   * the remainder ACROSS segment boundaries. The obvious version — measure each segment, place a
+   * point when the segment is long enough, reset on advance — silently collapses when every segment
+   * is shorter than the spacing: it places nothing at all. That is not an edge case, it is the
+   * normal one, because `flatten.js` emits curves at FLATTEN_TOL 0.1 and a flattened circle has
+   * segments far shorter than a cell. Measured on the broken version: a 128-segment circle of
+   * perimeter 9.42 resampled at 0.25 returned ONE point instead of 38.
+   *
+   * It is also invisible to every mesh assertion — an annulus came out with 2 boundary nodes, one
+   * connected component and no orphan nodes, so the tests passed on a mesh with no boundary at all.
+   * Uneven spacing is the reason to care: uneven nodes carry uneven mass and spring stiffness, the
+   * same defect uneven rope links had.
+   */
+  function resampleRing(ring, step) {
+    var per = ringPerimeter(ring);
+    if (!(per > 0) || !(step > 0)) return ring.slice();
+    var count = Math.max(3, Math.round(per / step));
+    var target = per / count;
+    var out = [];
+    var n = ring.length;
+    var acc = 0;      // arc length at the start of the current segment
+    var next = 0;     // arc length at which the next point falls
+    for (var i = 0; i < n && out.length / 2 < count; i += 2) {
+      var j = (i + 2) % n;
+      var ax = ring[i], ay = ring[i + 1];
+      var dx = ring[j] - ax, dy = ring[j + 1] - ay;
+      var segLen = Math.sqrt(dx * dx + dy * dy);
+      if (segLen <= 0) continue;
+      while (next <= acc + segLen + 1e-12 && out.length / 2 < count) {
+        var t = (next - acc) / segLen;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        out.push(ax + dx * t, ay + dy * t);
+        next += target;
+      }
+      acc += segLen;
+    }
+    return out;
+  }
+
+  /**
+   * Offsets a boundary point into the material by `dist`.
+   *
+   * The direction is the ANGLE BISECTOR of the two adjacent edge normals, not one segment's normal.
+   * At a corner a single segment normal slides the point along the neighbouring edge instead of
+   * into the material, so it lands ON the outline with zero clearance — measured on a 3x3 square at
+   * 0.5 cells, two of its 24 boundary nodes came out uninset, which is exactly the bulge the inset
+   * exists to prevent.
+   *
+   * The result is then VERIFIED with the inside test and flipped if it was wrong. Ring winding is
+   * not trusted: rings arrive from several sources, and a silently outward inset would put the
+   * collision hull outside the artwork.
+   */
+  function insetPoint(px, py, nx, ny, dist, face) {
+    var ax = px + nx * dist, ay = py + ny * dist;
+    if (pointInFace(ax, ay, face)) return [ax, ay];
+    var bx = px - nx * dist, by = py - ny * dist;
+    if (pointInFace(bx, by, face)) return [bx, by];
+    return [px, py];
+  }
+
+  /** Unit inward bisector at point `i` of a resampled closed ring. */
+  function bisectorAt(pts, i) {
+    var n = pts.length;
+    var prev = (i - 2 + n) % n, next = (i + 2) % n;
+    var d1x = pts[i] - pts[prev], d1y = pts[i + 1] - pts[prev + 1];
+    var d2x = pts[next] - pts[i], d2y = pts[next + 1] - pts[i + 1];
+    var l1 = Math.sqrt(d1x * d1x + d1y * d1y) || 1;
+    var l2 = Math.sqrt(d2x * d2x + d2y * d2y) || 1;
+    var nx = -d1y / l1 + -d2y / l2;
+    var ny = d1x / l1 + d2x / l2;
+    var l = Math.sqrt(nx * nx + ny * ny);
+    if (l < 1e-12) return [-d2y / l2, d2x / l2];   // a straight-through point
+    return [nx / l, ny / l];
+  }
+
+  /**
+   * Nodes and springs for one object.
+   *
+   * Boundary nodes are emitted FIRST, so indices `0 .. boundaryCount-1` are the ones whose motion
+   * the drawn outline follows most closely, and interior nodes follow.
+   */
+  function buildSoftMesh(faces, opts) {
+    var o = opts || {};
+    var cell = o.cell;
+    var inset = (o.insetFrac === undefined ? INSET_FRAC : o.insetFrac) * cell;
+    var clear = (o.interiorClear === undefined ? INTERIOR_CLEAR : o.interiorClear) * cell;
+
+    var boundary = [];    // flat x,y
+    var ringSpans = [];   // { start, count } per ring, for the ring springs
+    var interior = [];    // flat x,y
+    var grid = {};        // "col,row" -> interior node index, for arithmetic adjacency
+
+    for (var f = 0; f < faces.length; f++) {
+      var face = faces[f];
+      var rings = [face.outer].concat(face.holes || []);
+
+      for (var r = 0; r < rings.length; r++) {
+        var pts = resampleRing(rings[r], cell);
+        var start = boundary.length / 2;
+        var placed = 0;
+        for (var i = 0; i < pts.length; i += 2) {
+          var bis = bisectorAt(pts, i);
+          var p = insetPoint(pts[i], pts[i + 1], bis[0], bis[1], inset, face);
+          boundary.push(p[0], p[1]);
+          placed++;
+        }
+        ringSpans.push({ start: start, count: placed });
+      }
+
+      var bb = facesBBox([face]);
+      var cols = Math.ceil((bb.maxX - bb.minX) / cell);
+      var rows = Math.ceil((bb.maxY - bb.minY) / cell);
+      for (var c = 0; c <= cols; c++) {
+        for (var w = 0; w <= rows; w++) {
+          var gx = bb.minX + c * cell, gy = bb.minY + w * cell;
+          if (!pointInFace(gx, gy, face)) continue;
+          if (distanceToRings(gx, gy, face) < clear) continue;
+          grid[f + ':' + c + ',' + w] = interior.length / 2;
+          interior.push(gx, gy);
+        }
+      }
+    }
+
+    var nodes = boundary.concat(interior);
+    return {
+      nodes: nodes,
+      boundaryCount: boundary.length / 2,
+      interiorCount: interior.length / 2,
+      ringSpans: ringSpans,
+      grid: grid,
+      cell: cell,
+      springs: []
+    };
+  }
+
   GR.ringArea = ringArea;
   GR.ringPerimeter = ringPerimeter;
   GR.faceArea = faceArea;
@@ -210,6 +349,8 @@
   GR.softCellSize = softCellSize;
   GR.pointInFace = pointInFace;
   GR.distanceToRings = distanceToRings;
+  GR.resampleRing = resampleRing;
+  GR.buildSoftMesh = buildSoftMesh;
   GR.SOFT_MAX_CELLS = MAX_CELLS;
   GR.SOFT_MIN_CELL_SIM = MIN_CELL_SIM;
   GR.SOFT_MIN_WALL_CELLS = MIN_WALL_CELLS;
