@@ -22,6 +22,7 @@ var SRC = [
   'world.js',
   'bodies.js',
   'rope.js',
+  'softmesh.js',
   'sim.js',
   'export.js',
   'ui.js',
@@ -45,6 +46,7 @@ var SUITES = [
   require('./test_export'),
   require('./test_engine'),
   require('./test_rope'),
+  require('./test_softmesh'),
   require('./test_timing'),
   require('./test_playback_handoff')
 ];
