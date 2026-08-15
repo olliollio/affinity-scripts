@@ -255,4 +255,43 @@ module.exports = function (GR, h) {
     rWorst = Math.max(rWorst, Math.abs(rOut[r3] - ex), Math.abs(rOut[r3 + 1] - ey));
   }
   h.assertClose('rotating every node rotates the outline', rWorst, 0, 1e-6);
+
+  h.group('softmesh: degenerate input');
+
+  function meshOrRefusal(faces) {
+    var sized = GR.softCellSize(faces);
+    if (sized.fallback) return { refused: sized.fallback };
+    var m = GR.buildSoftMesh(faces, { cell: sized.cell });
+    GR.addSoftSprings(m);
+    return { mesh: m };
+  }
+
+  var cases = [
+    ['a 0.04 sim hairline', [{ outer: square(0, 0, 3, 0.04), holes: [] }]],
+    ['a tiny glyph', [{ outer: square(0, 0, 0.04, 0.04), holes: [] }]],
+    ['a hole touching the outline', [{ outer: square(0, 0, 4, 4), holes: [square(0, 1, 2, 2)] }]],
+    ['a duplicated point', [{ outer: [0, 0, 2, 0, 2, 0, 2, 2, 0, 2], holes: [] }]],
+    ['coordinates far from the origin', [{ outer: square(1e6, 1e6, 3, 3), holes: [] }]],
+    ['a zero-area ring', [{ outer: [0, 0, 1, 1, 2, 2], holes: [] }]]
+  ];
+
+  for (var di = 0; di < cases.length; di++) {
+    var name = cases[di][0];
+    var res = meshOrRefusal(cases[di][1]);
+    if (res.refused) {
+      h.assert(name + ' refuses cleanly', res.refused === 'thin' || res.refused === 'extent');
+    } else {
+      h.assert(name + ' produces a connected mesh', GR.softMeshComponents(res.mesh) === 1);
+      var finite = true;
+      for (var fi2 = 0; fi2 < res.mesh.nodes.length; fi2++) {
+        if (!isFinite(res.mesh.nodes[fi2])) finite = false;
+      }
+      h.assert(name + ' produces finite nodes', finite);
+    }
+  }
+
+  // The case extent checks alone cannot catch: a thin wall inside a generous bounding box.
+  var thinWall = [{ outer: circle(0, 0, 1.0, 128), holes: [circleCW(0, 0, 0.92, 128)] }];
+  var tw = GR.softCellSize(thinWall);
+  h.assert('a thin-walled ring never meshes silently', tw.fallback !== null);
 };
