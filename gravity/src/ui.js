@@ -20,7 +20,7 @@
     seconds: 10,
     seed: 1,
     slack: 0,       // % - a straight rope has no spare length, so drape is opt-in
-    softness: 50    // % - the middle of the log-spaced frequency range, a firm jelly
+    softness: 50    // % - the middle of the log-spaced 30..8Hz range, so 15.5Hz: squashes a little
   };
 
   /**
@@ -84,7 +84,9 @@
     var slackCtl = mat.addUnitValueEditor('Rope slack %', UnitType.Number, UnitType.Number, d.slack, 0, 100);
     slackCtl.setShowPopupSlider(true); slackCtl.precision = 0;
     // Softness lives with Material because it is a property of the object, not of the world. It is
-    // mapped log-spaced onto frequency downstream, because droop is strongly non-linear in Hz.
+    // mapped log-spaced onto 30..8Hz downstream, because droop is strongly non-linear in Hz. A face
+    // with holes is floored at 26Hz there whatever this says, because a hole with nothing holding it
+    // open folds shut instead of squashing; the console report says when that happened.
     var softCtl = mat.addUnitValueEditor('Jelly softness %', UnitType.Number, UnitType.Number, d.softness, 0, 100);
     softCtl.setShowPopupSlider(true); softCtl.precision = 0;
 

@@ -501,6 +501,12 @@
             (madeSoft.mesh.crossFaceSprings ? ' cross=' + madeSoft.mesh.crossFaceSprings : '') +
             ' rings=' + bound.length +
             ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
+            // The softness slider is a REQUEST that a hollow shape overrides, exactly as measured
+            // clearance overrides rope slack. Say so when it happens: the user asked for something
+            // they did not get, and silence would read as the slider being broken.
+            (madeSoft.frequencyFloored
+              ? ' (asked ' + fmt(madeSoft.frequencyRequested, 1) + 'Hz, floored: a shape with holes buckles below)'
+              : '') +
             ' mass=' + fmt(madeSoft.totalMass, 4) +
             ' limit=' + madeSoft.limit);
           continue;

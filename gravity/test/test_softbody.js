@@ -55,12 +55,55 @@ module.exports = function (GR, h) {
   h.group('softbody: softness');
 
   // Log-spaced, so the midpoint is the geometric mean rather than the arithmetic one.
+  //
+  // The soft end is 8Hz, not 2. Measured settled height as a fraction of rest height, 30s at 24/8:
+  // a solid blob is at 0.755 at 8Hz, 0.452 at 6 and 0.131 at 4. Below 8 nothing holds its shape, so
+  // the old 30..2 range spent half the slider on settings that were never usable.
   h.assertClose('softness 0 is the stiffest frequency', GR.softnessToFrequency(0), 30, 1e-9);
-  h.assertClose('softness 1 is the softest frequency', GR.softnessToFrequency(1), 2, 1e-9);
+  h.assertClose('softness 1 is the softest frequency', GR.softnessToFrequency(1), 8, 1e-9);
   h.assert('softness 0.5 lies between the two',
-    GR.softnessToFrequency(0.5) > 2 && GR.softnessToFrequency(0.5) < 30);
+    GR.softnessToFrequency(0.5) > 8 && GR.softnessToFrequency(0.5) < 30);
+  // Log-spaced means the midpoint is the GEOMETRIC mean, sqrt(30*8) = 15.49, not the arithmetic 19.
+  h.assertClose('softness 0.5 is the geometric mean', GR.softnessToFrequency(0.5),
+    Math.sqrt(30 * 8), 1e-9);
   // `softness: 5` above is out of range and must clamp rather than produce a nonsense frequency.
-  h.assertClose('softness clamps to the 0..1 range', soft.frequency, 2, 1e-9);
+  h.assertClose('softness clamps to the 0..1 range', soft.frequency, 8, 1e-9);
+
+  h.group('softbody: the shell frequency floor');
+
+  // A shape with a hole BUCKLES where a solid one squashes: a mass-spring lattice has no area
+  // preservation, so nothing resists the hole ovalising. Measured settled height for a bold "O",
+  // same rig: 0.831 at 30Hz, 0.756 at 26, 0.495 at 24, 0.227 at 22, 0.120 at 8. The cliff is
+  // between 26 and 22, so 26 is the floor — and it is a floor rather than a remapping because a
+  // SOLID shape is fine all the way down and must keep the range it has.
+  var boldO = [{ outer: disc(150, 150, 150, 128), holes: [disc(150, 150, 90, 128)] }];
+  var Wsh = GR.makeWorld({ scale: 100 });
+  var shell = GR.addSoftBody(Wsh, boldO, { name: 'O', softness: 1 });
+  h.assert('a bold ring meshes at all', !shell.fallback);
+  h.assert('a shape with holes is floored at 26Hz even at softness 1', shell.frequency >= 26);
+  h.assertClose('the floored frequency is exactly the floor', shell.frequency, 26, 1e-9);
+  h.assertClose('and it records what was asked for', shell.frequencyRequested, 8, 1e-9);
+  h.assertEqual('and says why it did not get it', shell.frequencyFloored, 'shell');
+
+  // A SOLID shape keeps the whole range. This is the assertion that stops the floor being applied
+  // to everything, which would make the slider almost inert.
+  var Wsol = GR.makeWorld({ scale: 100 });
+  var solid = GR.addSoftBody(Wsol, faces, { name: 'blob', softness: 1 });
+  h.assertClose('a shape without holes reaches 8Hz at softness 1', solid.frequency, 8, 1e-9);
+  h.assertEqual('and is not marked as floored', String(solid.frequencyFloored), 'null');
+
+  // A shell asked for something stiffer than the floor keeps what it asked for — the floor lifts,
+  // it never lowers.
+  var Wst = GR.makeWorld({ scale: 100 });
+  var stiffShell = GR.addSoftBody(Wst, boldO, { name: 'O', softness: 0 });
+  h.assertClose('a shell at softness 0 keeps its 30Hz', stiffShell.frequency, 30, 1e-9);
+  h.assertEqual('and is not marked as floored', String(stiffShell.frequencyFloored), 'null');
+
+  // An explicit frequencyHz is a caller taking control of the solver and is NOT floored. Without
+  // this the rigid-lattice measurement below would silently become a 26Hz spring.
+  var Wex = GR.makeWorld({ scale: 100 });
+  var explicit = GR.addSoftBody(Wex, boldO, { name: 'O', frequencyHz: 0 });
+  h.assertClose('an explicit frequency is never floored', explicit.frequency, 0, 1e-9);
 
   h.group('softbody: mass');
 
@@ -146,7 +189,9 @@ module.exports = function (GR, h) {
   h.assert('two faces of one softbody stay apart', stiffGap !== null && stiffGap > 1.7);
 
   // At the DEFAULT softness the faces do sink into each other — the springs are soft, ground
-  // friction resists the restoring pull, and there is no collision to stop it. Measured 1.788.
+  // friction resists the restoring pull, and there is no collision to stop it. Measured 0.954 at
+  // the OLD 30..2 mapping, where softness 0.5 was 7.7Hz, and 1.787 at the 30..8 mapping that
+  // replaced it — the second number is another way of reading why 2Hz was never a usable setting.
   // The claim here is only that they are not coincident, which is the failure being fixed; the
   // sharp number above is what guards the join itself.
   var softGap = discGap({ softness: 0.5 });
@@ -210,7 +255,7 @@ module.exports = function (GR, h) {
   var stiff = beamSag({ frequencyHz: 0 }, 24, 8);
   h.assert('a rigid lattice holds at the cap', stiff !== null && Math.abs(stiff) < 0.30);
 
-  // Monotonic, or the slider is not a control. Measured on THIS rig: 1.07 / 2.06 / 3.32 sim units
+  // Monotonic, or the slider is not a control. Measured on THIS rig: 1.07 / 1.62 / 2.42 sim units
   // at softness 0 / 0.25 / 0.75, against 0.11 rigid. Only the ordering is asserted, because the
   // absolute values belong to this fixture and would drift with any change to it.
   //
