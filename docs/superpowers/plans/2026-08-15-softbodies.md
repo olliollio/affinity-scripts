@@ -17,9 +17,14 @@
 - Working directory is the repo root: `/home/ollio/tools/Affinity/affinity-scripts`.
 - Run the whole suite with `node gravity/test/run.js`. It exits non-zero on any failed assertion. There is no package.json and no test framework — assertions come from `gravity/test/harness.js` (`h.group`, `h.assert`, `h.assertClose`, `h.assertEqual`, `h.assertThrows`).
 - A test file exports `module.exports = function (GR, h) { ... }` and is registered in `gravity/test/run.js`.
-- Source modules are IIFEs: `(function (GR) { 'use strict'; ... GR.name = name; })(globalThis.GR);` — match the existing style in `gravity/src/rope.js`.
+- Source modules are IIFEs: `(function (GR) { 'use strict'; ... GR.name = name; })(GR);` — match the existing style in `gravity/src/rope.js`.
 - **`softmesh.js` works entirely in SIM units.** The caller converts the face once. Never mix point-space and sim-space quantities inside it; that class of bug has already been caught twice in review.
 - Commit after every task. Prefix messages `feat(gravity):`, `test(gravity):` or `refactor(gravity):`.
+- **`GR` is one flat namespace shared by every module, and a duplicate export silently wins.**
+  `softmesh.js` loads after `contours.js`, which already exports `pointInRing(ring, x, y)` — note
+  the different argument order. Exporting softmesh's `pointInRing(x, y, ring)` under the same name
+  overwrote it and broke 8 contour tests. Keep helpers module-private unless a test or another
+  module actually needs them, and grep `GR.<name> =` across `src/` before adding any export.
 - **Sizes in tests are SIM units, and `suggestScale` normalises the median body to about 3 of them
   whatever its point size.** A fixture built as though the scale were always 100 will trip the
   `MIN_CELL_SIM` floor instead of the limit it meant to test, and the assertion then guards the
@@ -528,7 +533,7 @@ Create `gravity/src/softmesh.js`:
   GR.SOFT_INTERIOR_CLEAR = INTERIOR_CLEAR;
   GR.SOFT_ATTACH_RADIUS = ATTACH_RADIUS;
   GR.SOFT_INSET_FRAC = INSET_FRAC;
-})(globalThis.GR);
+})(GR);
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
@@ -617,7 +622,9 @@ Add to `gravity/src/softmesh.js` before the exports:
   }
 ```
 
-Export `GR.pointInRing`, `GR.pointInFace`, `GR.distanceToRings`.
+Export `GR.pointInFace` and `GR.distanceToRings` only. **Do NOT export `pointInRing`** — `contours.js`
+already claims that name with a different signature, `(ring, x, y)`, and softmesh loads after it, so
+exporting would overwrite it and break 8 contour tests. Keep it module-private.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1547,7 +1554,7 @@ Create `gravity/src/softbody.js`:
   GR.addSoftBody = addSoftBody;
   GR.softnessToFrequency = softnessToFrequency;
   GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
-})(globalThis.GR);
+})(GR);
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
@@ -1757,7 +1764,10 @@ In `gravity/src/playback.js`:
      nothing and break the frame-0 assertion, which requires the flattened rings back exactly
    - map into base space with `entry.toBase` AFTER evaluating, for the same reason ropes do it after smoothing
    - build **one `CurveBuilder` per ring**, adding each finished curve to one shared `PolyCurve` — this is the shape `playback.js` already uses; do not put several rings into one builder
-   - close each ring using whatever Task 0 established; if no closing call exists, repeat the first point as the last
+   - close each ring with **`cb.close()`**, called after the last `lineToXY` and before
+     `createCurve()`. Probed 2026-08-15: this is the real closing call. Do NOT repeat the first
+     point instead — a curve built that way reports `isClosed false`, so it would draw closed but
+     fill wrong, and `isClosed` is read-only so nothing downstream can fix it
    - submit with `g.DocumentCommand.createSetCurves(entry.node.curvesInterface, poly)`
 4. Call `softCommands` from the frame builder beside `ropeCmds`.
 
