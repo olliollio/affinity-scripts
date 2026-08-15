@@ -2413,8 +2413,8 @@ GR.planck = (function () {
   // told to be three times its span would be initialised in a loop below the artboard.
   var MAX_SLACK = 1.0;
 
-  // How finely a path is resampled before the ripple is applied. The offset displaces vertices and
-  // is zero at both ends, so the shape can only be as smooth as the vertices available to move.
+  // How finely a path is resampled before it is shaped. The offset displaces vertices and is zero
+  // at both ends, so the shape can only be as smooth as the vertices available to move.
   var SLACK_SAMPLES = 64;
 
   /**
@@ -2425,27 +2425,39 @@ GR.planck = (function () {
    * measured, a 1640pt pinned rope sags 105.7pt and all of it is joint stretch. The extra length
    * has to come from the initial shape.
    *
-   * The shape is a shallow RIPPLE along the path, not a deep arc, and that distinction is the whole
-   * design. A rope with slack needs extra LENGTH, not extra DEPTH — conflating the two put the
-   * rope's first frame at the bottom of its own hanging curve, 485pt down at 20% slack, so it was
-   * initialised below any collider it had been drawn above and could never hit it. Geometry you
-   * start past cannot be collided with. A ripple carries the same extra length within a few tens of
-   * points of the path, so the rope still falls onto what it was drawn over and drapes from there.
+   * The shape is a single ARC: `4*d*t*(1-t)`, zero at t=0 and t=1, so the endpoints — and so the
+   * anchor pins — stay exactly where the user drew them. Only the middle moves. Depth is solved by
+   * bisection rather than derived, because the arc length of the curve has no useful closed form
+   * and the whole point of the control is that the rope really is 20% longer; length grows
+   * monotonically with depth, so no derivative is needed.
    *
-   * `A*sin(2*PI*waves*t)` is zero at t=0 and t=1 for integer `waves`, so the endpoints — and so the
-   * anchor pins — stay exactly where the user drew them. Only the middle moves.
+   * WHICH WAY the arc goes is the interesting part, and it is decided by `maxDepth` — the caller's
+   * answer to "how far down is clear". Down while there is room, because that is how a rope hangs.
+   * UP when there is not, because a rope must never be initialised below the thing it is supposed
+   * to land on: geometry you start past can never be collided with, and that failure reads as
+   * "slack breaks collision" rather than as a bad starting pose. An upward arch is unconstrained by
+   * whatever sits below, so it works at any slack on any rope, and it still falls onto its collider
+   * — just from higher up.
    *
-   * The amplitude is solved rather than derived: the arc length of a sine is an elliptic integral,
-   * and the whole point of the control is that the rope really is 20% longer. Length grows
-   * monotonically with amplitude, so bisection needs no derivative.
+   * The two shapes this replaced are both worth knowing about, because each looked right first.
+   * A deep downward arc regardless of clearance put a 20% slack rope 485pt below its own path and
+   * under the artwork it was drawn above. A ripple — the surplus as `A*sin(2*PI*waves*t)` — kept
+   * the rope near its path, but its waviness is set by the slack alone (amplitude/wavelength is
+   * sqrt(slack)/pi at every wave count), so a rope drawn close above artwork started as a visible
+   * comb no matter how the wave count was tuned, and the comb did not wash out: at rest on a
+   * surface with friction it is a stable shape, so it survived into the settled frame.
    *
-   * The ripple runs down the page (+y in source space) because that is where gravity points by
+   * The arc runs down the page (+y in source space) because that is where gravity points by
    * default. A different gravity angle makes this an imperfect starting guess and nothing worse.
    */
   function slackenPolyline(points, slack, waves, maxDepth) {
     var s = Math.max(0, Math.min(MAX_SLACK, slack || 0));
     if (!points || points.length < 4 || s <= 0) return points ? points.slice() : [];
 
+    // `waves` no longer names a shape — the ripple it used to control is gone. It survives as a
+    // resolution hint only: the caller knows the link count, and a shape sampled more coarsely than
+    // the links that will draw it gains nothing. Kept in the signature rather than removed because
+    // the caller has the number and nothing else here does.
     var w = Math.max(1, Math.round(waves || 6));
 
     // Densify FIRST. The offset displaces existing vertices and is zero at both ends, so a path
@@ -2460,8 +2472,8 @@ GR.planck = (function () {
     if (!(L > 0)) return src.slice();
     var target = L * (1 + s);
 
-    // Arc position of every point, normalised, so the ripple is placed by distance along the path
-    // rather than by index — an unevenly sampled path would otherwise ripple lopsidedly.
+    // Arc position of every point, normalised, so the shape is placed by distance along the path
+    // rather than by index — an unevenly sampled path would otherwise bulge lopsidedly.
     var ts = [0];
     var run = 0;
     for (var i = 2; i < src.length; i += 2) {
@@ -2470,31 +2482,27 @@ GR.planck = (function () {
       ts.push(run / L);
     }
 
-    // Two shapes superimposed: a single ARC, which is what a slack rope actually hangs in, plus a
-    // ripple for whatever length the arc is not allowed to absorb. Both are zero at t=0 and t=1,
-    // so the anchor pins stay exactly where the user drew them whichever is doing the work.
-    function withShape(d, a) {
+    // One shape: an arc of depth `d`, positive down the page and negative up it. Zero at t=0 and
+    // t=1 either way, so the anchor pins stay exactly where the user drew them whichever direction
+    // the slack ends up going.
+    function withArc(d) {
       var out = src.slice();
       for (var k = 0; k < ts.length; k++) {
         var t = ts[k];
-        out[k * 2 + 1] += 4 * d * t * (1 - t) + a * Math.sin(2 * Math.PI * w * t);
+        out[k * 2 + 1] += 4 * d * t * (1 - t);
       }
       return out;
     }
 
-    function solve(fn) {
-      var lo = 0, hi = L;
-      for (var it = 0; it < 48; it++) {
-        var mid = (lo + hi) / 2;
-        if (polylineLength(fn(mid)) < target) lo = mid; else hi = mid;
-      }
-      return (lo + hi) / 2;
+    // Depth for the wanted length, by bisection. Length grows monotonically with depth, so this
+    // needs no derivative and cannot land on the wrong root.
+    var deep = 0;
+    var lo = 0, hi = L;
+    for (var it = 0; it < 48; it++) {
+      var mid = (lo + hi) / 2;
+      if (polylineLength(withArc(mid)) < target) lo = mid; else hi = mid;
     }
-
-    // Prefer the arc, because excess length only looks RIGHT in the shape a slack rope really
-    // takes. A ripple is the fallback, and its waviness is fixed by the slack alone — measured,
-    // amplitude/wavelength is sqrt(slack)/pi at every wave count, so no amount of tuning hides it.
-    var deep = solve(function (d) { return withShape(d, 0); });
+    deep = (lo + hi) / 2;
 
     // But an arc is only safe as deep as there is room for. A free-hanging arc for a 2470pt rope
     // at 25% slack is ~865pt, and if the artwork it should land on sits 515pt below, starting at
@@ -2502,11 +2510,25 @@ GR.planck = (function () {
     // wrong the first time. `maxDepth` is the caller's answer to "how far down is clear".
     var cap = (maxDepth === undefined || maxDepth === null || !isFinite(maxDepth))
       ? Infinity : Math.max(0, maxDepth);
-    if (deep <= cap) return withShape(deep, 0);
+    if (deep <= cap) return withArc(deep);
 
-    // Not enough room for the whole slack. Take what the arc can carry and ripple the remainder —
-    // less waviness than a pure ripple, and the rope still starts above what it has to land on.
-    return withShape(cap, solve(function (a) { return withShape(cap, a); }));
+    // Not enough room below. Carry the whole slack ABOVE the line instead.
+    //
+    // Down is not the only direction, and it is the only one the clearance constrains. An upward
+    // arc is unconstrained by whatever sits below, stays a single smooth curve at any slack, and
+    // still satisfies the rule the clamp exists for — a rope that starts above what it must land on
+    // can always reach it. It simply falls further first.
+    //
+    // What this replaces was a ripple carrying the remainder, and the ripple was wrong twice over.
+    // Its waviness is fixed by the slack alone — amplitude/wavelength is sqrt(slack)/pi at every
+    // wave count — so a rope drawn close above artwork started as a comb no matter how it was
+    // tuned; measured, two ropes over a headline with 300pt and 35pt of room both did, even at 10%
+    // slack. And it did not wash out: resting on a surface with friction the comb is a stable
+    // shape, so it was still visible in the settled frame, which is the one that gets kept.
+    //
+    // Length is symmetric in the sign of the offset, so the depth already solved for is the height
+    // needed; nothing has to be solved twice.
+    return withArc(-deep);
   }
 
   /**
@@ -2536,11 +2558,8 @@ GR.planck = (function () {
     var scale = W.scale;
     var n = segmentCount(drawnLength * (1 + slack), thickness, o, scale);
 
-    // About eight links per wave. This number is a genuine trade-off in both directions. Too few
-    // waves and the ripple has to be deep to carry the extra length, which is what put the rope
-    // below its collider. Too many and the sine is aliased by the links sampling it: at four links
-    // per wave the centres land on sin(45), sin(135), sin(225), sin(315) and the rope starts as a
-    // blocky square comb - two links up, two links down - rather than a wave.
+    // A resolution hint, not a shape. Passing n/8 keeps the sampled curve at least as fine as the
+    // links that will draw it; the shape itself is a single arc and does not care.
     var path = slack > 0
       ? slackenPolyline(points, slack, Math.max(1, Math.round(n / 8)), o.maxSagDepth)
       : points;
@@ -2623,7 +2642,7 @@ GR.planck = (function () {
       slack: slack,
       // How far below its pins this rope can reach. A chain pinned at both ends can at worst hang
       // straight down from one of them, so half its length bounds it. The walls need this because
-      // the rope now STARTS as a shallow ripple on the drawn path and only hangs once it settles —
+      // the rope STARTS on or above the path it was drawn along and only hangs once it settles —
       // sizing the box to where the bodies begin would put the floor through the finished drape.
       reach: o.anchored ? (length / 2) : 0,
       maxSagDepth: o.maxSagDepth === undefined ? Infinity : o.maxSagDepth,
@@ -4320,8 +4339,8 @@ GR.planck = (function () {
       var reach = made[wb].halfLength || made[wb].simRadius * W.scale || 0;
       grow([wst.x - reach, wst.y - reach, wst.x + reach, wst.y + reach]);
     }
-    // A pinned rope with slack starts as a shallow ripple on the path it was drawn along and only
-    // hangs once it settles, so where its links BEGIN says nothing about where they will end up.
+    // A pinned rope with slack starts on or above the path it was drawn along — never below it —
+    // and only hangs once it settles, so where its links BEGIN says nothing about where they end.
     // Half the chain's length bounds how far it can reach below its pins.
     for (var wr = 0; wr < ropes.length; wr++) {
       if (!ropes[wr].reach) continue;

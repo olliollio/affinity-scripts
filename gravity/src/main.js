@@ -471,8 +471,8 @@
       var reach = made[wb].halfLength || made[wb].simRadius * W.scale || 0;
       grow([wst.x - reach, wst.y - reach, wst.x + reach, wst.y + reach]);
     }
-    // A pinned rope with slack starts as a shallow ripple on the path it was drawn along and only
-    // hangs once it settles, so where its links BEGIN says nothing about where they will end up.
+    // A pinned rope with slack starts on or above the path it was drawn along — never below it —
+    // and only hangs once it settles, so where its links BEGIN says nothing about where they end.
     // Half the chain's length bounds how far it can reach below its pins.
     for (var wr = 0; wr < ropes.length; wr++) {
       if (!ropes[wr].reach) continue;
