@@ -670,6 +670,46 @@
     return out;
   }
 
+  /**
+   * Does this closed outline cross itself? Returns the number of crossing segment pairs.
+   *
+   * A self-intersecting outline is not a cosmetic problem: a closed curve that crosses itself fills
+   * with a HOLE where the winding cancels, so the artwork comes back with white gouges in it. That
+   * is the visible symptom of the lattice having been crushed — a mass-spring mesh has no area
+   * preservation, so under a heavy enough pile the cells collapse and the skinned outline folds
+   * through itself. Measured on a real 10-shape scene: clean at 30Hz, gouged at 15.5Hz.
+   *
+   * Adjacent segments share an endpoint and are skipped. This is O(n^2) and is therefore run ONCE,
+   * on the settled frame, for the report — never per frame during playback.
+   */
+  function outlineFolds(pts, limit) {
+    var n = pts.length / 2;
+    var cap = limit === undefined ? 64 : limit;
+    var found = 0;
+    if (n < 4) return 0;
+    for (var i = 0; i < n; i++) {
+      var ax = pts[i * 2], ay = pts[i * 2 + 1];
+      var bx = pts[((i + 1) % n) * 2], by = pts[((i + 1) % n) * 2 + 1];
+      for (var j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue;
+        var cx = pts[j * 2], cy = pts[j * 2 + 1];
+        var dx = pts[((j + 1) % n) * 2], dy = pts[((j + 1) % n) * 2 + 1];
+        if (side(ax, ay, bx, by, cx, cy) !== side(ax, ay, bx, by, dx, dy) &&
+            side(cx, cy, dx, dy, ax, ay) !== side(cx, cy, dx, dy, bx, by)) {
+          found++;
+          if (found >= cap) return found;
+        }
+      }
+    }
+    return found;
+  }
+
+  /** Which side of the line pq does r fall on? 0 means collinear within tolerance. */
+  function side(px, py, qx, qy, rx, ry) {
+    var v = (qy - py) * (rx - qx) - (qx - px) * (ry - qy);
+    return v > 1e-12 ? 1 : (v < -1e-12 ? -1 : 0);
+  }
+
   GR.ringArea = ringArea;
   GR.ringPerimeter = ringPerimeter;
   GR.faceArea = faceArea;
@@ -677,6 +717,7 @@
   GR.faceThickness = faceThickness;
   GR.facesBBox = facesBBox;
   GR.softCellSize = softCellSize;
+  GR.outlineFolds = outlineFolds;
   GR.pointInFace = pointInFace;
   GR.distanceToRings = distanceToRings;
   GR.resampleRing = resampleRing;

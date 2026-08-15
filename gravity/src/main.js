@@ -675,6 +675,36 @@
     for (var wi = 0; wi < W.warnings.length; wi++) console.log('  warning: ' + W.warnings[wi]);
 
     console.log('');
+    // Did any jelly fold through itself? A crushed lattice folds its outline, and a closed curve
+    // that crosses itself FILLS WITH A HOLE - the artwork comes back gouged. That is invisible in
+    // every other number the report prints, so it is checked explicitly on the settled frame.
+    // Measured on a real 10-shape scene: clean at 30Hz, gouged at 15.5Hz.
+    if (softs.length) {
+      var foldedShapes = 0, foldedCross = 0;
+      for (var fs = 0; fs < softs.length; fs++) {
+        var sf = softs[fs];
+        var fpos = [];
+        for (var fn = 0; fn < sf.nodes.length; fn++) {
+          var fp = GR.poseAt(frames, frames.frameCount - 1, sf.nodes[fn].frameIndex);
+          fpos.push(fp.x, fp.y);
+        }
+        var shapeCross = 0;
+        for (var fr = 0; fr < sf.rings.length; fr++) {
+          shapeCross += GR.outlineFolds(GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos));
+        }
+        if (shapeCross) { foldedShapes++; foldedCross += shapeCross; }
+      }
+      console.log('');
+      if (foldedShapes) {
+        console.log('  ' + foldedShapes + ' of ' + softs.length + ' jelly shape(s) FOLDED through ' +
+          'themselves (' + foldedCross + ' crossings).');
+        console.log('  A folded outline fills with a hole, so those shapes will come back gouged.');
+        console.log('  The lattice was crushed: lower "Jelly softness %" until this line disappears.');
+      } else {
+        console.log('  no jelly folded through itself  OK');
+      }
+    }
+
     console.log('== final poses ==');
     // A softbody reports ONE line, not one per node. Its nodes are in `made` like everything else,
     // so the obvious loop prints ~164 lines for a single jelly and buries the rest of the report -
