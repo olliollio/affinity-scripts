@@ -51,7 +51,25 @@
   // term, which this rig does not have. Until it does, the softness setting is a REQUEST that the
   // shape's own structure can override, the same idiom rope slack already uses when measured
   // clearance clamps the slack that was asked for.
-  var SHELL_MIN_FREQ = 26;
+  //
+  // The floor is 28 rather than 26, and the two extra Hz are the whole point. Buckling is a
+  // BIFURCATION, so values inside the cliff are not properties of the shape at all. Measured by
+  // perturbing only the flattening resolution of one identical 300pt ring — same geometry, more
+  // segments:
+  //
+  //     freqHz   n=96    n=112   n=128   n=160   spread
+  //         30   0.829   0.832   0.831   0.840   0.011
+  //         28   0.799   0.797   0.801   0.812   0.015
+  //         26   0.218   0.758   0.756   0.763   0.545   <- coin flip
+  //         24   0.191   0.279   0.495   0.551   0.360
+  //          8   0.117   0.121   0.120   0.120   0.004
+  //
+  // At 26 the same "O" either squashes to 0.76 or collapses to 0.22 depending on how finely its
+  // curves happened to flatten, which the user has no control over and cannot see. That also
+  // explains why two independent measurements of this table disagreed mid-cliff and agreed at both
+  // ends: neither was wrong, the region simply does not reproduce. 28 sits where the spread is
+  // 0.015 and the answer is a property of the shape again.
+  var SHELL_MIN_FREQ = 28;
 
   // A large soft structure has a very long tail of small motion, and a run ends only when EVERY
   // body is quiet at once. Same lever, same reason, as the rope link damping.
