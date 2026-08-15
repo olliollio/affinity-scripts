@@ -6,8 +6,9 @@
  *
  * Concatenates the vendored libraries and every src/ module into ONE self-contained script,
  * because the Affinity sandbox denies /fs for every path (probe_planck_smoke): a script cannot
- * load its own code from disk at runtime, so everything has to travel inline. probe_vendor_size
- * established that a 433KB script imports, parses and runs intact.
+ * load its own code from disk at runtime, so everything has to travel inline. A 433KB padded probe
+ * once established that a script that size imports, parses and runs intact; the output of this
+ * build is now larger than that and runs, which settles the question better than the probe did.
  *
  * Each vendored library gets a PRIVATE module object. Their UMD wrappers resolve to the
  * CommonJS branch inside the sandbox, so evaluated bare they would assign to the host script's
