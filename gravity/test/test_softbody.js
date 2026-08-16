@@ -145,11 +145,23 @@ module.exports = function (GR, h) {
   var b = GR.addSoftBody(W4, faces, { name: 'b', softness: 0.5 });
   h.assert('both softbodies filter self-collision', a.groupIndex < 0 && b.groupIndex < 0);
   h.assert('two softbodies get different filter groups', a.groupIndex !== b.groupIndex);
-  var sameGroup = true;
+  // Checked on the WORLD collider specifically, not on whichever fixture happens to be first:
+  // planck PREPENDS on createFixture, so a boundary node's self-contact circle is the head of the
+  // list and reads group 0 by design. Identify it by radius instead of by position.
+  var sameGroup = true, selfGroupsZero = true, sawSelf = false;
   for (var g = 0; g < a.nodes.length; g++) {
-    if (a.nodes[g].body.getFixtureList().getFilterGroupIndex() !== a.groupIndex) sameGroup = false;
+    for (var gf = a.nodes[g].body.getFixtureList(); gf; gf = gf.getNext()) {
+      if (gf.getShape().m_radius >= GR.SOFT_RADIUS_FRAC * a.cell) {
+        if (gf.getFilterGroupIndex() !== a.groupIndex) sameGroup = false;
+      } else {
+        sawSelf = true;
+        if (gf.getFilterGroupIndex() !== 0) selfGroupsZero = false;
+      }
+    }
   }
   h.assert('every node of one softbody shares its group', sameGroup);
+  h.assert('the softbody has self-contact fixtures at all', sawSelf);
+  h.assert('every self-contact fixture is in no group', selfGroupsZero);
 
   h.group('softbody: multi-face objects');
 
@@ -362,6 +374,51 @@ module.exports = function (GR, h) {
   // rule safe. The shape that would disprove it is a "C" whose mouth has nearly closed: weld that
   // shut and a C becomes an O, which is worse than the bug being fixed. Measured clean at every
   // aperture from 0.6 rad down to 0.015.
+  h.group('softbody: the self-contact fixture');
+
+  var Wsc = GR.makeWorld({ scale: 100 });
+  var scFaces = [{ outer: square(0, 0, 300, 300), holes: [] }];
+  var scRig = GR.addSoftBody(Wsc, scFaces, { name: 'blob', softness: 0.25, density: 1 });
+
+  // Boundary nodes carry two fixtures, interior nodes one. Only the boundary can fold visibly, and
+  // restricting it keeps the added broadphase pairs proportional to the perimeter, not the area.
+  function fixtureCount(body) {
+    var n = 0;
+    for (var f = body.getFixtureList(); f; f = f.getNext()) n++;
+    return n;
+  }
+  h.assertEqual('a boundary node has two fixtures', fixtureCount(scRig.nodes[0].body), 2);
+  h.assertEqual('the record reports two fixtures', scRig.nodes[0].fixtures, 2);
+  h.assertEqual('an interior node has one fixture',
+    fixtureCount(scRig.nodes[scRig.mesh.boundaryCount].body), 1);
+  h.assertEqual('an interior node reports one fixture',
+    scRig.nodes[scRig.mesh.boundaryCount].fixtures, 1);
+
+  var selfFix = null;
+  for (var sf2 = scRig.nodes[0].body.getFixtureList(); sf2; sf2 = sf2.getNext()) {
+    if (sf2.getShape().m_radius < GR.SOFT_RADIUS_FRAC * scRig.cell) selfFix = sf2;
+  }
+  h.assert('the self-contact fixture exists', !!selfFix);
+  if (selfFix) {
+    // Group index MUST be 0. In planck a matching non-zero group short-circuits category and mask
+    // entirely, so inheriting the body's negative group would leave the feature inert while
+    // looking perfectly implemented.
+    h.assertEqual('the self-contact fixture is in no filter group', selfFix.getFilterGroupIndex(), 0);
+    h.assertEqual('it masks only its own category',
+      selfFix.getFilterMaskBits(), selfFix.getFilterCategoryBits());
+    h.assertEqual('its category is the self-contact one',
+      selfFix.getFilterCategoryBits(), GR.SOFT_SELF_CATEGORY);
+    h.assertClose('its radius is SELF_RADIUS_FRAC of a cell',
+      selfFix.getShape().m_radius, GR.SOFT_SELF_RADIUS_FRAC * scRig.cell, 1e-12);
+  }
+
+  // Mass must not move. Node density is solved backwards from a target, so a second fixture
+  // carrying density would add roughly 25% per node and invalidate every measured stiffness
+  // number - which is why it is created with density 0.
+  var scMass = 0;
+  for (var mi2 = 0; mi2 < scRig.nodes.length; mi2++) scMass += scRig.nodes[mi2].body.getMass();
+  h.assertClose('the second fixture adds no mass', scMass, scRig.totalMass, scRig.totalMass * 1e-9);
+
   h.group('softbody: a brace never spans a gap');
 
   var APERTURES = [0.6, 0.3, 0.12, 0.05, 0.015];
