@@ -15,6 +15,33 @@
   // Node circles overlap so the union has no gap for a corner to pass through.
   var RADIUS_FRAC = 0.6;
 
+  // The SELF-contact circle: a second, smaller fixture on every boundary node that collides only
+  // with its own kind, so a jelly cannot pass through itself. The big fixture above is unchanged
+  // and remains the only thing that touches the world.
+  //
+  // 0.25 is a constraint, not a preference. The 300pt square blob the stiffness table was measured
+  // on has its closest unjointed boundary pair at 0.566 * cell across an ordinary 90 degree
+  // corner, so at 0.3 the contact distance would be 0.6 * cell, a brace would fire on all four of
+  // its corners, and the table would move. At 0.25 the contact distance is 0.5 * cell and neither
+  // stiffness fixture braces anything.
+  //
+  // It cannot be raised to close the gap between the node ring and the DRAWN outline either.
+  // INSET_FRAC and RADIUS_FRAC are both 0.6 on purpose — that identity is what makes the union of
+  // the node circles reproduce the drawn silhouette — so the outline sits 0.6 * cell outside the
+  // node ring and two surfaces overlap by 0.7 * cell before contact fires. Self-collision BOUNDS
+  // crossing depth; it does not remove crossings, and no test should ask it to.
+  var SELF_RADIUS_FRAC = 0.25;
+
+  // A category of its own, masked to itself alone, so the self-contact circle is invisible to the
+  // ground, the walls and every other object. Collision needs BOTH directions to agree —
+  // (catA & maskB) && (catB & maskA) — so masking one side suffices: an ordinary fixture is
+  // category 1 by default, and 1 & SELF_CATEGORY is 0.
+  //
+  // Two DIFFERENT jellies' self-contact circles share this category and so can collide, which is
+  // harmless: at 0.25 * cell they sit well inside the 0.6 * cell world fixtures, which touch first
+  // and keep them apart.
+  var SELF_CATEGORY = 0x0002;
+
   // Softness in Hz. Above 30 a spring is indistinguishable from rigid and starts fighting the
   // timestep, so that is the stiff end.
   //
@@ -122,6 +149,10 @@
         nodes: [], mesh: null, groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
         frequency: 0, frequencyRequested: 0, frequencyFloored: null,
         springCount: 0, totalMass: 0, fallback: reason,
+        // Hard zeros, NOT read from `braces`: give() is called before that exists, and reading it
+        // here throws out of a test file and kills the whole suite rather than failing one
+        // assertion. Nothing was meshed, so nothing was braced.
+        braceCount: 0, braceMaxArc: 0, braceAcrossGap: 0,
         node: o.node || null, name: name
       };
     }
@@ -133,6 +164,31 @@
     GR.addSoftSprings(mesh);
     var nodeCount = mesh.nodes.length / 2;
     if (!nodeCount) return give('thin', sized.limit);
+
+    // Brace every unjointed boundary pair that starts inside the self-contact distance, BEFORE any
+    // fixture exists. A braced pair cannot generate a contact — `collideConnected: false` is on
+    // every joint here — so no pair can start overlapping and the shape cannot inflate itself
+    // apart on step one. Appending to mesh.springs is enough: addSoftSprings has already assigned
+    // the array, and the joint loop below runs over whatever it holds by then.
+    var braces = GR.softBraces(mesh, 2 * SELF_RADIUS_FRAC);
+    for (var bz = 0; bz < braces.pairs.length; bz++) {
+      mesh.springs.push([braces.pairs[bz][0], braces.pairs[bz][1], braces.pairs[bz][2]]);
+    }
+
+    // A brace should only ever span material, because the inset moves both nodes away from empty
+    // space. Counted rather than assumed: if this is ever non-zero a "C" is being welded into an
+    // "O", which is worse than the bug being fixed.
+    var acrossGap = 0;
+    for (var ag = 0; ag < braces.pairs.length; ag++) {
+      var gA = braces.pairs[ag][0], gB = braces.pairs[ag][1];
+      var mx = (mesh.nodes[gA * 2] + mesh.nodes[gB * 2]) / 2;
+      var my = (mesh.nodes[gA * 2 + 1] + mesh.nodes[gB * 2 + 1]) / 2;
+      var insideAny = false;
+      for (var gf = 0; gf < simFaces.length; gf++) {
+        if (GR.pointInFace(mx, my, simFaces[gf])) { insideAny = true; break; }
+      }
+      if (!insideAny) acrossGap++;
+    }
 
     var radius = RADIUS_FRAC * sized.cell;
 
@@ -248,8 +304,13 @@
       // because a user who asked for goo and got a firm shell has to be able to see that.
       frequencyRequested: requested,
       frequencyFloored: floored,
+      // Includes the braces, since a brace IS a spring. The report prints `braces=` separately so
+      // the two numbers overlap by design rather than by accident.
       springCount: mesh.springs.length,
       totalMass: totalMass,
+      braceCount: braces.pairs.length,
+      braceMaxArc: braces.maxArc,
+      braceAcrossGap: acrossGap,
       fallback: null,
       node: o.node || null,
       name: name
@@ -259,6 +320,8 @@
   GR.addSoftBody = addSoftBody;
   GR.softnessToFrequency = softnessToFrequency;
   GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
+  GR.SOFT_SELF_RADIUS_FRAC = SELF_RADIUS_FRAC;
+  GR.SOFT_SELF_CATEGORY = SELF_CATEGORY;
   GR.SOFT_MIN_FREQ = MIN_FREQ;
   GR.SOFT_MAX_FREQ = MAX_FREQ;
   GR.SOFT_SHELL_MIN_FREQ = SHELL_MIN_FREQ;
