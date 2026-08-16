@@ -37,7 +37,7 @@
 | `gravity/src/main.js` | Reporting only. Prints brace count and the hairline warning. | Modify |
 | `gravity/test/test_softmesh.js` | Pure tests for `softBraces` and `outlineFoldDepth`. | Modify |
 | `gravity/test/test_softbody.js` | Rig tests: fixture filtering, mass invariance, the frame-0 invariant, the settle regression. | Modify |
-| `gravity/test/fixtures_softscene.js` | The ten real scene shapes plus the teardrop constructor, shared by both test files. | Create |
+| `gravity/test/fixtures_softscene.js` | The ten real scene shapes plus the `teardrop`, `squareRing` and `cShape` constructors, shared by both test files. **Already written — do not recreate.** | Done |
 | `gravity/dist/gravity.js` | Generated bundle. Never edited by hand. | Rebuild |
 
 ---
@@ -226,9 +226,12 @@ with **zero braces spanning the gap** in all eight. At the tightest mouths the w
 separation reaches **19 and 24**, across material near the cut faces, which is precisely why the rule
 must not have a ring-separation threshold.
 
-Retained below for reference only — regenerate rather than hand-edit if the artwork changes.
+> ⚠️ **DO NOT WRITE THIS FILE.** It already exists, fully populated, and there is no artwork source
+> in the repo to regenerate it from. The skeleton below is a description of what is already there,
+> retained so a reader knows the shape of it. Writing it would replace real ring data with empty
+> arrays and the data would be unrecoverable.
 
-<details><summary>Structure of the generated file</summary>
+<details><summary>Structure of the file that already exists — reference only, do not write</summary>
 
 ```js
 /**
@@ -433,12 +436,24 @@ After `GR.addSoftSprings(mesh);` in `addSoftBody`, add the braces:
 
 Note this must run **before** `var nodeCount = mesh.nodes.length / 2;` is used to build joints, and the braces are appended to `mesh.springs` so the existing joint loop creates them with no change — they take the same frequency and damping as every other spring, which is deliberate: a brace permanently removes that pair's contact, so a brace soft enough to be pushed through would let the two nodes pass with nothing to stop them.
 
-Add the diagnostics to both the returned record and the `give` fallback record:
+Add the diagnostics to the returned record:
 
 ```js
       braceCount: braces.pairs.length,
       braceMaxArc: braces.maxArc,
-      braceAcrossGap: 0,
+      braceAcrossGap: acrossGap,
+```
+
+**The `give` fallback record must hard-code zeros, not read `braces`.** `give` is defined at
+`softbody.js:120` and first called at line 130, *before* `braces` is ever assigned — writing
+`braces.pairs.length` there throws `TypeError: Cannot read properties of undefined`, and because it
+is an uncaught throw out of a test file the **whole suite dies** rather than one assertion failing.
+This was verified by applying the edit literally and watching the existing hairline test crash.
+
+```js
+      // Nothing was meshed, so nothing was braced. Must not reference `braces`: give() runs before
+      // it exists.
+      braceCount: 0, braceMaxArc: 0, braceAcrossGap: 0,
 ```
 
 `braceAcrossGap` counts braces whose midpoint falls outside the material — it should always be zero, and it is asserted rather than assumed. Compute it with the existing point-in-face test:
@@ -576,6 +591,10 @@ In the node creation loop, after the existing `body.createFixture(...)`, add:
 
 Set `fixtures: n < mesh.boundaryCount ? 2 : 1` in the node record instead of the hard-coded `1`.
 
+Note the spec's justification for this — "since main.js prints it" — is **wrong**: `main.js:547`
+prints `fixtures=` only in the rigid `addBody` branch, and nothing reads a soft node's `fixtures`.
+Setting it correctly is still worth doing so the record does not lie, but it changes no output.
+
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `node gravity/test/run.js 2>&1 | tail -3`
@@ -623,7 +642,7 @@ fixture is misfiltered — which is the realistic bug.
         { name: shape.name, softness: 0.25 });
       if (rig.fallback) { h.assert(shape.name + ' meshes', false, rig.fallback); return; }
 
-      var rec = GR.run(Wf, { seed: 1, maxFrames: 900 });
+      GR.run(Wf, { seed: 1, maxFrames: 900 });
 
       var mesh = rig.mesh;
       var contact = 2 * GR.SOFT_SELF_RADIUS_FRAC * mesh.cell;
@@ -632,9 +651,16 @@ fixture is misfiltered — which is the realistic bug.
         var a = mesh.springs[s][0], b = mesh.springs[s][1];
         jointed[(a < b ? a : b) + '-' + (a < b ? b : a)] = 1;
       }
+      // SIM units, straight off the body. NOT GR.poseAt - that reads GR.bodyState, which returns
+      // GR.toSrc(...), i.e. POINTS. Comparing points against `mesh.cell` compares ~46 against 0.5
+      // at scale 100, so the assertion can never fail and would pass even with the self-contact
+      // fixture entirely misfiltered - the exact bug this test exists to catch. Measured: the
+      // poseAt form reports 46.5c, 46.6c, 93.7c, 66.3c where the truth is 0.465c, 0.466c, 0.937c,
+      // 0.663c. The sim has already run, so the bodies hold the settled pose and no recording is
+      // needed.
       var pos = [];
       for (var nn = 0; nn < rig.nodes.length; nn++) {
-        var pp = GR.poseAt(rec, rec.frameCount - 1, nn);
+        var pp = rig.nodes[nn].body.getPosition();
         pos.push(pp.x, pp.y);
       }
       var worst = Infinity;
@@ -647,6 +673,10 @@ fixture is misfiltered — which is the realistic bug.
         }
       }
       // planck lets a contact settle to within linearSlop, so allow exactly that and no more.
+      //
+      // Measured margins are real but not large - 0.465c, 0.466c, 0.937c and 0.663c against a
+      // 0.500c contact distance - so two of the four sit only ~0.04c inside the slop allowance.
+      // If this ever goes red, check the units above before touching the threshold.
       var slop = Wf.planck.Settings.linearSlop;
       h.assert('settled ' + shape.name + ' keeps its arms apart', worst >= contact - 2 * slop,
         'closest settled pair ' + (worst / mesh.cell).toFixed(3) + 'c against contact ' +
@@ -701,42 +731,49 @@ green                         3                 ?
 (six others)                  0                 0
 ```
 
-- [ ] **Step 2: Write the assertion around the measurement**
+**Do not assert crossing counts, and do not stop the plan on them.** An earlier draft of this task
+asserted `after <= before` per shape plus `totalAfter < totalBefore` overall, and instructed the
+implementer to halt if they failed. Both were measured against three headless harnesses and **neither
+is satisfiable**:
 
-Two assertions are safe regardless of what the numbers turn out to be, and both are meaningful:
+| harness | total crossings, baseline → with self-contact |
+|---|---|
+| each shape dropped alone | 2 → **3** (amber 0 → 2) |
+| all ten as a pile at scale 100 | 1 → 1 (`totalAfter < totalBefore` false) |
+| all ten as a pile at `suggestScale` | 1 → **3** (green 1 → 3, so `after <= before` fails) |
+
+None of them reproduces the spec's baseline of orange 1 / amber 1 / purple 1 / green 3 either — that
+figure came from the **real Affinity run**: spread-space mesh, exported curves, real document
+positions. The headless suite cannot construct it, so an implementer would measure a baseline
+contradicting the plan's own table, watch the assertion fail, and halt on a false signal.
+
+**Task 5 carries this plan.** It tests the mechanism directly, with an exact expected value, and it
+fails loudly in the realistic bug case. Crossing counts stay a *reported diagnostic* here.
+
+- [ ] **Step 2: Print the comparison, assert nothing about it**
 
 ```js
-  // Crossings must not get WORSE on any shape, and must improve on the shapes that fold. The exact
-  // after-figures are recorded in the comment above rather than asserted, because zero is not
-  // reachable - see the surface-overlap note in the spec.
-  h.assert(shape.name + ' does not fold worse than before', after <= before,
-    'before ' + before + ' after ' + after);
+  // Reported, never asserted. Crossing count on a headless drop does not reproduce the figures the
+  // defect was measured with in Affinity, and cannot: the real numbers come from spread-space
+  // geometry and real document positions. It is printed so a human can see the direction of
+  // travel; the mechanism itself is asserted in Task 5.
+  console.log('  self-collision, crossings by shape (diagnostic only):');
+  // ... per shape: outlineFolds(baseline) vs outlineFolds(withSelfContact)
 ```
 
-plus, for the four folders only:
+`{ selfContact: false }` **must also disable braces**, or the baseline is a lattice carrying extra
+springs and the comparison confounds two changes at once.
 
-```js
-  h.assert('self-collision reduces total crossings across the folding shapes',
-    totalAfter < totalBefore, 'before ' + totalBefore + ' after ' + totalAfter);
-```
+- [ ] **Step 3: Record the measured figures in a comment**
 
-- [ ] **Step 3: Record the measured figures**
+In the same style as the stiffness table in `softbody.js`, including which harness produced them.
+A number without its harness is not reproducible, which is the whole lesson of this task.
 
-Put the before/after table in a comment above the test, in the same style as the stiffness table in
-`softbody.js`. The next person needs to see what was actually achieved, not only the threshold that
-was cleared.
-
-- [ ] **Step 4: If crossings did not improve at all, stop**
-
-Do not loosen the assertion and do not proceed to Task 7. Report the measured figures. Either the
-fixture is not colliding (check `filterGroupIndex` is `0`), or the premise is wrong and that belongs
-back in the spec, not papered over in the plan.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add gravity/test/test_softbody.js gravity/src/softbody.js
-git commit -m "test(gravity): self-collision reduces folding on the measured scene"
+git commit -m "test(gravity): report crossing counts alongside self-collision"
 ```
 
 ---
@@ -758,7 +795,17 @@ After the `cross=` clause:
             (madeSoft.braceCount ? ' braces=' + madeSoft.braceCount : '') +
 ```
 
+`springCount` includes braces once they are appended to `mesh.springs`, so `springs=` and `braces=`
+overlap. That is fine — braces really are springs — but say so in a comment or the two numbers look
+inconsistent.
+
 - [ ] **Step 2: Warn on a hairline**
+
+Measured worst cases at `0.25 * cell` are **3 braces of 62 boundary nodes** (the "C" at a 0.015 rad
+mouth) and **3 of 53** (the 29° teardrop), so a `braceCount > boundaryCount / 3` threshold is
+effectively unreachable and no fixture in this plan triggers it. Keep the warning as a guard against
+artwork nobody has tried yet, but **do not claim it is tested**, and do not spend time building a
+fixture to trigger it.
 
 After the report line, before `continue;`:
 
@@ -799,12 +846,24 @@ Run: `node gravity/build.js`
 - [ ] **Step 2: Run the full suite**
 
 Run: `node gravity/test/run.js`
-Expected: every assertion passes, and the total has risen by roughly 40.
+Expected: every assertion passes. The baseline before this plan is **796 passed, 0 failed**, and the
+plan adds roughly 61 assertions (6 in Task 1, ~32 in Task 3, 8 in Task 4, 4 in Task 5, ~11 elsewhere).
 
 - [ ] **Step 3: Confirm the untouched tables really are untouched**
 
-Run: `node gravity/test/run.js 2>&1 | grep -iE "stiffness|span|sag|droop"`
-Expected: unchanged. The square blob and the bold "O" brace zero pairs at `0.25 * cell`, which is exactly why that radius was chosen — if any stiffness assertion moved, the radius is wrong, not the assertion.
+Run:
+```bash
+node gravity/test/run.js 2>&1 | grep -A20 "softbody: solver sag and softness"
+node gravity/test/run.js 2>&1 | grep -A12 "softbody: mass"
+node gravity/test/run.js 2>&1 | grep -A12 "softbody: filter groups"
+```
+
+These are the real group names — verified against the suite. A `grep -iE "stiffness|span"` matches
+nothing, because no test name contains either word.
+
+Expected: unchanged. The square blob and the bold "O" brace zero pairs at `0.25 * cell`, which is
+exactly why that radius was chosen — if any sag assertion moved, the radius is wrong, not the
+assertion.
 
 - [ ] **Step 4: Commit**
 
@@ -819,11 +878,11 @@ git commit -m "build(gravity): rebuild for softbody self-collision"
 
 - Every boundary pair that is not jointed starts outside the self-contact distance, on all ten scene shapes and on teardrops from 60° to 29°.
 - No brace spans a gap on a nearly-closed "C".
-- After settling, no non-jointed boundary pair is closer than the contact distance, within `linearSlop`.
-- Crossings get worse on no shape, and the four folding shapes improve in total.
+- After settling, no non-jointed boundary pair is closer than the contact distance, within `linearSlop`. **This is the load-bearing assertion of the plan.**
+- Crossing counts are reported as a diagnostic. They are deliberately *not* asserted — see Task 6.
 - The 300pt square blob and the bold "O" brace zero pairs, and every stiffness and span figure is unchanged.
 - Node mass is unchanged by the second fixture.
-- The report says how many braces a shape needed, and warns when a shape is a hairline.
+- The report says how many braces a shape needed. The hairline warning exists but is untested and unreachable on any known fixture — do not claim otherwise.
 
 ## Verified before shipping this plan
 
@@ -845,3 +904,22 @@ Three errors were caught that way and are already fixed above:
    was removed rather than shipped, and Task 5 now asserts the contact constraint directly.
 3. Task 1's first fixture put its "close pair" on ring-adjacent indices, so the pair was already
    jointed and the test would have passed while testing nothing.
+
+A second reviewer then executed the plan against a patched copy of `src/` and found four more, all
+fixed above:
+
+4. Task 3's `give` fallback referenced `braces` before it is assigned, throwing out of a test file
+   and killing the whole suite rather than failing one assertion.
+5. Task 5 compared `GR.poseAt` output (SOURCE units) against `mesh.cell` (SIM units), so the
+   assertion compared ~46 against 0.5 and **could not fail** — including in the misfiltered-fixture
+   case it exists to catch.
+6. Task 6's crossing-count assertions are not satisfiable in any headless harness, and its
+   stop-the-plan instruction would have halted execution on a false signal.
+7. Task 2's template would have overwritten the already-populated fixture file with empty arrays,
+   unrecoverably.
+
+The pattern across all seven is the same: every one was invisible to reading and obvious to
+execution. Verified working, by execution: `softBraces` on all four fixtures, brace insertion
+producing real joints, the category/mask filter rejecting collision in both directions, `density: 0`
+adding no mass, the frame-0 invariant on ten shapes plus five teardrops plus a seven-aperture "C"
+sweep, and zero braces on the square blob, the bold "O", the beam and the two-disc fixture.
