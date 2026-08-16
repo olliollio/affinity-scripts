@@ -301,6 +301,60 @@ same missing term seen from the other side: nothing resists a counter ovalising.
 **not** part of this work — it needs its own measurement of the buckling cliff with pressure active,
 and the floor stays where it is until that exists.
 
+## A rope shell — an alternative to measure, and not part of this work
+
+Ring springs are `DistanceJoint`s, so they resist compression exactly as hard as they resist stretch.
+`SHELL_MIN_FREQ` exists because of that: below 28 Hz an "O" either holds at 0.76 or collapses to 0.22
+depending on how finely its curves happened to flatten, because a soft ring stops resisting
+compression and nothing else in the rig resists it either. The floor is a workaround for a constraint
+being asked for the wrong quantity — it knows *edge length* and is being used to defend *area*.
+
+Once a face keeps its own area, that job has a proper owner, and the ring could become one-sided:
+refuse to stretch, permit any amount of shortening, resist bending not at all. A rope ring plus a gas
+is the standard squishy shell, and it is the combination that gives squish rather than spring —
+a two-sided ring pushes back out edge by edge, which is what makes a pressurised shell ring and
+overshoot. Prior art worth reading is `argonautcode/soft-body-proc-anim`, whose blob is a 16-point
+rope ring with an area constraint and no interior structure at all.
+
+planck 1.5.0 can express it. `RopeJoint` is present in the vendored bundle with `setMaxLength`,
+`getMaxLength` and `getLimitState`; it is inextensible at its maximum and contributes nothing below
+it, and `add`'s measured rest length becomes the maximum unchanged. It also takes `collideConnected`,
+so Part 1's joint-based exclusion survives the swap intact.
+
+It is not proposed here, for four reasons.
+
+**The premise is only partly true in this rig.** The reference blob has no interior. Ours does: every
+boundary node is additionally sprung to every interior node within `ATTACH_RADIUS = 1.5 * cell`, and
+those springs are two-sided. So the ring is *not* the only thing resisting compression at the
+boundary — the attach springs are, and they would be untouched. The change could be almost entirely
+cosmetic, and nothing currently measured says which way it goes.
+
+**It makes area preservation load-bearing.** A rope ring at gain 0 has nothing at all holding the
+shape open. That destroys the property this design is built on — gain 0 reproduces current behaviour
+exactly, so the feature is bisectable and every existing measurement stands. A rope ring is therefore
+not a substitution but a second mode, and a second mode whose stiffness table has to be re-derived
+from scratch.
+
+**Softness would stop reaching the ring.** `RopeJoint` has no `frequencyHz`; it is a hard constraint.
+The ring becomes inextensible at every softness setting, and whether the result still reads as soft is
+a visual question that no headless assertion answers.
+
+**Braces must stay two-sided regardless.** A brace's whole job is to stop two boundary nodes closing
+on each other in place of a contact. A rope brace permits closing and therefore does nothing, so
+Part 1's `DistanceJoint` braces are unaffected by this idea in either direction.
+
+What would settle it, in order of cost:
+
+- At settle, the fraction of a boundary node's constraint impulse coming from ring springs versus
+  attach springs. If the ring's share is small the rest of the question is moot, and this is a
+  one-scene measurement against the existing rig.
+- The "O" cliff table re-measured with area preservation active and the ring as ropes, over the same
+  `n = 96..160` flattening sweep. The claim is that the cliff disappears; the **spread column is the
+  test**, not the mean, for the same reason it was the test the first time.
+- The 300pt square blob's stiffness table under a rope ring. It cannot be preserved, only replaced.
+
+This lands after both parts above, or not at all.
+
 ## Order, and why
 
 Self-collision first. It is contained to `softbody.js` and `softmesh.js`, it fixes four of the ten
