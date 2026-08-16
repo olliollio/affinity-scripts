@@ -540,6 +540,151 @@
     return mesh;
   }
 
+  // How much of a ring repair may discard before it is refused, as a fraction of what it KEEPS.
+  //
+  // Measured against the RETAINED area and not the original ring's, and that is the subtle part: a
+  // folded ring's |shoelace| already has the fold subtracted, because the lobe is traversed with
+  // opposite orientation. So an original-area denominator collapses toward zero exactly as the fold
+  // grows - an equal-lobe figure-eight has |shoelace| of exactly 0 - which is precisely when the
+  // valve has to decide.
+  //
+  // 0.25 sits two orders of magnitude above real artwork, which repairs at 0.01% to 2% of area, and
+  // below the shapes that must be refused: a pentagram loses 44.7% in a single pass.
+  var REPAIR_MAX_LOSS = 0.25;
+
+  /** Signed shoelace area. The SIGN carries the winding, so repair can prove it preserved it. */
+  function ringSignedArea(p) {
+    var a = 0;
+    for (var i = 0; i < p.length; i += 2) {
+      var j = (i + 2) % p.length;
+      a += p[i] * p[j + 1] - p[j] * p[i + 1];
+    }
+    return a / 2;
+  }
+
+  /**
+   * Where two segments PROPERLY cross, or null.
+   *
+   * Strictly interior on both, and a zero determinant rejected, so touching endpoints and collinear
+   * overlap do not count. Deliberately stricter than `outlineFolds`, which counts a collinear pair
+   * because its `side()` returns 0 and 0 is neither +1 nor -1: a sheared square is an affine map of
+   * a simple ring and cannot self-intersect, yet `outlineFolds` reports a fold on it and this
+   * reports nothing.
+   */
+  function properCross(ax, ay, bx, by, cx, cy, dx, dy) {
+    var rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy;
+    var den = rx * sy - ry * sx;
+    if (den === 0) return null;
+    var t = ((cx - ax) * sy - (cy - ay) * sx) / den;
+    var u = ((cx - ax) * ry - (cy - ay) * rx) / den;
+    if (t <= 0 || t >= 1 || u <= 0 || u >= 1) return null;
+    return [ax + t * rx, ay + t * ry];
+  }
+
+  /** Every proper self-crossing of a closed ring, or just the first when `firstOnly`. */
+  function scanCrossings(pts, firstOnly) {
+    var n = pts.length / 2, count = 0;
+    for (var i = 0; i < n; i++) {
+      var i2 = (i + 1) % n;
+      for (var j = i + 1; j < n; j++) {
+        var j2 = (j + 1) % n;
+        if (j === i || j2 === i || i2 === j) continue;
+        var X = properCross(pts[i * 2], pts[i * 2 + 1], pts[i2 * 2], pts[i2 * 2 + 1],
+                            pts[j * 2], pts[j * 2 + 1], pts[j2 * 2], pts[j2 * 2 + 1]);
+        if (!X) continue;
+        if (firstOnly) return { i: i, j: j, X: X };
+        count++;
+      }
+    }
+    return firstOnly ? null : count;
+  }
+
+  /** How many proper self-crossings does this closed ring have? */
+  function ringCrossings(pts) { return scanCrossings(pts, false); }
+
+  /** Drops any point identical to the one after it, including across the wrap. */
+  function dedupeRing(p) {
+    var out = [];
+    for (var i = 0; i < p.length; i += 2) {
+      var j = (i + 2) % p.length;
+      if (p[i] === p[j] && p[i + 1] === p[j + 1]) continue;
+      out.push(p[i], p[i + 1]);
+    }
+    return out;
+  }
+
+  /**
+   * Removes self-intersection loops from a closed ring.
+   *
+   * A closed curve that crosses itself fills with a HOLE under even-odd, so a folded jelly comes
+   * back as gouged artwork. Self-collision cannot prevent that, and the reason is structural: the
+   * drawn outline sits INSET_FRAC = 0.6 cell OUTSIDE the node ring while self-contact begins at
+   * 0.5 cell of node separation, so two arms resting against each other legally have already
+   * overlapped 0.7 cell on paper. Repairing the curve is the last defence, and unlike the physics it
+   * is guaranteed - per ring - because it operates on exactly the geometry that gets written.
+   *
+   * A crossing splits a closed ring into exactly two closed loops, both through the crossing point.
+   * Keep the larger: a fold is the smaller lobe by construction, so nothing has to guess which.
+   *
+   * That holds because a real fold is a SHORT CONTIGUOUS EXCURSION - an arm pokes in and comes back
+   * out, so its two crossings sit close together in ring order and the loop between them is small.
+   * A bowtie, whose crossings are far apart, is halved by a split at either one; measured, a
+   * 25-area bowtie collapses to a 12.86 triangle. The valve below is what makes that safe.
+   *
+   * Termination is proven rather than hoped for. Both loops have at least 3 points and together
+   * n + 2, so the kept loop is at most n - 1 and every pass strictly shrinks the ring, bounding the
+   * count at n - 3. And every segment of a kept loop is a SUB-SEGMENT of an original, so a pass can
+   * never create a crossing that was not already there - oscillation is impossible.
+   *
+   * Returns the ORIGINAL points whenever it will not or need not act, so a caller can always use
+   * `.points` unconditionally.
+   */
+  function repairRing(points, opts) {
+    var o = opts || {};
+    var maxLoss = o.maxLoss === undefined ? REPAIR_MAX_LOSS : o.maxLoss;
+    var pts = points.slice();
+    var maxPasses = o.maxPasses === undefined ? points.length / 2 : o.maxPasses;
+    var removed = 0, lost = 0, passes = 0;
+
+    // Reports what it WOULD have discarded. A refusal with no number leaves the user unable to
+    // judge it, and "would have removed 49% of this shape" is the useful part.
+    function abandon(why, frac) {
+      return { points: points, loopsRemoved: 0, lostArea: lost, lossFraction: frac || 0,
+               repaired: false, abandoned: why };
+    }
+
+    for (;;) {
+      if (pts.length / 2 < 3) return abandon('degenerate');
+      var f = scanCrossings(pts, true);
+      if (!f) break;
+      if (passes >= maxPasses) return abandon('passes');
+      passes++;
+
+      var n = pts.length / 2, A = [f.X[0], f.X[1]], B = [f.X[0], f.X[1]], k;
+      for (k = f.i + 1; k <= f.j; k++) A.push(pts[(k % n) * 2], pts[(k % n) * 2 + 1]);
+      for (k = f.j + 1; k <= f.i + n; k++) B.push(pts[(k % n) * 2], pts[(k % n) * 2 + 1]);
+
+      var aA = Math.abs(ringSignedArea(A)), aB = Math.abs(ringSignedArea(B));
+      if (aA >= aB) { pts = A; lost += aB; } else { pts = B; lost += aA; }
+      removed++;
+      pts = dedupeRing(pts);
+    }
+
+    if (!removed) {
+      return { points: points, loopsRemoved: 0, lostArea: 0, lossFraction: 0,
+               repaired: false, abandoned: null };
+    }
+    if (pts.length / 2 < 3) return abandon('degenerate');
+
+    var kept = Math.abs(ringSignedArea(pts));
+    if (kept <= 0) return abandon('zeroArea', Infinity);
+    var frac = lost / kept;
+    if (frac > maxLoss) return abandon('loss', frac);
+
+    return { points: pts, loopsRemoved: removed, lostArea: lost, lossFraction: frac,
+             repaired: true, abandoned: null };
+  }
+
   /**
    * Boundary pairs that must be jointed before self-contact fixtures can exist.
    *
@@ -792,6 +937,10 @@
   GR.buildSoftMesh = buildSoftMesh;
   GR.addSoftSprings = addSoftSprings;
   GR.softBraces = softBraces;
+  GR.repairRing = repairRing;
+  GR.ringCrossings = ringCrossings;
+  GR.ringSignedArea = ringSignedArea;
+  GR.SOFT_REPAIR_MAX_LOSS = REPAIR_MAX_LOSS;
   GR.softMeshComponents = softMeshComponents;
   GR.bindOutline = bindOutline;
   GR.nodeRotations = nodeRotations;

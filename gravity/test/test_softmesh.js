@@ -372,6 +372,88 @@ module.exports = function (GR, h) {
   var tw = GR.softCellSize(thinWall);
   h.assert('a thin-walled ring never meshes silently', tw.fallback !== null);
 
+  h.group('softmesh: repairing a folded ring');
+
+  function ringsEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  // A clean ring must come back byte-identical, not merely equivalent. Repair runs on every frame,
+  // so a "repair" that perturbs clean geometry would rewrite every curve in the document.
+  var cleanSq = square(0, 0, 4, 4);
+  var rsq = GR.repairRing(cleanSq);
+  h.assert('a clean square is returned unchanged', ringsEqual(rsq.points, cleanSq));
+  h.assert('a clean square is not reported as repaired', rsq.repaired === false);
+  h.assertEqual('a clean square loses nothing', rsq.loopsRemoved, 0);
+  var cleanCirc = circle(0, 0, 2, 64);
+  h.assert('a clean circle is returned unchanged',
+    ringsEqual(GR.repairRing(cleanCirc).points, cleanCirc));
+
+  // A REAL fold: a short contiguous excursion whose two crossings sit close together in ring order,
+  // so the loop between them is small. That distinction is the whole ballgame. A bowtie-like shape,
+  // whose crossings are far apart, is HALVED by a split at either one - measured, a 25-area bowtie
+  // collapses to a 12.86 triangle - and is refused by the valve below. Writing this fixture as a
+  // bowtie would assert the opposite of what it means to.
+  var folded = [0, 0,  20, 0,  20, 20,  12, 20,  8, 26,  14, 26,  10, 20,  0, 20];
+  h.assert('the fold fixture really does cross itself', GR.ringCrossings(folded) > 0);
+  var rf = GR.repairRing(folded);
+  h.assert('a folded ring is repaired', rf.repaired === true, 'abandoned: ' + rf.abandoned);
+  h.assertEqual('the repaired ring has no crossing left', GR.ringCrossings(rf.points), 0);
+  h.assert('a real fold costs little area', rf.lossFraction < 0.1,
+    'lost ' + (100 * rf.lossFraction).toFixed(1) + '%');
+
+  // Winding survives because both candidate loops are built in the ring's own traversal order.
+  var foldedCW = [];
+  for (var fc = folded.length - 2; fc >= 0; fc -= 2) foldedCW.push(folded[fc], folded[fc + 1]);
+  h.assert('the reversed fixture is clockwise', GR.ringSignedArea(foldedCW) < 0);
+  var rcw = GR.repairRing(foldedCW);
+  h.assert('a clockwise ring stays clockwise', rcw.repaired && GR.ringSignedArea(rcw.points) < 0,
+    'area ' + GR.ringSignedArea(rcw.points).toFixed(2));
+
+  // THE VALVE. Refusing is not a failure mode, it is the feature: handing back mangled artwork is
+  // worse than handing back folded artwork.
+  //
+  // A symmetric figure-eight has lost == kept exactly, and its |shoelace| is exactly 0 - which is
+  // why the fraction is measured against the RETAINED area rather than the original ring. Against
+  // the original, this ring divides by zero.
+  var eight = [0, 0,  10, 0,  0, 10,  10, 10];
+  h.assertClose('a figure-eight has zero signed area', GR.ringSignedArea(eight), 0, 1e-12);
+  var re = GR.repairRing(eight);
+  h.assert('a symmetric figure-eight is refused', !re.repaired && re.abandoned === 'loss');
+  h.assert('a refusal returns the input unchanged', ringsEqual(re.points, eight));
+  h.assert('a refusal still reports what it would have lost', re.lossFraction > 0);
+
+  // A pentagram loses 44.7% in one pass and must be refused too.
+  var star = [];
+  for (var sp = 0; sp < 5; sp++) {
+    var sa = sp * 4 * Math.PI / 5 - Math.PI / 2;
+    star.push(100 * Math.cos(sa), 100 * Math.sin(sa));
+  }
+  var rst = GR.repairRing(star);
+  h.assert('a pentagram is refused', !rst.repaired && rst.abandoned === 'loss',
+    'frac ' + rst.lossFraction.toFixed(3));
+
+  // Repair runs every frame, so running it on its own output must be a no-op.
+  var again = GR.repairRing(rf.points);
+  h.assert('repair is idempotent', !again.repaired && ringsEqual(again.points, rf.points));
+
+  // Where the ring happens to start must not change what is kept.
+  var rotRing = folded.slice(4).concat(folded.slice(0, 4));
+  h.assertClose('repair does not depend on the starting vertex',
+    Math.abs(GR.ringSignedArea(GR.repairRing(rotRing).points)),
+    Math.abs(GR.ringSignedArea(rf.points)), 1e-9);
+
+  // A zero-length segment scores a phantom crossing in outlineFolds and hands CurveBuilder a
+  // degenerate lineTo, so the splice must not leave one.
+  var dupFound = false;
+  for (var dp = 0; dp < rf.points.length; dp += 2) {
+    var dq = (dp + 2) % rf.points.length;
+    if (rf.points[dp] === rf.points[dq] && rf.points[dp + 1] === rf.points[dq + 1]) dupFound = true;
+  }
+  h.assert('repair leaves no consecutive duplicate points', !dupFound);
+
   h.group('softmesh: self-contact braces');
 
   // Hand-built rather than meshed, so every assertion here is about softBraces alone.
