@@ -419,6 +419,70 @@ module.exports = function (GR, h) {
   for (var mi2 = 0; mi2 < scRig.nodes.length; mi2++) scMass += scRig.nodes[mi2].body.getMass();
   h.assertClose('the second fixture adds no mass', scMass, scRig.totalMass, scRig.totalMass * 1e-9);
 
+  h.group('softbody: self-contact is enforced after settling');
+
+  // The load-bearing assertion of the feature. Everything above proves the rig was BUILT right;
+  // this proves the contact actually holds once the shape has fallen and piled on itself.
+  //
+  // Settled closest unjointed pair, in cells, against a 0.500c contact distance:
+  //
+  //     shape     self-contact ON   OFF (negative control)
+  //     orange              0.465                    0.052
+  //     amber               0.466                     -
+  //     purple              0.937                     -
+  //     green               0.663                     -
+  //
+  // Orange and amber sit about 0.035c inside the contact distance, which is 0.0047 sim units -
+  // essentially exactly one linearSlop, the penetration Box2D allows on any resting contact. That
+  // is why the allowance below is 2 * slop rather than zero, and why it is not generosity.
+  //
+  // The OFF column is the negative control, measured by masking the self-contact fixture to 0:
+  // orange's arms interpenetrate to 0.052c, a ninefold loss of separation, and this assertion
+  // fails loudly. An assertion that cannot fail is worse than none, and the units are how that
+  // happens here - see the comment on reading positions below.
+  var folders = [];
+  for (var fs2 = 0; fs2 < scene.SCENE.length; fs2++) {
+    if (scene.SCENE[fs2].folds) folders.push(scene.SCENE[fs2]);
+  }
+  for (var fi2 = 0; fi2 < folders.length; fi2++) {
+    (function (shape) {
+      var Wf = GR.makeWorld({ scale: 100 });
+      GR.addBounds(Wf, { x: -600, y: -600, width: 1200, height: 1200 });
+      var rig = GR.addSoftBody(Wf, [{ outer: shape.ring, holes: [] }],
+        { name: shape.name, softness: 0.25 });
+      if (rig.fallback) { h.assert(shape.name + ' meshes', false, rig.fallback); return; }
+
+      GR.run(Wf, { seed: 1, maxFrames: 900 });
+
+      var mesh = rig.mesh, contact = 2 * GR.SOFT_SELF_RADIUS_FRAC * mesh.cell;
+      var jointed = {};
+      for (var s = 0; s < mesh.springs.length; s++) {
+        var ja = mesh.springs[s][0], jb3 = mesh.springs[s][1];
+        jointed[(ja < jb3 ? ja : jb3) + '-' + (ja < jb3 ? jb3 : ja)] = 1;
+      }
+      // SIM units, read straight off the bodies. NOT GR.poseAt: that reads GR.bodyState, which
+      // returns GR.toSrc(...) - POINTS. Comparing points against mesh.cell compares about 46
+      // against 0.5 at scale 100, so the assertion can never fail and would pass even with the
+      // self-contact fixture entirely misfiltered, which is the exact bug it exists to catch.
+      var worst = Infinity;
+      for (var p = 0; p < mesh.boundaryCount; p++) {
+        var pp = rig.nodes[p].body.getPosition();
+        for (var q = p + 1; q < mesh.boundaryCount; q++) {
+          if (jointed[p + '-' + q]) continue;
+          var qq = rig.nodes[q].body.getPosition();
+          var dx = pp.x - qq.x, dy = pp.y - qq.y;
+          var d = Math.sqrt(dx * dx + dy * dy);
+          if (d < worst) worst = d;
+        }
+      }
+      // planck lets a resting contact settle to within linearSlop, so allow exactly that.
+      var slop = Wf.planck.Settings.linearSlop;
+      h.assert('settled ' + shape.name + ' keeps its arms apart', worst >= contact - 2 * slop,
+        'closest settled pair ' + (worst / mesh.cell).toFixed(3) + 'c against contact ' +
+        (contact / mesh.cell).toFixed(3) + 'c');
+    })(folders[fi2]);
+  }
+
   h.group('softbody: a brace never spans a gap');
 
   var APERTURES = [0.6, 0.3, 0.12, 0.05, 0.015];
