@@ -499,6 +499,11 @@
             // Only when there are several faces, because on the ordinary one-face object it is
             // always 0 and says nothing. On an "i" it is what holds the dot onto the stem.
             (madeSoft.mesh.crossFaceSprings ? ' cross=' + madeSoft.mesh.crossFaceSprings : '') +
+            // Springs added where two boundary nodes started inside the self-contact distance, so
+            // that pair is jointed instead of colliding and cannot blow the shape apart at frame
+            // 0. A handful is ordinary — sharp tips produce them. Counted inside springs= as well,
+            // because a brace IS a spring; this says how many of them are braces.
+            (madeSoft.braceCount ? ' braces=' + madeSoft.braceCount : '') +
             ' rings=' + bound.length +
             ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
             // The softness slider is a REQUEST that a hollow shape overrides, exactly as measured
@@ -509,6 +514,18 @@
               : '') +
             ' mass=' + fmt(madeSoft.totalMass, 4) +
             ' limit=' + madeSoft.limit);
+
+          // A shape needing braces across much of its boundary is a hairline that has been meshed
+          // into a nearly rigid chain, and it will not squash however soft the setting. Untested
+          // and not reached by any known artwork — the worst measured cases are 3 braces of 62
+          // boundary nodes on a nearly-shut "C" and 3 of 53 on a 29 degree teardrop — so this is a
+          // guard against artwork nobody has tried yet rather than a case that has been seen.
+          if (madeSoft.braceCount > madeSoft.mesh.boundaryCount / 3) {
+            console.log('    ' + (obj.name || '(unnamed)') + ' is very thin for its mesh: ' +
+              madeSoft.braceCount + ' of ' + madeSoft.mesh.boundaryCount + ' boundary nodes ' +
+              'needed bracing, so it will behave more rigidly than the softness setting asks. ' +
+              'Simplify the shape or make it thicker.');
+          }
           continue;
         }
 
