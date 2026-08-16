@@ -540,6 +540,74 @@
     return mesh;
   }
 
+  /**
+   * Boundary pairs that must be jointed before self-contact fixtures can exist.
+   *
+   * A softbody's nodes never collided with each other, so nothing stopped one arm entering another
+   * and a crescent folded straight through itself. Giving boundary nodes a small collision fixture
+   * fixes that, but only if no pair STARTS inside the contact distance — a pair that does is pushed
+   * apart on the first step and the shape inflates itself apart.
+   *
+   * Every such pair is therefore given a spring, which removes the contact through the
+   * `collideConnected: false` that every joint in this rig already carries. That makes a frame-0
+   * explosion impossible BY CONSTRUCTION rather than by margin: afterwards, every remaining
+   * unjointed pair is outside the contact distance by definition.
+   *
+   * There is deliberately NO ring-separation threshold, and this is the part that is easy to get
+   * wrong. Bracing only `i,i+2` looks sufficient, because that is the only separation that occurs
+   * across a sample of ten real shapes — but the convergence band comes from `insetPoint` pushing
+   * both sides INSET_FRAC into the material, so its width scales as 1/sin(half-angle). Measured on
+   * teardrops: separation 3 at a 39 degree tip, 4 at 33 degrees — where the two-apart pair sits
+   * OUTSIDE the contact distance and an `|i-j| <= 2` rule fires nothing at all.
+   *
+   * A brace can never span a GAP, only material: the inset moves both nodes away from empty space,
+   * so across a gap the separation is at least 2 * INSET_FRAC = 1.2 cells, never inside a contact
+   * distance this rig uses. Measured on a "C" at eight apertures down to 0.015 rad, a mouth almost
+   * shut: no brace spans the mouth in any of them, so a "C" cannot be welded into an "O".
+   *
+   * `contactFrac` is the contact DISTANCE as a fraction of a cell, not the fixture radius.
+   */
+  function softBraces(mesh, contactFrac) {
+    var contact = contactFrac * mesh.cell;
+    var nodes = mesh.nodes, bCount = mesh.boundaryCount;
+
+    var jointed = {};
+    for (var s = 0; s < mesh.springs.length; s++) {
+      var a = mesh.springs[s][0], b = mesh.springs[s][1];
+      jointed[(a < b ? a : b) + '-' + (a < b ? b : a)] = 1;
+    }
+
+    // How far apart along their ring, so the report can say how wide a brace reached. Cross-ring
+    // and cross-face pairs share no ring and report -1.
+    function arcSeparation(p, q) {
+      for (var r = 0; r < mesh.ringSpans.length; r++) {
+        var span = mesh.ringSpans[r];
+        if (p >= span.start && p < span.start + span.count &&
+            q >= span.start && q < span.start + span.count) {
+          var raw = Math.abs(p - q);
+          return Math.min(raw, span.count - raw);
+        }
+      }
+      return -1;
+    }
+
+    var pairs = [], maxArc = 0;
+    // Every boundary node against every other, across rings and across faces alike. Scoping this
+    // per ring would leave a cross-ring pair in contact at rest and the guarantee would be gone.
+    for (var p = 0; p < bCount; p++) {
+      for (var q = p + 1; q < bCount; q++) {
+        if (jointed[p + '-' + q]) continue;
+        var dx = nodes[p * 2] - nodes[q * 2], dy = nodes[p * 2 + 1] - nodes[q * 2 + 1];
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d >= contact) continue;
+        pairs.push([p, q, d]);
+        var arc = arcSeparation(p, q);
+        if (arc > maxArc) maxArc = arc;
+      }
+    }
+    return { pairs: pairs, maxArc: maxArc };
+  }
+
   /** Number of connected components over the spring graph. One, or the mesh is not a mesh. */
   function softMeshComponents(mesh) {
     var count = mesh.nodes.length / 2;
@@ -723,6 +791,7 @@
   GR.resampleRing = resampleRing;
   GR.buildSoftMesh = buildSoftMesh;
   GR.addSoftSprings = addSoftSprings;
+  GR.softBraces = softBraces;
   GR.softMeshComponents = softMeshComponents;
   GR.bindOutline = bindOutline;
   GR.nodeRotations = nodeRotations;

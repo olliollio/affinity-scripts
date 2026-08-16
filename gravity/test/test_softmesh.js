@@ -372,6 +372,50 @@ module.exports = function (GR, h) {
   var tw = GR.softCellSize(thinWall);
   h.assert('a thin-walled ring never meshes silently', tw.fallback !== null);
 
+  h.group('softmesh: self-contact braces');
+
+  // Hand-built rather than meshed, so every assertion here is about softBraces alone.
+  //
+  // Watch the index arithmetic: ring separation WRAPS, so on a 5-ring the pair (0,3) is TWO apart,
+  // not three. A first draft of these fixtures put the close pair on ring-ADJACENT indices, where
+  // addSoftSprings has already jointed them - so nothing was braced, and the test passed while
+  // asserting nothing.
+  function braceMesh(nodes, count) {
+    return { nodes: nodes, boundaryCount: count, interiorCount: 0,
+      ringSpans: [{ start: 0, count: count }], cell: 1, springs: [], grid: {} };
+  }
+
+  // Two apart on a 4-ring: 0 and 2 are not neighbours, so nothing joints them and the brace must.
+  var bm = braceMesh([0, 0,  1, 0,  0.05, 0.05,  0, 2], 4);
+  GR.addSoftSprings(bm);
+  var braces = GR.softBraces(bm, 0.5);
+  h.assertEqual('a close unjointed pair is braced', braces.pairs.length, 1);
+  h.assertEqual('the brace joins node 0', braces.pairs[0][0], 0);
+  h.assertEqual('the brace joins node 2', braces.pairs[0][1], 2);
+  h.assertClose('the brace rest length is the current separation',
+    braces.pairs[0][2], Math.sqrt(0.005), 1e-9);
+  h.assertEqual('the widest brace separation is reported', braces.maxArc, 2);
+
+  // Ring NEIGHBOURS are already jointed, so they are never braced however close they are - a brace
+  // there would be a duplicate spring.
+  var nearRing = braceMesh([0, 0,  0.1, 0,  1, 1,  0, 1], 4);
+  GR.addSoftSprings(nearRing);
+  h.assertEqual('ring neighbours are never braced', GR.softBraces(nearRing, 0.5).pairs.length, 0);
+
+  // No threshold on ring separation, which is the whole point. On an 8-ring, 0 and 3 really are 3
+  // apart. Measured on teardrops, the band reaches 3 at a 39 degree tip and 4 at 33 degrees.
+  var farRing = braceMesh([0, 0,  2, 0,  4, 0,  0.05, 0.05,  4, 4,  3, 5,  2, 5,  0, 4], 8);
+  GR.addSoftSprings(farRing);
+  var farBraces = GR.softBraces(farRing, 0.5);
+  h.assertEqual('a pair three apart along the ring is braced', farBraces.pairs.length, 1);
+  h.assertEqual('its separation is reported as three', farBraces.maxArc, 3);
+
+  // Nothing close means nothing braced, which is the ordinary case.
+  var openRing = braceMesh([0, 0,  3, 0,  3, 3,  0, 3], 4);
+  GR.addSoftSprings(openRing);
+  h.assertEqual('a shape with no close pair is not braced',
+    GR.softBraces(openRing, 0.5).pairs.length, 0);
+
   h.group('softmesh: fold detection');
 
   // A clean convex ring never crosses itself.
