@@ -299,4 +299,78 @@ module.exports = function (GR, h) {
   var a = jb.nodes[0].body.getLinearVelocity();
   var b = jb2.nodes[0].body.getLinearVelocity();
   h.assert('two softbodies get different nudges', Math.abs(a.x - b.x) > 1e-12);
+
+  // ------------------------------------------------------------------ self-collision
+  //
+  // THE frame-0 assertion for self-collision. Every boundary pair with no spring between it must
+  // start OUTSIDE the self-contact distance, or the shape is pushed apart on step one.
+  //
+  // Four of the ten real scene shapes violate this without braces - yellowgreen at 0.401 cell,
+  // pink 0.420, cyan 0.429, green 0.493, against a 0.500 cell contact distance - and three of
+  // those four do not even fold, so the naive fix would have broken shapes that work today.
+  //
+  // The teardrops are here because the scene alone never exercises a ring separation above 2, and
+  // the whole rule turns on separations of 3, 4 and 6 occurring on ordinary shapes.
+  h.group('softbody: no pair starts in self-contact');
+
+  var scene = require('./fixtures_softscene');
+
+  function noPairInContact(label, ring) {
+    var Wc = GR.makeWorld({ scale: 100 });
+    var rig = GR.addSoftBody(Wc, [{ outer: ring, holes: [] }], { name: label, softness: 0.25 });
+    h.assert(label + ' meshes', !rig.fallback, rig.fallback || '');
+    if (rig.fallback) return null;
+
+    var mesh = rig.mesh, contact = 2 * GR.SOFT_SELF_RADIUS_FRAC * mesh.cell;
+    var jointed = {};
+    for (var s = 0; s < mesh.springs.length; s++) {
+      var ja = mesh.springs[s][0], jb2 = mesh.springs[s][1];
+      jointed[(ja < jb2 ? ja : jb2) + '-' + (ja < jb2 ? jb2 : ja)] = 1;
+    }
+    var worst = Infinity;
+    for (var p = 0; p < mesh.boundaryCount; p++) {
+      for (var q = p + 1; q < mesh.boundaryCount; q++) {
+        if (jointed[p + '-' + q]) continue;
+        var dx = mesh.nodes[p * 2] - mesh.nodes[q * 2];
+        var dy = mesh.nodes[p * 2 + 1] - mesh.nodes[q * 2 + 1];
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d < worst) worst = d;
+      }
+    }
+    h.assert('no unjointed pair of ' + label + ' starts in contact', worst >= contact,
+      'closest ' + (worst / mesh.cell).toFixed(3) + 'c against contact ' +
+      (contact / mesh.cell).toFixed(3) + 'c');
+    return rig;
+  }
+
+  for (var si = 0; si < scene.SCENE.length; si++) {
+    noPairInContact(scene.SCENE[si].name, scene.SCENE[si].ring);
+  }
+  var TIPS = [60, 47, 39, 33, 29];
+  for (var ti = 0; ti < TIPS.length; ti++) {
+    noPairInContact('teardrop' + TIPS[ti], scene.teardrop(TIPS[ti], 100, 96));
+  }
+
+  // The stiffness fixtures must brace NOTHING, which is what pins the self-contact radius at
+  // 0.25 cell: the square blob's closest unjointed pair is 0.566 cell, so at a 0.3 radius the
+  // contact distance would be 0.6 cell, all four corners would brace, and the measured stiffness
+  // table would move.
+  var sqRig = noPairInContact('square300', scene.squareRing(300, 12));
+  if (sqRig) h.assertEqual('the stiffness fixture needs no brace', sqRig.braceCount, 0);
+
+  // A brace only ever spans MATERIAL, never a gap - the invariant that makes an unbounded index
+  // rule safe. The shape that would disprove it is a "C" whose mouth has nearly closed: weld that
+  // shut and a C becomes an O, which is worse than the bug being fixed. Measured clean at every
+  // aperture from 0.6 rad down to 0.015.
+  h.group('softbody: a brace never spans a gap');
+
+  var APERTURES = [0.6, 0.3, 0.12, 0.05, 0.015];
+  for (var ai = 0; ai < APERTURES.length; ai++) {
+    var cRig = GR.addSoftBody(GR.makeWorld({ scale: 100 }),
+      [{ outer: scene.cShape(120, 60, APERTURES[ai], 64), holes: [] }],
+      { name: 'C', softness: 0.25 });
+    h.assert('a C at ' + APERTURES[ai] + ' rad meshes', !cRig.fallback, cRig.fallback || '');
+    if (cRig.fallback) continue;
+    h.assertEqual('no brace welds the C shut at ' + APERTURES[ai] + ' rad', cRig.braceAcrossGap, 0);
+  }
 };
