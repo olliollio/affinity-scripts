@@ -454,6 +454,49 @@ module.exports = function (GR, h) {
   }
   h.assert('repair leaves no consecutive duplicate points', !dupFound);
 
+  h.group('softmesh: the settled scene folds as measured');
+
+  // A fixture that does not reproduce the defect cannot prove it was fixed, so this asserts the
+  // starting condition before anything asserts the cure.
+  var scene = require('./fixtures_softscene');
+  var foldedNames = [], settledClean = 0;
+  for (var st = 0; st < scene.SETTLED.length; st++) {
+    if (GR.ringCrossings(scene.SETTLED[st].ring) > 0) foldedNames.push(scene.SETTLED[st].name);
+    else settledClean++;
+  }
+  h.assertEqual('five settled shapes cross themselves', foldedNames.length, 5);
+  h.assertEqual('five settled shapes do not', settledClean, 5);
+
+  h.group('softmesh: repairing the real settled scene');
+
+  // Measured on the exported artwork of a real Affinity run, and the numbers belong here rather
+  // than behind a threshold nobody can check:
+  //
+  //     shape     crossings   loops   area lost
+  //     orange      2 -> 0        2       0.25%
+  //     amber       1 -> 0        1       1.97%
+  //     cyan        1 -> 0        1       2.03%
+  //     purple      1 -> 0        1       0.01%
+  //     green       1 -> 0        1       0.22%
+  //     the other five: untouched
+  var worstLoss = 0, repairedCount = 0;
+  for (var sr = 0; sr < scene.SETTLED.length; sr++) {
+    var settled = scene.SETTLED[sr];
+    var res = GR.repairRing(settled.ring);
+    h.assertEqual('settled ' + settled.name + ' ends with no crossing',
+      GR.ringCrossings(res.points), 0);
+    if (res.repaired) {
+      repairedCount++;
+      if (res.lossFraction > worstLoss) worstLoss = res.lossFraction;
+    } else {
+      h.assert('untouched ' + settled.name + ' is byte-identical',
+        ringsEqual(res.points, settled.ring));
+    }
+  }
+  h.assertEqual('five of the ten needed repair', repairedCount, 5);
+  h.assert('the worst real loss is far under the valve', worstLoss < 0.05,
+    'worst ' + (100 * worstLoss).toFixed(2) + '%');
+
   h.group('softmesh: self-contact braces');
 
   // Hand-built rather than meshed, so every assertion here is about softBraces alone.
