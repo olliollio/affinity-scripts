@@ -155,7 +155,9 @@ frame 0 and would break the "impossible by construction" property outright.
 - `density: 0`. Node mass is solved backwards from a target — `nodeDensity = perNode / (π · r²)` —
   so a second fixture with density would add roughly 25% mass per node, break the "a jelly weighs
   what the rigid body would have weighed" invariant, and invalidate the measured stiffness table.
-- `rec.fixtures` becomes 2, since main.js prints it.
+- `rec.fixtures` becomes 2 on a boundary node so the record does not lie. Nothing reads it for a
+  soft node — `main.js` prints `fixtures=` only in the rigid `addBody` branch — so this changes no
+  output.
 
 **`0.25 * cell` is a constraint, not a preference.** The repo's primary stiffness fixture, a 300pt
 square blob, meshes to a closest unjointed pair of `0.566 * cell` at an ordinary 90° corner (the bold
