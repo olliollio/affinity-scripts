@@ -3266,6 +3266,74 @@ GR.planck = (function () {
     return mesh;
   }
 
+  /**
+   * Boundary pairs that must be jointed before self-contact fixtures can exist.
+   *
+   * A softbody's nodes never collided with each other, so nothing stopped one arm entering another
+   * and a crescent folded straight through itself. Giving boundary nodes a small collision fixture
+   * fixes that, but only if no pair STARTS inside the contact distance — a pair that does is pushed
+   * apart on the first step and the shape inflates itself apart.
+   *
+   * Every such pair is therefore given a spring, which removes the contact through the
+   * `collideConnected: false` that every joint in this rig already carries. That makes a frame-0
+   * explosion impossible BY CONSTRUCTION rather than by margin: afterwards, every remaining
+   * unjointed pair is outside the contact distance by definition.
+   *
+   * There is deliberately NO ring-separation threshold, and this is the part that is easy to get
+   * wrong. Bracing only `i,i+2` looks sufficient, because that is the only separation that occurs
+   * across a sample of ten real shapes — but the convergence band comes from `insetPoint` pushing
+   * both sides INSET_FRAC into the material, so its width scales as 1/sin(half-angle). Measured on
+   * teardrops: separation 3 at a 39 degree tip, 4 at 33 degrees — where the two-apart pair sits
+   * OUTSIDE the contact distance and an `|i-j| <= 2` rule fires nothing at all.
+   *
+   * A brace can never span a GAP, only material: the inset moves both nodes away from empty space,
+   * so across a gap the separation is at least 2 * INSET_FRAC = 1.2 cells, never inside a contact
+   * distance this rig uses. Measured on a "C" at eight apertures down to 0.015 rad, a mouth almost
+   * shut: no brace spans the mouth in any of them, so a "C" cannot be welded into an "O".
+   *
+   * `contactFrac` is the contact DISTANCE as a fraction of a cell, not the fixture radius.
+   */
+  function softBraces(mesh, contactFrac) {
+    var contact = contactFrac * mesh.cell;
+    var nodes = mesh.nodes, bCount = mesh.boundaryCount;
+
+    var jointed = {};
+    for (var s = 0; s < mesh.springs.length; s++) {
+      var a = mesh.springs[s][0], b = mesh.springs[s][1];
+      jointed[(a < b ? a : b) + '-' + (a < b ? b : a)] = 1;
+    }
+
+    // How far apart along their ring, so the report can say how wide a brace reached. Cross-ring
+    // and cross-face pairs share no ring and report -1.
+    function arcSeparation(p, q) {
+      for (var r = 0; r < mesh.ringSpans.length; r++) {
+        var span = mesh.ringSpans[r];
+        if (p >= span.start && p < span.start + span.count &&
+            q >= span.start && q < span.start + span.count) {
+          var raw = Math.abs(p - q);
+          return Math.min(raw, span.count - raw);
+        }
+      }
+      return -1;
+    }
+
+    var pairs = [], maxArc = 0;
+    // Every boundary node against every other, across rings and across faces alike. Scoping this
+    // per ring would leave a cross-ring pair in contact at rest and the guarantee would be gone.
+    for (var p = 0; p < bCount; p++) {
+      for (var q = p + 1; q < bCount; q++) {
+        if (jointed[p + '-' + q]) continue;
+        var dx = nodes[p * 2] - nodes[q * 2], dy = nodes[p * 2 + 1] - nodes[q * 2 + 1];
+        var d = Math.sqrt(dx * dx + dy * dy);
+        if (d >= contact) continue;
+        pairs.push([p, q, d]);
+        var arc = arcSeparation(p, q);
+        if (arc > maxArc) maxArc = arc;
+      }
+    }
+    return { pairs: pairs, maxArc: maxArc };
+  }
+
   /** Number of connected components over the spring graph. One, or the mesh is not a mesh. */
   function softMeshComponents(mesh) {
     var count = mesh.nodes.length / 2;
@@ -3449,6 +3517,7 @@ GR.planck = (function () {
   GR.resampleRing = resampleRing;
   GR.buildSoftMesh = buildSoftMesh;
   GR.addSoftSprings = addSoftSprings;
+  GR.softBraces = softBraces;
   GR.softMeshComponents = softMeshComponents;
   GR.bindOutline = bindOutline;
   GR.nodeRotations = nodeRotations;
@@ -3480,6 +3549,33 @@ GR.planck = (function () {
 
   // Node circles overlap so the union has no gap for a corner to pass through.
   var RADIUS_FRAC = 0.6;
+
+  // The SELF-contact circle: a second, smaller fixture on every boundary node that collides only
+  // with its own kind, so a jelly cannot pass through itself. The big fixture above is unchanged
+  // and remains the only thing that touches the world.
+  //
+  // 0.25 is a constraint, not a preference. The 300pt square blob the stiffness table was measured
+  // on has its closest unjointed boundary pair at 0.566 * cell across an ordinary 90 degree
+  // corner, so at 0.3 the contact distance would be 0.6 * cell, a brace would fire on all four of
+  // its corners, and the table would move. At 0.25 the contact distance is 0.5 * cell and neither
+  // stiffness fixture braces anything.
+  //
+  // It cannot be raised to close the gap between the node ring and the DRAWN outline either.
+  // INSET_FRAC and RADIUS_FRAC are both 0.6 on purpose — that identity is what makes the union of
+  // the node circles reproduce the drawn silhouette — so the outline sits 0.6 * cell outside the
+  // node ring and two surfaces overlap by 0.7 * cell before contact fires. Self-collision BOUNDS
+  // crossing depth; it does not remove crossings, and no test should ask it to.
+  var SELF_RADIUS_FRAC = 0.25;
+
+  // A category of its own, masked to itself alone, so the self-contact circle is invisible to the
+  // ground, the walls and every other object. Collision needs BOTH directions to agree —
+  // (catA & maskB) && (catB & maskA) — so masking one side suffices: an ordinary fixture is
+  // category 1 by default, and 1 & SELF_CATEGORY is 0.
+  //
+  // Two DIFFERENT jellies' self-contact circles share this category and so can collide, which is
+  // harmless: at 0.25 * cell they sit well inside the 0.6 * cell world fixtures, which touch first
+  // and keep them apart.
+  var SELF_CATEGORY = 0x0002;
 
   // Softness in Hz. Above 30 a spring is indistinguishable from rigid and starts fighting the
   // timestep, so that is the stiff end.
@@ -3588,6 +3684,10 @@ GR.planck = (function () {
         nodes: [], mesh: null, groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
         frequency: 0, frequencyRequested: 0, frequencyFloored: null,
         springCount: 0, totalMass: 0, fallback: reason,
+        // Hard zeros, NOT read from `braces`: give() is called before that exists, and reading it
+        // here throws out of a test file and kills the whole suite rather than failing one
+        // assertion. Nothing was meshed, so nothing was braced.
+        braceCount: 0, braceMaxArc: 0, braceAcrossGap: 0,
         node: o.node || null, name: name
       };
     }
@@ -3599,6 +3699,36 @@ GR.planck = (function () {
     GR.addSoftSprings(mesh);
     var nodeCount = mesh.nodes.length / 2;
     if (!nodeCount) return give('thin', sized.limit);
+
+    // Brace every unjointed boundary pair that starts inside the self-contact distance, BEFORE any
+    // fixture exists. A braced pair cannot generate a contact — `collideConnected: false` is on
+    // every joint here — so no pair can start overlapping and the shape cannot inflate itself
+    // apart on step one. Appending to mesh.springs is enough: addSoftSprings has already assigned
+    // the array, and the joint loop below runs over whatever it holds by then.
+    //
+    // `selfContact: false` turns the whole feature off — braces AND fixtures together. It exists so
+    // the before/after comparison measures ONE change: braces without fixtures would be a lattice
+    // carrying extra springs, and the comparison would confound two things at once.
+    var selfContact = o.selfContact === undefined ? true : !!o.selfContact;
+    var braces = selfContact ? GR.softBraces(mesh, 2 * SELF_RADIUS_FRAC) : { pairs: [], maxArc: 0 };
+    for (var bz = 0; bz < braces.pairs.length; bz++) {
+      mesh.springs.push([braces.pairs[bz][0], braces.pairs[bz][1], braces.pairs[bz][2]]);
+    }
+
+    // A brace should only ever span material, because the inset moves both nodes away from empty
+    // space. Counted rather than assumed: if this is ever non-zero a "C" is being welded into an
+    // "O", which is worse than the bug being fixed.
+    var acrossGap = 0;
+    for (var ag = 0; ag < braces.pairs.length; ag++) {
+      var gA = braces.pairs[ag][0], gB = braces.pairs[ag][1];
+      var mx = (mesh.nodes[gA * 2] + mesh.nodes[gB * 2]) / 2;
+      var my = (mesh.nodes[gA * 2 + 1] + mesh.nodes[gB * 2 + 1]) / 2;
+      var insideAny = false;
+      for (var gf = 0; gf < simFaces.length; gf++) {
+        if (GR.pointInFace(mx, my, simFaces[gf])) { insideAny = true; break; }
+      }
+      if (!insideAny) acrossGap++;
+    }
 
     var radius = RADIUS_FRAC * sized.cell;
 
@@ -3664,6 +3794,23 @@ GR.planck = (function () {
         restitution: o.restitution === undefined ? 0 : o.restitution,
         filterGroupIndex: groupIndex
       });
+      // The self-contact circle, on BOUNDARY nodes only — indices 0 .. boundaryCount-1 by
+      // construction. Density 0: node mass was solved backwards from a target above, and a second
+      // fixture carrying density would break the "a jelly weighs what the rigid body would have
+      // weighed" invariant along with every measured stiffness figure.
+      var isBoundary = selfContact && n < mesh.boundaryCount;
+      if (isBoundary) {
+        body.createFixture(new pl.Circle(SELF_RADIUS_FRAC * sized.cell), {
+          density: 0,
+          friction: 0,
+          restitution: 0,
+          filterCategoryBits: SELF_CATEGORY,
+          filterMaskBits: SELF_CATEGORY,
+          // MUST be 0 — a matching non-zero group short-circuits category and mask entirely, and
+          // inheriting the body's negative group would leave this inert while looking implemented.
+          filterGroupIndex: 0
+        });
+      }
       var rec = {
         body: body,
         // The rest position back in SRC units, so playback places this node exactly as it places a
@@ -3672,7 +3819,9 @@ GR.planck = (function () {
         oy: -mesh.nodes[n * 2 + 1] * scale,
         angle0: 0,
         simRadius: radius,
-        fixtures: 1,
+        // Two on the boundary, one inside. Nothing reads this for a soft node — main.js prints
+        // `fixtures=` only in the rigid addBody branch — but the record should not lie.
+        fixtures: isBoundary ? 2 : 1,
         rejected: [],
         bullet: false,
         name: name + ' [' + n + ']',
@@ -3714,8 +3863,13 @@ GR.planck = (function () {
       // because a user who asked for goo and got a firm shell has to be able to see that.
       frequencyRequested: requested,
       frequencyFloored: floored,
+      // Includes the braces, since a brace IS a spring. The report prints `braces=` separately so
+      // the two numbers overlap by design rather than by accident.
       springCount: mesh.springs.length,
       totalMass: totalMass,
+      braceCount: braces.pairs.length,
+      braceMaxArc: braces.maxArc,
+      braceAcrossGap: acrossGap,
       fallback: null,
       node: o.node || null,
       name: name
@@ -3725,6 +3879,8 @@ GR.planck = (function () {
   GR.addSoftBody = addSoftBody;
   GR.softnessToFrequency = softnessToFrequency;
   GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
+  GR.SOFT_SELF_RADIUS_FRAC = SELF_RADIUS_FRAC;
+  GR.SOFT_SELF_CATEGORY = SELF_CATEGORY;
   GR.SOFT_MIN_FREQ = MIN_FREQ;
   GR.SOFT_MAX_FREQ = MAX_FREQ;
   GR.SOFT_SHELL_MIN_FREQ = SHELL_MIN_FREQ;
@@ -5520,6 +5676,11 @@ GR.planck = (function () {
             // Only when there are several faces, because on the ordinary one-face object it is
             // always 0 and says nothing. On an "i" it is what holds the dot onto the stem.
             (madeSoft.mesh.crossFaceSprings ? ' cross=' + madeSoft.mesh.crossFaceSprings : '') +
+            // Springs added where two boundary nodes started inside the self-contact distance, so
+            // that pair is jointed instead of colliding and cannot blow the shape apart at frame
+            // 0. A handful is ordinary — sharp tips produce them. Counted inside springs= as well,
+            // because a brace IS a spring; this says how many of them are braces.
+            (madeSoft.braceCount ? ' braces=' + madeSoft.braceCount : '') +
             ' rings=' + bound.length +
             ' freq=' + fmt(madeSoft.frequency, 1) + 'Hz' +
             // The softness slider is a REQUEST that a hollow shape overrides, exactly as measured
@@ -5530,6 +5691,18 @@ GR.planck = (function () {
               : '') +
             ' mass=' + fmt(madeSoft.totalMass, 4) +
             ' limit=' + madeSoft.limit);
+
+          // A shape needing braces across much of its boundary is a hairline that has been meshed
+          // into a nearly rigid chain, and it will not squash however soft the setting. Untested
+          // and not reached by any known artwork — the worst measured cases are 3 braces of 62
+          // boundary nodes on a nearly-shut "C" and 3 of 53 on a 29 degree teardrop — so this is a
+          // guard against artwork nobody has tried yet rather than a case that has been seen.
+          if (madeSoft.braceCount > madeSoft.mesh.boundaryCount / 3) {
+            console.log('    ' + (obj.name || '(unnamed)') + ' is very thin for its mesh: ' +
+              madeSoft.braceCount + ' of ' + madeSoft.mesh.boundaryCount + ' boundary nodes ' +
+              'needed bracing, so it will behave more rigidly than the softness setting asks. ' +
+              'Simplify the shape or make it thicker.');
+          }
           continue;
         }
 
