@@ -254,6 +254,23 @@
         restitution: o.restitution === undefined ? 0 : o.restitution,
         filterGroupIndex: groupIndex
       });
+      // The self-contact circle, on BOUNDARY nodes only — indices 0 .. boundaryCount-1 by
+      // construction. Density 0: node mass was solved backwards from a target above, and a second
+      // fixture carrying density would break the "a jelly weighs what the rigid body would have
+      // weighed" invariant along with every measured stiffness figure.
+      var isBoundary = n < mesh.boundaryCount;
+      if (isBoundary) {
+        body.createFixture(new pl.Circle(SELF_RADIUS_FRAC * sized.cell), {
+          density: 0,
+          friction: 0,
+          restitution: 0,
+          filterCategoryBits: SELF_CATEGORY,
+          filterMaskBits: SELF_CATEGORY,
+          // MUST be 0 — a matching non-zero group short-circuits category and mask entirely, and
+          // inheriting the body's negative group would leave this inert while looking implemented.
+          filterGroupIndex: 0
+        });
+      }
       var rec = {
         body: body,
         // The rest position back in SRC units, so playback places this node exactly as it places a
@@ -262,7 +279,9 @@
         oy: -mesh.nodes[n * 2 + 1] * scale,
         angle0: 0,
         simRadius: radius,
-        fixtures: 1,
+        // Two on the boundary, one inside. Nothing reads this for a soft node — main.js prints
+        // `fixtures=` only in the rigid addBody branch — but the record should not lie.
+        fixtures: isBoundary ? 2 : 1,
         rejected: [],
         bullet: false,
         name: name + ' [' + n + ']',
