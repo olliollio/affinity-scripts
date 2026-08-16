@@ -696,8 +696,14 @@
     // that crosses itself FILLS WITH A HOLE - the artwork comes back gouged. That is invisible in
     // every other number the report prints, so it is checked explicitly on the settled frame.
     // Measured on a real 10-shape scene: clean at 30Hz, gouged at 15.5Hz.
+    // The counts are recomputed here rather than reported out of playback: `softCommands` returns
+    // only a command array, and this report is printed before playback runs at all. It therefore
+    // describes the SETTLED frame, while the repair that actually runs applies to whichever frame
+    // is written - the same caveat the fold count has always carried.
     if (softs.length) {
       var foldedShapes = 0, foldedCross = 0;
+      var repairedShapes = 0, repairedLoops = 0, worstLoss = 0;
+      var refusedShapes = 0, worstRefused = 0;
       for (var fs = 0; fs < softs.length; fs++) {
         var sf = softs[fs];
         var fpos = [];
@@ -705,20 +711,44 @@
           var fp = GR.poseAt(frames, frames.frameCount - 1, sf.nodes[fn].frameIndex);
           fpos.push(fp.x, fp.y);
         }
-        var shapeCross = 0;
+        var shapeCross = 0, shapeRepaired = 0, shapeRefused = 0;
         for (var fr = 0; fr < sf.rings.length; fr++) {
-          shapeCross += GR.outlineFolds(GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos));
+          var outline = GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos);
+          shapeCross += GR.outlineFolds(outline);
+          var fix = GR.repairRing(outline);
+          if (fix.repaired) {
+            shapeRepaired += fix.loopsRemoved;
+            if (fix.lossFraction > worstLoss) worstLoss = fix.lossFraction;
+          } else if (fix.abandoned) {
+            shapeRefused++;
+            if (fix.lossFraction > worstRefused) worstRefused = fix.lossFraction;
+          }
         }
         if (shapeCross) { foldedShapes++; foldedCross += shapeCross; }
+        if (shapeRepaired) { repairedShapes++; repairedLoops += shapeRepaired; }
+        if (shapeRefused) refusedShapes++;
       }
       console.log('');
-      if (foldedShapes) {
-        console.log('  ' + foldedShapes + ' of ' + softs.length + ' jelly shape(s) FOLDED through ' +
-          'themselves (' + foldedCross + ' crossings).');
-        console.log('  A folded outline fills with a hole, so those shapes will come back gouged.');
-        console.log('  The lattice was crushed: lower "Jelly softness %" until this line disappears.');
-      } else {
-        console.log('  no jelly folded through itself  OK');
+      if (repairedShapes) {
+        console.log('  ' + repairedShapes + ' of ' + softs.length + ' jelly outline(s) folded and ' +
+          'were REPAIRED (' + repairedLoops + ' loop(s) removed, worst ' +
+          fmt(100 * worstLoss, 2) + '% of a shape\'s area).');
+        console.log('  A folded outline would have filled with a hole; the fold is cut out instead.');
+      }
+      if (refusedShapes) {
+        console.log('  ' + refusedShapes + ' of ' + softs.length + ' jelly outline(s) folded so ' +
+          'badly that repairing them would have removed ' + fmt(100 * worstRefused, 0) + '% of the ' +
+          'shape.');
+        console.log('  Those were left alone and WILL come back gouged - returning mangled artwork ' +
+          'is worse.');
+        console.log('  Lower "Jelly softness %" until this line disappears.');
+      }
+      if (!repairedShapes && !refusedShapes) {
+        console.log('  no jelly folded through itself  OK' +
+          // outlineFolds counts a collinear or touching pair where repair requires a PROPER
+          // crossing, so it can flag a ring that has nothing to cut out. Say so rather than let
+          // the two numbers look contradictory.
+          (foldedShapes ? '  (' + foldedCross + ' touching/collinear pair(s), nothing to cut)' : ''));
       }
     }
 
