@@ -248,6 +248,17 @@
             var pts = GR.evalSoftOutline(rings[r], soft.mesh, positions);
             if (pts.length < 6) continue;   // fewer than three points is not a ring
 
+            // A folded outline fills with a HOLE under even-odd, so the artwork comes back gouged.
+            // Repaired HERE: in the space the physics ran in, and before the transform back to base
+            // space, because this is the last point at which the geometry is still ours.
+            //
+            // On every frame, preview and commit alike. Ten real rings repair in 0.151ms warm and
+            // 0.118ms when already clean, which is about 1% of a frame - an earlier design ran this
+            // on commit only, on the strength of a timing that turned out to be 53x too high.
+            // `repairRing` returns the original points whenever it declines, so this is
+            // unconditional and a clean ring comes back byte-identical.
+            pts = GR.repairRing(pts).points;
+
             // Back into the node's own space, AFTER evaluating — the binding was built in the space
             // the physics ran in, and so are the poses driving it.
             if (entry.toBase) GR.transformRing(pts, entry.toBase);
