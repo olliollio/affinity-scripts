@@ -170,7 +170,12 @@
     // every joint here — so no pair can start overlapping and the shape cannot inflate itself
     // apart on step one. Appending to mesh.springs is enough: addSoftSprings has already assigned
     // the array, and the joint loop below runs over whatever it holds by then.
-    var braces = GR.softBraces(mesh, 2 * SELF_RADIUS_FRAC);
+    //
+    // `selfContact: false` turns the whole feature off — braces AND fixtures together. It exists so
+    // the before/after comparison measures ONE change: braces without fixtures would be a lattice
+    // carrying extra springs, and the comparison would confound two things at once.
+    var selfContact = o.selfContact === undefined ? true : !!o.selfContact;
+    var braces = selfContact ? GR.softBraces(mesh, 2 * SELF_RADIUS_FRAC) : { pairs: [], maxArc: 0 };
     for (var bz = 0; bz < braces.pairs.length; bz++) {
       mesh.springs.push([braces.pairs[bz][0], braces.pairs[bz][1], braces.pairs[bz][2]]);
     }
@@ -258,7 +263,7 @@
       // construction. Density 0: node mass was solved backwards from a target above, and a second
       // fixture carrying density would break the "a jelly weighs what the rigid body would have
       // weighed" invariant along with every measured stiffness figure.
-      var isBoundary = n < mesh.boundaryCount;
+      var isBoundary = selfContact && n < mesh.boundaryCount;
       if (isBoundary) {
         body.createFixture(new pl.Circle(SELF_RADIUS_FRAC * sized.cell), {
           density: 0,

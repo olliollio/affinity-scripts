@@ -440,6 +440,24 @@ module.exports = function (GR, h) {
   // orange's arms interpenetrate to 0.052c, a ninefold loss of separation, and this assertion
   // fails loudly. An assertion that cannot fail is worse than none, and the units are how that
   // happens here - see the comment on reading positions below.
+  //
+  // WHAT THIS DOES NOT FIX, measured with `selfContact: false` against true, each shape settled
+  // alone at scale 100, crossings from outlineFolds on the drawn outline:
+  //
+  //     teal 1 -> 0    amber 0 -> 2    orange 1 -> 1    every other shape 0 -> 0
+  //     total 2 -> 3
+  //
+  // Self-collision does NOT reduce outline crossings and here it raises the count by one. That is
+  // the INSET_FRAC == RADIUS_FRAC identity again: the drawn outline sits 0.6c OUTSIDE the node
+  // ring, so two arms resting at the 0.5c contact distance have drawn surfaces overlapping by
+  // 0.7c and the outline crosses. Without self-contact an arm passes clean through and can settle
+  // separated on the far side, which sometimes scores FEWER crossings than a physically correct
+  // resting contact.
+  //
+  // So crossing count is not a monotone measure of correctness and must not be asserted on. What
+  // this feature fixes is the interpenetration itself, which is the assertion below. Removing the
+  // gouging needs the area-preservation term, so arms compress less and meet less often, or a
+  // repair pass on the written-back curve.
   var folders = [];
   for (var fs2 = 0; fs2 < scene.SCENE.length; fs2++) {
     if (scene.SCENE[fs2].folds) folders.push(scene.SCENE[fs2]);
