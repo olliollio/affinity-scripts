@@ -552,6 +552,15 @@
   // below the shapes that must be refused: a pentagram loses 44.7% in a single pass.
   var REPAIR_MAX_LOSS = 0.25;
 
+  // Below this share of the shape a removed loop is a HAIRLINE, not a fold. Measured in Affinity on
+  // the ten-shape scene: 797 loops removed across ten outlines and not one of them reached 0.005%,
+  // because they are sub-pixel tangles from the outline resampling rather than folded artwork - the
+  // whole scene stayed visually clean, and the report printed "worst 0.00%" to two decimals, so
+  // every one of them was under 0.005%. 0.01% of a 100x100pt shape is 1pt^2 - a loop that small
+  // cannot be seen at any zoom, which is the property the threshold is really testing for. It
+  // changes nothing about what repair DOES; it only decides which sentence the report prints.
+  var REPAIR_HAIRLINE = 0.0001;
+
   /** Signed shoelace area. The SIGN carries the winding, so repair can prove it preserved it. */
   function ringSignedArea(p) {
     var a = 0;
@@ -642,14 +651,20 @@
   function repairRing(points, opts) {
     var o = opts || {};
     var maxLoss = o.maxLoss === undefined ? REPAIR_MAX_LOSS : o.maxLoss;
+    var hairline = o.hairline === undefined ? REPAIR_HAIRLINE : o.hairline;
     var pts = points.slice();
     var maxPasses = o.maxPasses === undefined ? points.length / 2 : o.maxPasses;
     var removed = 0, lost = 0, passes = 0;
+    // Every discarded lobe's area, kept so the loops can be split into hairlines and real folds
+    // once the retained area is known. Classifying inside the loop would have to measure against
+    // the ring as it stands mid-repair, which is not the shape anyone will look at.
+    var loopAreas = [];
 
     // Reports what it WOULD have discarded. A refusal with no number leaves the user unable to
     // judge it, and "would have removed 49% of this shape" is the useful part.
     function abandon(why, frac) {
       return { points: points, loopsRemoved: 0, lostArea: lost, lossFraction: frac || 0,
+               hairlineLoops: 0, foldLoops: 0, worstLoopFraction: 0,
                repaired: false, abandoned: why };
     }
 
@@ -665,13 +680,17 @@
       for (k = f.j + 1; k <= f.i + n; k++) B.push(pts[(k % n) * 2], pts[(k % n) * 2 + 1]);
 
       var aA = Math.abs(ringSignedArea(A)), aB = Math.abs(ringSignedArea(B));
-      if (aA >= aB) { pts = A; lost += aB; } else { pts = B; lost += aA; }
+      var dropped = aA >= aB ? aB : aA;
+      if (aA >= aB) pts = A; else pts = B;
+      lost += dropped;
+      loopAreas.push(dropped);
       removed++;
       pts = dedupeRing(pts);
     }
 
     if (!removed) {
       return { points: points, loopsRemoved: 0, lostArea: 0, lossFraction: 0,
+               hairlineLoops: 0, foldLoops: 0, worstLoopFraction: 0,
                repaired: false, abandoned: null };
     }
     if (pts.length / 2 < 3) return abandon('degenerate');
@@ -681,7 +700,18 @@
     var frac = lost / kept;
     if (frac > maxLoss) return abandon('loss', frac);
 
+    // Against the RETAINED area, exactly as the valve is - see above for why the original ring's
+    // |shoelace| is the wrong denominator.
+    var hairlines = 0, worstLoop = 0;
+    for (var la = 0; la < loopAreas.length; la++) {
+      var lf = loopAreas[la] / kept;
+      if (lf <= hairline) hairlines++;
+      if (lf > worstLoop) worstLoop = lf;
+    }
+
     return { points: pts, loopsRemoved: removed, lostArea: lost, lossFraction: frac,
+             hairlineLoops: hairlines, foldLoops: removed - hairlines,
+             worstLoopFraction: worstLoop,
              repaired: true, abandoned: null };
   }
 
@@ -941,6 +971,7 @@
   GR.ringCrossings = ringCrossings;
   GR.ringSignedArea = ringSignedArea;
   GR.SOFT_REPAIR_MAX_LOSS = REPAIR_MAX_LOSS;
+  GR.SOFT_REPAIR_HAIRLINE = REPAIR_HAIRLINE;
   GR.softMeshComponents = softMeshComponents;
   GR.bindOutline = bindOutline;
   GR.nodeRotations = nodeRotations;

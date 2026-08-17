@@ -454,6 +454,70 @@ module.exports = function (GR, h) {
   }
   h.assert('repair leaves no consecutive duplicate points', !dupFound);
 
+  // HAIRLINES vs FOLDS. Measured in Affinity on the ten-shape scene: 797 loops removed across ten
+  // outlines, and the worst of them cost 0.00% of a shape. Those are not gouges - they are
+  // sub-pixel tangles thrown off by `evalSoftOutline`, which blends each outline point over its own
+  // set of nodes, so two adjacent points on different sets get slightly different rotations. At the
+  // coarse sampling of a hand-drawn ring that is invisible; at the density a flattened curve
+  // actually has, it is a hairpin. Repair swallows them for one point each and no area, but a
+  // report that calls them folds tells the user their artwork was mangled when nothing moved.
+  //
+  // One fixture family covers both cases, because the lobe area scales with s^2 while the ring
+  // stays 1000x1000: s = 1 is 4e-6 of the shape and s = 100 is 4% of it.
+  function bigRingWithExcursion(s) {
+    return [0, 0,  1000, 0,  1000, 1000,
+            600, 1000,  600 - 4 * s, 1000 + 6 * s,  600 + 2 * s, 1000 + 6 * s,  600 - 2 * s, 1000,
+            0, 1000];
+  }
+
+  var hairRing = bigRingWithExcursion(1);
+  h.assert('the hairline fixture really does cross itself', GR.ringCrossings(hairRing) > 0);
+  var rh = GR.repairRing(hairRing);
+  h.assert('a hairline ring is repaired', rh.repaired === true, 'abandoned: ' + rh.abandoned);
+  h.assertEqual('a hairline is counted as a hairline', rh.hairlineLoops, 1);
+  h.assertEqual('a hairline is not counted as a fold', rh.foldLoops, 0);
+  h.assert('a hairline is far under the threshold', rh.worstLoopFraction < GR.SOFT_REPAIR_HAIRLINE,
+    'worst ' + rh.worstLoopFraction);
+
+  var gougeRing = bigRingWithExcursion(100);
+  var rg = GR.repairRing(gougeRing);
+  h.assert('a visible fold is repaired', rg.repaired === true, 'abandoned: ' + rg.abandoned);
+  h.assertEqual('a visible fold is counted as a fold', rg.foldLoops, 1);
+  h.assertEqual('a visible fold is not counted as a hairline', rg.hairlineLoops, 0);
+  h.assert('a visible fold is over the threshold', rg.worstLoopFraction > GR.SOFT_REPAIR_HAIRLINE,
+    'worst ' + rg.worstLoopFraction);
+
+  // The split is a partition, not two independent counts - a caller that adds them must get the
+  // total back or the report double-counts.
+  h.assertEqual('hairlines and folds partition the loops removed',
+    rh.hairlineLoops + rh.foldLoops, rh.loopsRemoved);
+  h.assertEqual('the same holds for a real fold', rg.hairlineLoops + rg.foldLoops, rg.loopsRemoved);
+
+  // The classification is measured against the RETAINED area, for the same reason the valve is: a
+  // folded ring's |shoelace| already has the fold subtracted, and a figure-eight's is exactly 0.
+  var keptG = Math.abs(GR.ringSignedArea(rg.points));
+  h.assertClose('the worst loop fraction is measured against what was kept',
+    rg.worstLoopFraction, rg.lostArea / keptG, 1e-9);
+
+  // A ring carrying both must report both, since that is the case the report has to describe.
+  var mixed = [0, 0,  1000, 0,  1000, 1000,
+               800, 1000,  800 - 4, 1006,  800 + 2, 1006,  800 - 2, 1000,
+               600, 1000,  200, 1600,  800, 1600,  400, 1000,
+               0, 1000];
+  var rm = GR.repairRing(mixed);
+  h.assert('a mixed ring is repaired', rm.repaired === true, 'abandoned: ' + rm.abandoned);
+  h.assertEqual('a mixed ring reports one hairline', rm.hairlineLoops, 1);
+  h.assertEqual('a mixed ring reports one fold', rm.foldLoops, 1);
+
+  // A clean ring reports zeroes rather than undefined, so the report can sum unconditionally.
+  h.assertEqual('a clean ring reports no hairlines', GR.repairRing(cleanSq).hairlineLoops, 0);
+  h.assertEqual('a clean ring reports no folds', GR.repairRing(cleanSq).foldLoops, 0);
+  h.assertEqual('a clean ring reports no worst loop', GR.repairRing(cleanSq).worstLoopFraction, 0);
+
+  // A refusal must not claim it classified anything - it removed nothing.
+  h.assertEqual('a refused ring reports no hairlines', re.hairlineLoops, 0);
+  h.assertEqual('a refused ring reports no folds', re.foldLoops, 0);
+
   h.group('softmesh: the settled scene folds as measured');
 
   // A fixture that does not reproduce the defect cannot prove it was fixed, so this asserts the
