@@ -430,6 +430,37 @@ back from spread space into base space, and closes each ring with `CurveBuilder.
 > reports `isClosed false`. It would draw closed and FILL wrong, which is the failure mode that
 > matters for a jelly, since a jelly is a filled shape with holes in it.
 
+### The outline is repaired on the way into the document
+
+Self-collision keeps the LATTICE out of itself and still cannot keep the CURVE out of itself, and the
+reason is structural: `INSET_FRAC` and `RADIUS_FRAC` are both 0.6, so the drawn outline sits 0.6 cell
+outside the node ring while self-contact begins at 0.5 cell of node separation. Two arms resting
+legally against each other have already overlapped **0.7 cell** on paper. A closed curve that crosses
+itself fills with a HOLE under even-odd, so the artwork comes back gouged.
+
+`repairRing` is the last defence and, unlike the physics, it is guaranteed per ring: it operates on
+exactly the geometry that gets written. A crossing splits a closed ring into exactly two closed
+loops; it keeps the larger. That is correct only because a real fold is a **short contiguous
+excursion** — an arm pokes in and comes back, so its two crossings sit close in ring order and the
+loop between them is small. A bowtie's crossings are far apart and a split at either one halves the
+ring; measured, a 25-area bowtie collapses to a **12.86** triangle. The valve refuses above
+`REPAIR_MAX_LOSS = 0.25` of the shape, measured against the **retained** area — a folded ring's
+`|shoelace|` already has the lobe subtracted, so an equal-lobe figure-eight has `|shoelace|` of
+exactly 0, which is precisely when the valve must decide.
+
+Verified in Affinity on the ten-shape scene at softness 25: **all ten settled outlines export with
+zero self-intersections**, against four that gouged before any of this existed.
+
+**Most removed loops are hairlines, not folds.** The same run removed **797 loops across ten
+outlines** and the worst cost 0.00% of a shape. Those are not damage: `evalSoftOutline` blends each
+outline point over its own set of nodes, so two adjacent points bound to different sets get slightly
+different rotations, and at the density a flattened curve actually has that shows up as a sub-pixel
+hairpin. Reproduced headlessly on the same rig (cells, cell size, node count, mass and frequency all
+match the real run to three figures): at 64 points per ring there are none, at 1600 they appear, and
+each one costs exactly **one point and zero area**. So the report counts a loop as a fold only above
+`REPAIR_HAIRLINE = 0.01%` of the shape — 1pt² on a 100×100pt shape — and reports the rest on their
+own line. Repair itself is unchanged; only the sentence changes.
+
 **What is not verified.** The write-back is tested against a recording SDK fake, so "closed" and "in
 base space" are properties of the CALLS rather than of rendered output — nothing here has been
 compared against pixels. Multi-ring fills are unmeasured on canvas. So is preview cost at jelly point
