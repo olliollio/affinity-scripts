@@ -451,15 +451,28 @@ exactly 0, which is precisely when the valve must decide.
 Verified in Affinity on the ten-shape scene at softness 25: **all ten settled outlines export with
 zero self-intersections**, against four that gouged before any of this existed.
 
-**Most removed loops are hairlines, not folds.** The same run removed **797 loops across ten
-outlines** and the worst cost 0.00% of a shape. Those are not damage: `evalSoftOutline` blends each
-outline point over its own set of nodes, so two adjacent points bound to different sets get slightly
-different rotations, and at the density a flattened curve actually has that shows up as a sub-pixel
-hairpin. Reproduced headlessly on the same rig (cells, cell size, node count, mass and frequency all
-match the real run to three figures): at 64 points per ring there are none, at 1600 they appear, and
-each one costs exactly **one point and zero area**. So the report counts a loop as a fold only above
-`REPAIR_HAIRLINE = 0.01%` of the shape — 1pt² on a 100×100pt shape — and reports the rest on their
-own line. Repair itself is unchanged; only the sentence changes.
+**The report used to describe an outline made entirely of NaN, and said "797 loop(s) removed, worst
+0.00%" about it.** Two defects lined up. `poseAt` addresses the recording by an index each body
+carries as `frameIndex` — which was assigned only in `playbackPrepare`, and the settled report reads
+poses long before playback exists, so every node's pose came back `undefined`. A typed array returns
+`undefined` for a NaN index silently, with no throw. Then `properCross` rejected an intersection with
+`t <= 0 || t >= 1 || u <= 0 || u >= 1`, and **every one of those is false when a coordinate is NaN**,
+so it fell through and reported a proper crossing at every pair of segments.
+
+The tell was `worst 0.00%`: every loop's area was NaN, and NaN is never greater than a running
+maximum. Nothing drawn was ever affected — playback runs after `prepare`, so the geometry written to
+the document always had real positions, and the exported outlines were independently checked clean.
+But every jelly number the report printed was measuring nothing. `run` now assigns `frameIndex`,
+because `run` is what fixes the recording order, and `properCross` tests the positive form so NaN
+fails closed.
+
+**Hairlines are real, and much rarer than that.** `evalSoftOutline` blends each outline point over
+its own set of nodes, so two adjacent points bound to different sets get slightly different
+rotations; at the density a flattened curve actually has, that shows up as a sub-pixel hairpin.
+Measured headlessly on the ten-shape rig: at 64 points per ring there are **none**, at 1600 **one**
+appears, and it costs exactly one point and zero area. So the report counts a loop as a fold only
+above `REPAIR_HAIRLINE = 0.01%` of the shape — 1pt² on a 100×100pt shape — and reports the rest on
+their own line. Repair itself is unchanged; only the sentence changes.
 
 **What is not verified.** The write-back is tested against a recording SDK fake, so "closed" and "in
 base space" are properties of the CALLS rather than of rendered output — nothing here has been

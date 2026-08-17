@@ -196,6 +196,14 @@
     var bodies = W.dynamics;
     var n = bodies.length;
 
+    // The recording is addressed by index into W.dynamics, so every body has to know its own. Set
+    // HERE, because `run` is what fixes that order. It used to be set only in `playbackPrepare`,
+    // which runs much later: the settled report in main.js reads poses before playback exists and
+    // was therefore reading `undefined` for every node, producing an all-NaN outline that the
+    // report then described as 797 repaired folds. Nothing drawn was ever affected - playback runs
+    // after prepare - but every jelly number the report printed was measuring nothing.
+    for (var fi = 0; fi < n; fi++) bodies[fi].frameIndex = fi;
+
     if (o.seed !== undefined) seedJitter(W, o.seed, o.jitter);
 
     var quietFrames = o.quietFrames === undefined ? QUIET_FRAMES : o.quietFrames;

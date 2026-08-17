@@ -704,11 +704,9 @@
       var foldedShapes = 0, foldedCross = 0;
       var repairedShapes = 0, repairedLoops = 0, worstLoss = 0;
       var refusedShapes = 0, worstRefused = 0;
-      // Hairlines are counted apart from folds because they are a different thing entirely, and
-      // lumping them together made the report lie in the loudest possible way: measured on the
-      // ten-shape scene it announced "10 of 10 jelly outline(s) folded" over 797 sub-pixel tangles
-      // that cost 0.00% between them, while the exported artwork had zero self-intersections and
-      // looked perfect. A user reading that would have gone looking for damage that was not there.
+      // Hairlines are counted apart from folds because they are a different thing entirely: a
+      // sub-pixel tangle from resampling the outline is not damaged artwork, and a report that
+      // calls it a fold sends the user looking for a gouge that is not there.
       var hairShapes = 0, hairLoops = 0;
       for (var fs = 0; fs < softs.length; fs++) {
         var sf = softs[fs];
