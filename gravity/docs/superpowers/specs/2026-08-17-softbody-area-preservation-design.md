@@ -56,12 +56,24 @@ tuned to defeat it would be a rigid body with extra steps, and the force needed 
 Ideal gas, one-sided, with the FORCE capped rather than the pressure. Per ring:
 
 ```
-ratio = restArea / area                          signed areas, so a sign flip is detectable
-P     = gain * P0 * (ratio² − 1)                 0 below, and 0 entirely when ratio < 1 + DEADBAND
+ratio = restArea / area                       signed areas, so a sign flip is detectable
+P     = gain * P0 * (ratio² − (1+DEADBAND)²)  clamped at 0 below
 P0    = totalMass * g / ringPerimeter
-Fnode = clamp(0.5 * P * edgeLength, 0, FMAX)     along the edge's outward normal
-FMAX  = FORCE_CAP * nodeMass * g
+Fedge = 0.5 * P * edgeLength                  along the edge's outward normal
+Fnode = Σ over the node's two ring edges, THEN clamped to |Fnode| ≤ FMAX
+FMAX  = FORCE_CAP * nodeMass * g              nodeMass is body.getMass()
 ```
+
+**The clamp is per NODE, on the accumulated vector — not per edge.** Every boundary node sits on two
+ring edges, so clamping each contribution separately would cap the node at `2 * FMAX` and make the
+result depend on the order the edges are visited. The two orders differ materially exactly near
+collapse, which is the regime `FMAX` exists for. Accumulate first, clamp once.
+
+**The deadband is subtracted inside the square rather than gating the whole term.** `P` is then
+exactly zero at `ratio = 1 + DEADBAND` and rises continuously from there, instead of jumping from
+0 to `gain * P0 * 0.1236` at the threshold. A step discontinuity at the boundary is a limit-cycle
+source sitting precisely where the run needs shapes to sleep, and the continuous form costs nothing.
+Below the threshold the term is still exactly zero, so every sleep argument below is unchanged.
 
 - **`ratio² − 1`** is soft at first and rises steeply: barely present at 10% compression, close to a
   wall approaching 50%. A linear law cannot do both jobs — strong enough to hold purple up under a
@@ -78,10 +90,10 @@ FMAX  = FORCE_CAP * nodeMass * g
   bearing on it, not a share apportioned by area. Without this normalisation a fixed gain would be
   overwhelming on a small shape, irrelevant on a large one, and would silently depend on mesh
   resolution.
-- **`FMAX`** caps the per-node force. Capping `P` instead would leave the per-node force free by a
-  factor of the edge length, which varies across a ring, and a steep law near total collapse can
-  otherwise produce a force large enough to break the timestep. Expressing the cap as a multiple of
-  a node's OWN weight is what keeps it free of scale.
+- **`FMAX`** caps the accumulated per-node force. Capping `P` instead would leave the per-node force
+  free by a factor of the edge length, which varies across a ring, and a steep law near total
+  collapse can otherwise produce a force large enough to break the timestep. Expressing the cap as a
+  multiple of a node's OWN weight is what keeps it free of scale.
 - **`gain` maps linearly** over 0..1, unlike softness which is log-spaced. Softness is log-spaced
   because droop is strongly non-linear in Hz; here the non-linearity already lives in `ratio²`, and
   a log slider would compound it.
@@ -95,7 +107,16 @@ point would be equivalent — naming the centre form avoids implying a torque th
 |---|---|---|
 | `DEADBAND` | 0.06 | Measured. A jelly settling under its own weight alone loses up to 4.0% (purple), and the term must not fire on that. 0.06 clears every shape on the bench with headroom. |
 | `FORCE_CAP` | 8 | Starting point. Pinned on the bench during implementation; this is the number to move if a scene proves unstable. |
-| default `gain` | pinned on the bench | The lowest gain that meets the success criterion without a shape gaining area or the run failing to sleep. Recorded in a code comment with the table it came from. |
+| default `gain` | pinned on the bench | The lowest gain that meets the success criterion AND passes both gates below. Recorded in a code comment with the table it came from. |
+
+The two gates on the default gain, stated so they can be checked rather than judged:
+
+- **No overshoot.** The law is one-sided, so a shape cannot be driven above its rest area in steady
+  state — but momentum can carry it there transiently. Measured as `max over frames of
+  (area / restArea)` on the bench at LOAD = 0 and LOAD = 4: **≤ 1.05**, and the settled frame's
+  ratio **≤ 1.00**. A gain that rings past rest and back is the failure mode the one-sided clamp
+  exists to avoid, and this is what catches it.
+- **The run still sleeps.** `settledBy` is `'sleep'`, not `'quiescence'`, on every bench shape.
 
 ### Why the deadband is load-bearing
 
@@ -149,19 +170,32 @@ option that several tests set, and the two diverge whenever it is greater than o
 softbody records, and those exist only in what `addSoftBody` returns. main.js closes over its
 softbodies and passes the callback to `sim.run`.
 
+It also reports what the term did — in the SETTLED report block beside the fold and hairline lines,
+not on the per-softbody line. The per-softbody line is printed during extraction, before `sim.run` is
+called, so it cannot carry a settled number. The new line states the worst shape's settled area
+against its rest area, printed whenever there is a softbody at all, gain or no gain: the number is
+exactly as interesting when the answer is "it squashed 34%". Same idiom `braces=` follows — a feature
+that cannot be seen in the report is a feature nobody can tell is working.
+
 **`ui.js`** — a second slider, independent of softness: how strongly a shape resists being squashed,
 orthogonal to how readily it deforms. Needs the default beside `softness`, the editor, and the
 normalise step, plus option plumbing through main.js into `addSoftBody`.
 
 ## Testing
 
-- **The crush bench becomes a test file**, not a scratchpad script: ten shapes from
-  `fixtures_softscene.js`, one rigid slab of `LOAD × own weight`, settle, measure. Asserts the
-  success criterion at LOAD = 4 and records the LOAD = 0 control, so the deadband's justification
-  stays visible.
+- **The crush bench splits in two.** `test/bench_crush.js` is a standalone measurement tool in the
+  mould of the existing `test/bench.js` — ten shapes across the whole load sweep, prints the table
+  quoted in the README, asserts nothing, exits 0. One load over ten shapes measures at **1.2s**, so
+  the full sweep is around 6s: too slow for the commit gate. What goes INTO `test_softbody.js` is
+  the criterion on the three worst shapes only — teal, purple and green at LOAD = 4 — plus the
+  LOAD = 0 control that justifies the deadband. That is about 0.7s.
 - **Zero net force.** `Σ (outward normal × edge length) = 0` around any closed loop, so pressure
   cannot thrust an object sideways however lopsided the compression. Asserted directly rather than
-  trusted.
+  trusted — **on the unclamped sum**. Once `FMAX` binds on some nodes and not others the applied
+  forces genuinely do have a net component, so the invariant is false exactly under heavy load. The
+  assertion therefore covers the force field the law produces, and the test states that the cap
+  breaks it deliberately; the cap only binds near collapse, where a small net force is preferable to
+  a broken timestep.
 - **Gain 0 reproduces today exactly.** Every existing softbody measurement stays valid, and the
   feature is bisectable.
 - **No force at rest.** At LOAD = 0 the pass applies zero force on every step, which is the deadband
