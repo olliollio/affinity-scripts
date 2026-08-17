@@ -552,13 +552,22 @@
   // below the shapes that must be refused: a pentagram loses 44.7% in a single pass.
   var REPAIR_MAX_LOSS = 0.25;
 
-  // Below this share of the shape a removed loop is a HAIRLINE, not a fold. Measured in Affinity on
-  // the ten-shape scene: 797 loops removed across ten outlines and not one of them reached 0.005%,
-  // because they are sub-pixel tangles from the outline resampling rather than folded artwork - the
-  // whole scene stayed visually clean, and the report printed "worst 0.00%" to two decimals, so
-  // every one of them was under 0.005%. 0.01% of a 100x100pt shape is 1pt^2 - a loop that small
-  // cannot be seen at any zoom, which is the property the threshold is really testing for. It
-  // changes nothing about what repair DOES; it only decides which sentence the report prints.
+  // Below this share of the shape a removed loop is a HAIRLINE, not a fold.
+  //
+  // A hairline is a sub-pixel tangle rather than folded artwork. `evalSoftOutline` blends each
+  // outline point over its OWN set of nodes, so two adjacent points bound to different sets get
+  // slightly different rotations; at the density a flattened curve actually has, that shows up as a
+  // hairpin. Reproduced headlessly on the ten-shape rig: at 64 points a ring there are none, at
+  // 1600 one appears, and it costs exactly one point and zero area.
+  //
+  // 0.01% of a 100x100pt shape is 1pt^2 - a loop that small cannot be seen at any zoom, which is
+  // the property the threshold is really testing for. It changes nothing about what repair DOES; it
+  // only decides which sentence the report prints.
+  //
+  // The count this was originally justified by - "797 loops removed, worst 0.00%" from a real run -
+  // was NOT hairlines. It was an all-NaN outline, from the `frameIndex` defect fixed in sim.js and
+  // the negated range test fixed in `properCross`. The distinction below is still right; the number
+  // that motivated it was measuring nothing.
   var REPAIR_HAIRLINE = 0.0001;
 
   /** Signed shoelace area. The SIGN carries the winding, so repair can prove it preserved it. */
@@ -586,7 +595,12 @@
     if (den === 0) return null;
     var t = ((cx - ax) * sy - (cy - ay) * sx) / den;
     var u = ((cx - ax) * ry - (cy - ay) * rx) / den;
-    if (t <= 0 || t >= 1 || u <= 0 || u >= 1) return null;
+    // Written as a positive test rather than the negation of one, and that is not a style choice.
+    // With a NaN coordinate anywhere in the ring every `<=` and `>=` is false, so the negated form
+    // falls straight through and reports a proper crossing at EVERY pair of segments. Measured:
+    // that turned an all-NaN outline into "797 loops removed, worst 0.00%" in the console report,
+    // a number that described nothing at all. The positive form fails closed.
+    if (!(t > 0 && t < 1 && u > 0 && u < 1)) return null;
     return [ax + t * rx, ay + t * ry];
   }
 

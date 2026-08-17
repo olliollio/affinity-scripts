@@ -518,6 +518,30 @@ module.exports = function (GR, h) {
   h.assertEqual('a refused ring reports no hairlines', re.hairlineLoops, 0);
   h.assertEqual('a refused ring reports no folds', re.foldLoops, 0);
 
+  // NaN GEOMETRY MUST NOT LOOK LIKE A FOLD. `properCross` rejects an intersection with four range
+  // tests, and every one of them is false when a coordinate is NaN - so written as a negation it
+  // fell through and reported a proper crossing at every pair of segments. That is not theoretical:
+  // main.js read node poses before `frameIndex` existed, got `undefined` for all of them, and the
+  // report announced "10 of 10 jelly outline(s) folded, 797 loop(s) removed, worst 0.00%" about an
+  // outline made entirely of NaN. The worst-0.00% was the tell - every loop's area was NaN, and NaN
+  // is never greater than the running maximum.
+  var nanRing = [0, 0,  4, 0,  NaN, NaN,  0, 4];
+  h.assertEqual('a NaN ring has no crossings', GR.ringCrossings(nanRing), 0);
+  var rnan = GR.repairRing(nanRing);
+  h.assert('a NaN ring is not reported as repaired', rnan.repaired === false);
+  h.assertEqual('a NaN ring loses no loops', rnan.loopsRemoved, 0);
+  // Identity, not ringsEqual: NaN !== NaN, so an element-wise comparison can never match here.
+  h.assert('a NaN ring is returned unchanged', rnan.points === nanRing);
+
+  // An all-NaN ring is the shape the real defect took.
+  var allNan = [NaN, NaN,  NaN, NaN,  NaN, NaN,  NaN, NaN];
+  h.assertEqual('an all-NaN ring has no crossings', GR.ringCrossings(allNan), 0);
+  h.assert('an all-NaN ring is not repaired', GR.repairRing(allNan).repaired === false);
+
+  // Infinity takes the same path and must fail the same way.
+  h.assertEqual('an infinite ring has no crossings',
+    GR.ringCrossings([0, 0,  4, 0,  Infinity, 2,  0, 4]), 0);
+
   h.group('softmesh: the settled scene folds as measured');
 
   // A fixture that does not reproduce the defect cannot prove it was fixed, so this asserts the

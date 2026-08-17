@@ -286,6 +286,30 @@ module.exports = function (GR, h) {
   }
   h.assert('a different seed gives a different drop', differs);
 
+  // ------------------------------------------------------- addressing the recording
+  h.group('sim: every body knows its index into the recording');
+
+  // `poseAt(rec, frame, bodyIndex)` computes `(frame * bodyCount + bodyIndex) * 3`, so an undefined
+  // index gives NaN and a typed array returns `undefined` for it - silently, with no throw. That is
+  // exactly what happened: `frameIndex` was assigned only in `playbackPrepare`, which runs long
+  // after the settled report reads poses, so every jelly number in the report was computed from
+  // undefined and came out as NaN geometry. Anything reading a pose between `run` and playback hits
+  // this, which is why the index is set by `run` itself.
+  var idxW = GR.makeWorld({ scale: 100 });
+  GR.addBounds(idxW, { x: 0, y: 0, width: 400, height: 400 });
+  GR.addBody(idxW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'a' });
+  GR.addBody(idxW, [[150, 50, 190, 50, 190, 90, 150, 90]], { name: 'b' });
+  var idxRec = GR.run(idxW, { maxFrames: 4 });
+
+  var indexed = true, finite = true;
+  for (var ix = 0; ix < idxW.dynamics.length; ix++) {
+    if (idxW.dynamics[ix].frameIndex !== ix) indexed = false;
+    var ipose = GR.poseAt(idxRec, idxRec.frameCount - 1, idxW.dynamics[ix].frameIndex);
+    if (!isFinite(ipose.x) || !isFinite(ipose.y) || !isFinite(ipose.angle)) finite = false;
+  }
+  h.assert('run assigns every body its recording index', indexed);
+  h.assert('a pose read straight after run is finite', finite);
+
   // ------------------------------------------------------- embedded in a wall
   h.group('sim: a body that starts inside a wall');
 
