@@ -75,7 +75,7 @@ exactly zero at `ratio = 1 + DEADBAND` and rises continuously from there, instea
 source sitting precisely where the run needs shapes to sleep, and the continuous form costs nothing.
 Below the threshold the term is still exactly zero, so every sleep argument below is unchanged.
 
-- **`ratio² − 1`** is soft at first and rises steeply: barely present at 10% compression, close to a
+- **The square** is soft at first and rises steeply: barely present at 10% compression, close to a
   wall approaching 50%. A linear law cannot do both jobs — strong enough to hold purple up under a
   slab, it is already intrusive at rest. Area preservation has to be invisible until it is needed,
   and that requires a superlinear response.
@@ -118,6 +118,20 @@ The two gates on the default gain, stated so they can be checked rather than jud
   exists to avoid, and this is what catches it.
 - **The run still sleeps.** `settledBy` is `'sleep'`, not `'quiescence'`, on every bench shape.
 
+**If no gain clears both gates**, the working band is the problem: the term is inert above 94% of
+rest and the criterion is −10%, so the whole correction has to happen between 6% and 10% of
+compression. Retreat in this order, and record which step was taken:
+
+1. **Raise `FORCE_CAP`.** It only binds near collapse, so raising it changes nothing in the working
+   band and costs only the timestep margin it was protecting.
+2. **Lower `DEADBAND`, but not below 0.045.** Below that it crosses the 4.0% a resting purple loses
+   under its own weight, the term starts firing on a settled shape, and the sleep argument fails.
+3. **Relax the criterion**, and state the number actually reached rather than the one that was
+   wanted.
+
+Raising `gain` past the overshoot gate is not on the list. A shape that rings past its rest area is
+a worse artefact than one that stays squashed, because it is visible in motion.
+
 ### Why the deadband is load-bearing
 
 `sim.run` ends when every body is asleep. A term that fired forever would push every jelly scene off
@@ -145,7 +159,7 @@ when the sim is already in trouble, which is the wrong moment to apply maximum f
 ## Where each piece lives
 
 **`softmesh.js`** — `ringAreas(mesh, positions)` returns the signed area and perimeter of each ring's
-node loop, over `mesh.ringSpans`. Each span is a `{start, count}` over contiguous boundary nodes in
+node loop, over `mesh.ringSpans`, using the existing `ringSignedArea` rather than a second shoelace. Each span is a `{start, count}` over contiguous boundary nodes in
 ring order, which is exactly the loop the shoelace formula needs and already exists. Pure geometry,
 in sim units, headlessly testable, no planck.
 
@@ -159,12 +173,15 @@ winding convention is assumed — which matters, because `insetPoint` states exp
 winding is not trusted, rings arriving from several sources.
 
 **`softbody.js`** — records each ring's rest area and perimeter at build time, and exports
-`softPressurePass(rig, gain)`, which computes the areas and applies the forces. The only place in
-this feature that touches planck.
+`softPressurePass(rig, gain, g)`, which computes the areas and applies the forces. The only place in
+this feature that touches planck. `g` is passed rather than dug out of
+`node.body.getWorld().getGravity()`, so the caller's world is not a hidden dependency of a function
+that otherwise needs only the rig.
 
 **`sim.js`** — `run` gains one optional `onStep(W, stepIndex)`, invoked immediately before each
 `world.step`, defaulting to absent. It counts **steps, not frames**: `stepsPerFrame` is a supported
-option that several tests set, and the two diverge whenever it is greater than one.
+option and the two diverge whenever it is greater than one. Nothing sets it above 1 today, which is
+exactly why the hook must be defined against steps now rather than corrected later.
 
 **`main.js`** — builds the callback. It has to live here rather than in `sim.js` because it needs the
 softbody records, and those exist only in what `addSoftBody` returns. main.js closes over its
@@ -174,8 +191,9 @@ It also reports what the term did — in the SETTLED report block beside the fol
 not on the per-softbody line. The per-softbody line is printed during extraction, before `sim.run` is
 called, so it cannot carry a settled number. The new line states the worst shape's settled area
 against its rest area, printed whenever there is a softbody at all, gain or no gain: the number is
-exactly as interesting when the answer is "it squashed 34%". Same idiom `braces=` follows — a feature
-that cannot be seen in the report is a feature nobody can tell is working.
+exactly as interesting when the answer is "it squashed 34%". The fold lines are the idiom to copy, not `braces=`: `braces=` is
+suppressed when zero, while this line prints its OK case too, because "it held its area" is the
+result the user is looking for.
 
 **`ui.js`** — a second slider, independent of softness: how strongly a shape resists being squashed,
 orthogonal to how readily it deforms. Needs the default beside `softness`, the editor, and the
@@ -198,8 +216,11 @@ normalise step, plus option plumbing through main.js into `addSoftBody`.
   a broken timestep.
 - **Gain 0 reproduces today exactly.** Every existing softbody measurement stays valid, and the
   feature is bisectable.
-- **No force at rest.** At LOAD = 0 the pass applies zero force on every step, which is the deadband
-  doing its job.
+- **No force at rest.** At LOAD = 0 the pass applies zero force **over the settled tail** — the last
+  30 frames of the run, not every step. The −0.3% to −4.0% figures the deadband is sized against are
+  settled areas, and a settling transient can legitimately dip past 6% on the way down. Asserting on
+  every step would go red on that transient and tempt someone into raising `DEADBAND`, which is the
+  one constant with nowhere to go.
 - **A scene with pressure active still ends on `sleep`**, not on the quiescence backstop.
 - **A flipped ring is skipped** rather than driven, on a hand-built folded fixture.
 
