@@ -704,6 +704,12 @@
       var foldedShapes = 0, foldedCross = 0;
       var repairedShapes = 0, repairedLoops = 0, worstLoss = 0;
       var refusedShapes = 0, worstRefused = 0;
+      // Hairlines are counted apart from folds because they are a different thing entirely, and
+      // lumping them together made the report lie in the loudest possible way: measured on the
+      // ten-shape scene it announced "10 of 10 jelly outline(s) folded" over 797 sub-pixel tangles
+      // that cost 0.00% between them, while the exported artwork had zero self-intersections and
+      // looked perfect. A user reading that would have gone looking for damage that was not there.
+      var hairShapes = 0, hairLoops = 0;
       for (var fs = 0; fs < softs.length; fs++) {
         var sf = softs[fs];
         var fpos = [];
@@ -711,14 +717,17 @@
           var fp = GR.poseAt(frames, frames.frameCount - 1, sf.nodes[fn].frameIndex);
           fpos.push(fp.x, fp.y);
         }
-        var shapeCross = 0, shapeRepaired = 0, shapeRefused = 0;
+        var shapeCross = 0, shapeRepaired = 0, shapeRefused = 0, shapeHair = 0;
         for (var fr = 0; fr < sf.rings.length; fr++) {
           var outline = GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos);
           shapeCross += GR.outlineFolds(outline);
           var fix = GR.repairRing(outline);
           if (fix.repaired) {
-            shapeRepaired += fix.loopsRemoved;
-            if (fix.lossFraction > worstLoss) worstLoss = fix.lossFraction;
+            shapeHair += fix.hairlineLoops;
+            shapeRepaired += fix.foldLoops;
+            // Only a real fold's cost is worth reporting. A ring of nothing but hairlines has a
+            // lossFraction too, and it is the one number that would drag "worst" down to 0.00%.
+            if (fix.foldLoops && fix.lossFraction > worstLoss) worstLoss = fix.lossFraction;
           } else if (fix.abandoned) {
             shapeRefused++;
             if (fix.lossFraction > worstRefused) worstRefused = fix.lossFraction;
@@ -726,6 +735,7 @@
         }
         if (shapeCross) { foldedShapes++; foldedCross += shapeCross; }
         if (shapeRepaired) { repairedShapes++; repairedLoops += shapeRepaired; }
+        if (shapeHair) { hairShapes++; hairLoops += shapeHair; }
         if (shapeRefused) refusedShapes++;
       }
       console.log('');
@@ -747,8 +757,16 @@
         console.log('  no jelly folded through itself  OK' +
           // outlineFolds counts a collinear or touching pair where repair requires a PROPER
           // crossing, so it can flag a ring that has nothing to cut out. Say so rather than let
-          // the two numbers look contradictory.
-          (foldedShapes ? '  (' + foldedCross + ' touching/collinear pair(s), nothing to cut)' : ''));
+          // the two numbers look contradictory. Suppressed once hairlines are in play, because
+          // then the crossing count is explained by the line below instead.
+          (foldedShapes && !hairLoops
+            ? '  (' + foldedCross + ' touching/collinear pair(s), nothing to cut)' : ''));
+      }
+      if (hairLoops) {
+        console.log('  ' + hairLoops + ' hairline loop(s) trimmed off ' + hairShapes + ' outline(s), ' +
+          'each under ' + fmt(100 * GR.SOFT_REPAIR_HAIRLINE, 2) + '% of its shape.');
+        console.log('  Those are sub-pixel tangles from resampling the outline, not folded artwork ' +
+          '- nothing visible changed.');
       }
     }
 
