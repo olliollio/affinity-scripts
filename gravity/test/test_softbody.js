@@ -551,9 +551,14 @@ module.exports = function (GR, h) {
   var offRes = GR.softPressurePass(pOff, 0, 10);
   h.assertEqual('gain 0 pushes no ring', offRes.ringsPushed, 0);
 
-  // THE DEADBAND. A jelly settling under its own weight alone loses up to 4.0% of its area on the
-  // crush bench, and if the term fires on that no jelly scene ever reaches `sleep` - the run ends
-  // on the quiescence backstop instead. 0.97 is 3% compression, inside the 6% deadband.
+  // THE DEADBAND. A jelly settling under its own weight alone loses up to 1.0% of its area on the
+  // crush bench's LOAD = 0 row - green is that 1.0%, purple 0.9% - and if the term fires on that no
+  // jelly scene ever reaches `sleep`, the run ending on the quiescence backstop instead. 0.97 is 3%
+  // compression: outside anything the bench measures unloaded, and inside the 6% deadband.
+  //
+  // Not the 4.0% an earlier chain of measurements reported for a resting purple. That figure is
+  // what sized the band, and this bench does not reproduce it; the band is right anyway, for the
+  // reason in softbody.js - it sets the asymptote a loaded jelly settles to.
   var pRest = squashed(0.97);
   h.assertEqual('a barely-squashed ring is left alone',
     GR.softPressurePass(pRest, 1, 10).ringsPushed, 0);
@@ -574,9 +579,12 @@ module.exports = function (GR, h) {
   //
   // Asserted on the UNCLAMPED field: once the cap binds on some nodes and not others the applied
   // forces genuinely do have a net component, and that is deliberate - see the clamped case below.
-  // 0.7 rather than 0.5 for exactly that reason: at 0.5 with this same bend and gain, 20 nodes sit
-  // on the 4.260355 cap and the net comes back 6.7e-2. At 0.7 the worst node force is 2.2183
-  // against that same cap, nothing binds, and the loop identity is what is being measured.
+  // 0.7 rather than 0.5 is a leftover from AREA_FORCE_CAP = 8, where 0.5 with this same bend and
+  // gain put 20 nodes on the 4.260355 cap and the net came back 6.678e-2. At the cap of 64 the
+  // feature now ships with, neither pose binds - 0.5 reaches 5.7765 against a cap of 34.0828 - so
+  // 0.7 is no longer load-bearing and the assertion below is what keeps it honest rather than the
+  // choice of pose. Kept at 0.7 because moving it would change a measurement for no reason: there
+  // the worst node force is 2.2183, nothing binds, and the loop identity is what is measured.
   var pNet = squashed(0.7, 1);
   var netRes = GR.softPressurePass(pNet, 1, 10);
   h.assertEqual('a bent ring is still pushed', netRes.ringsPushed, 1);
@@ -729,10 +737,17 @@ module.exports = function (GR, h) {
   // The cap is per NODE on the accumulated vector. A per-edge clamp would let a node reach twice
   // it and would depend on the order edges are visited - not in theory: clamping each edge
   // contribution instead and dropping the node clamp brings this fixture back at worstForce
-  // 8.520710, which is 2 x the 4.260355 cap to the digit.
+  // 68.165680, which is 2 x the 34.082840 cap to the digit.
+  //
+  // Re-measured when AREA_FORCE_CAP went 8 -> 64: this fixture still binds, and hard. All 48 of
+  // pCap's boundary nodes clamp, worstForce lands exactly on the cap, and it stays that way from
+  // gain 400 up to 40000 - so the 8x raise did not quietly turn 'a huge gain clamps some nodes'
+  // into an assertion about nothing. The count is reported rather than pinned: 48 is a mesher
+  // detail, but a fixture that stopped clamping altogether must not pass silently.
   var pCap = squashed(0.2);
   var capRes = GR.softPressurePass(pCap, 400, 10);
-  h.assert('a huge gain clamps some nodes', capRes.nodesClamped > 0);
+  h.assert('a huge gain clamps some nodes', capRes.nodesClamped > 0,
+    'clamped ' + capRes.nodesClamped + ' of ' + pCap.mesh.ringSpans[0].count);
   // One density and one radius for every node in a rig, so nodes[0]'s mass is every node's mass
   // and one cap covers the lot.
   var capNode = pCap.nodes[0];
@@ -740,13 +755,14 @@ module.exports = function (GR, h) {
 
   // Read the APPLIED force off the bodies, not the returned tally. The tally cannot fail this:
   // `worstForce` is assigned `cap` inside the clamp branch and is below it outside, so checking it
-  // against the cap re-encodes the code. Proved by mutation - delete the two scaling lines and
-  // keep `mag = cap`, so the clamp is counted but never applied, and the whole suite stayed at
-  // 975 passed, 0 failed. Reading m_force kills that mutant. Precedent for reaching into planck
-  // here is the m_radius read further up this file.
+  // against the cap re-encodes the code. Proved by mutation - delete the two scaling lines and keep
+  // `mag = cap`, so the clamp is counted but never applied. Re-run at the cap of 64: these two are
+  // still the ONLY assertions that go red, the applied force coming back 19179.68 against a cap of
+  // 34.08, and the crush criterion below does not notice. Precedent for reaching into planck here
+  // is the m_radius read further up this file.
   //
-  // The tolerance is not slack: the worst applied force comes back 4.260355029585799 against a cap
-  // of 4.260355029585798, one ulp over, because the clamp scales by cap/mag rather than assigning.
+  // The tolerance is not slack: the worst applied force comes back 34.082840236686394 against a cap
+  // of 34.08284023668639, one ulp over, because the clamp scales by cap/mag rather than assigning.
   var worstApplied = 0;
   for (var cn = 0; cn < pCap.nodes.length; cn++) {
     var cf = pCap.nodes[cn].body.m_force;
@@ -771,4 +787,52 @@ module.exports = function (GR, h) {
   h.assert('the pass does not wake a sleeping node', !sleeper.isAwake());
   h.assertClose('and planck drops its force outright',
     Math.abs(sleeper.m_force.x) + Math.abs(sleeper.m_force.y), 0, 0);
+
+  h.group('softbody: the crush criterion');
+
+  // What the whole feature is for, measured end to end rather than as a force field. These are the
+  // three shapes that collapse worst with the term off - at LOAD 4 and gain 0 the crush bench reads
+  // teal -55.0%, purple -52.2%, green -24.2% - and with it at the shipped gain they hold -5.8%,
+  // -3.9% and -4.8%.
+  //
+  // Three shapes, not the bench's ten. These four runs already cost 0.6s of a 3.0s suite; the
+  // bench's ten-shape load is about 1.3s, per load, and the sweep that pinned the constants was 30
+  // of them. The other seven were never the ones in danger either - yellowgreen loses 1.2% with the
+  // term switched off entirely. test/bench_crush.js keeps the sweep and asserts nothing.
+  //
+  // The bars are the design spec's, not the measured values, and the gap is deliberate. 0.90
+  // against a measured 0.942 is room for solver noise and none for a regression: the term's
+  // asymptote is -5.66%, so anything that leaves a shape past -10% has lost most of the effect.
+  var CRUSH = ['teal', 'purple', 'green'];
+
+  for (var cs = 0; cs < CRUSH.length; cs++) {
+    var shape = null;
+    for (var sc = 0; sc < scene.SCENE.length; sc++) {
+      if (scene.SCENE[sc].name === CRUSH[cs]) shape = scene.SCENE[sc];
+    }
+    var held = scene.crushOne(GR, shape, 4, GR.SOFT_AREA_DEFAULT_GAIN);
+    h.assert(CRUSH[cs] + ' keeps its area under a 4x load', held && held.area >= 0.90,
+      held ? CRUSH[cs] + ' at ' + (100 * held.area - 100).toFixed(1) + '%' : 'did not mesh');
+    // One-sided, so it cannot drive a shape past rest in steady state - but momentum can carry it
+    // there, and a jelly that rings out past its own outline is a worse artefact than one that
+    // stays squashed, because it is visible in motion. Measured 0.0% on all three.
+    h.assert(CRUSH[cs] + ' does not ring past its rest area', held && held.peak <= 1.05,
+      held ? 'peak ' + (100 * held.peak - 100).toFixed(1) + '%' : 'did not mesh');
+    // `sleep`, not `quiescence`: a term that never stopped pushing would end every jelly run on
+    // the backstop instead. Stated as a watchdog, not as a proof - it is worth being honest that
+    // no mutation tried so far turns it red. `wake false -> true` does not (the run still ends on
+    // sleep; the two pose assertions further up are what kill that one), and neither does
+    // `DEADBAND 0.06 -> 0.12` or `-> 0`. It is here because the failure it names is real, cheap to
+    // watch for, and would otherwise be invisible until someone ran a scene.
+    h.assert(CRUSH[cs] + ' still sleeps', held && held.settledBy === 'sleep',
+      held ? held.settledBy : 'did not mesh');
+  }
+
+  // The control the deadband is sized against: under its own weight alone a jelly loses about 1%,
+  // and the term has to be silent on that. Silent is measurable here - the bench's entire LOAD = 0
+  // table is byte-identical at gains 0, 1, 4 and 64 - and this is the cheap corner of it.
+  // scene.SCENE[0] is teal, which reads -0.9% unloaded.
+  var free = scene.crushOne(GR, scene.SCENE[0], 0, GR.SOFT_AREA_DEFAULT_GAIN);
+  h.assert('an unloaded jelly is left alone', free && free.area >= 0.95 && free.peak <= 1.001,
+    free ? 'area ' + free.area.toFixed(4) + ' peak ' + free.peak.toFixed(4) : 'did not mesh');
 };
