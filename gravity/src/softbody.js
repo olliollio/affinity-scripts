@@ -146,7 +146,7 @@
 
     function give(reason, limit) {
       return {
-        nodes: [], mesh: null, groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
+        nodes: [], mesh: null, restRings: [], groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
         frequency: 0, frequencyRequested: 0, frequencyFloored: null,
         springCount: 0, totalMass: 0, fallback: reason,
         // Hard zeros, NOT read from `braces`: give() is called before that exists, and reading it
@@ -316,9 +316,15 @@
       }));
     }
 
+    // The area the pressure term defends, in SIM units, measured on the same node loop it will
+    // measure later. Recorded here rather than derived at run time because the rest pose stops
+    // existing the moment the first step runs.
+    var restRings = GR.ringAreas(mesh, mesh.nodes);
+
     return {
       nodes: nodes,
       mesh: mesh,
+      restRings: restRings,
       groupIndex: groupIndex,
       cell: sized.cell,
       cellsAcross: sized.cellsAcross,
