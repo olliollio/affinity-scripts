@@ -5604,20 +5604,19 @@ GR.planck = (function () {
       '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
     help.addStaticText('', 'Live text drops as one piece. "Split text into letters" converts it to ' +
       'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
+    // Softness and firmness read as two ends of one axis unless something says otherwise, and this
+    // is the only place the non-obvious fact about the firmness slider fits: 100 is the calibrated
+    // default, not the top of the range. Carried in the jelly paragraph rather than its own,
+    // because every full-width paragraph costs real height and the dialog has no scroll - past a
+    // certain length the OK and Cancel buttons go off-screen and the dialog cannot be dismissed.
     help.addStaticText('', 'Name a closed shape "jelly", "soft" or "squish" to make it wobble ' +
-      'instead of staying rigid. Chunky shapes work best; thin artwork stays rigid.').setIsFullWidth(true);
-    // Softness and firmness are not two ends of one axis, and read as a soft-to-firm pair if
-    // nothing says otherwise. This is also the only place the one non-obvious fact about the
-    // firmness slider can be stated: 100 is the calibrated default, not the top of the range.
-    help.addStaticText('', 'Jelly softness is how easily a shape deforms; jelly firmness is how ' +
-      'hard it pushes back against being squashed. Firmness 100% is the default, not the maximum ' +
-      '— 0% turns it off.').setIsFullWidth(true);
+      'instead of staying rigid. Chunky shapes work best. Softness is how easily it deforms; ' +
+      'firmness is how hard it resists being squashed — 100% is the default, not the maximum.').setIsFullWidth(true);
     help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
       'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
-      'undo step. The same seed always gives the same result.').setIsFullWidth(true);
-    help.addStaticText('', 'Dry run writes the report to the console and stops there — nothing ' +
-      'plays, nothing is exported and the document is not touched.').setIsFullWidth(true);
+      'undo step and the same seed always repeats. "Dry run" reports to the console and stops — ' +
+      'nothing plays, nothing is exported, the document is untouched.').setIsFullWidth(true);
 
     var result = dlg.runModal();
     if (!result || result.value !== DialogResult.Ok.value) return null;
