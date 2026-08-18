@@ -102,18 +102,70 @@
   // body is quiet at once. Same lever, same reason, as the rope link damping.
   var NODE_LINEAR_DAMPING = 0.5;
 
-  // Below this much compression the area term is exactly zero. Measured on the crush bench, whose
-  // LOAD = 0 row is in the design spec (2026-08-17-softbody-area-preservation-design.md) until the
-  // bench itself lands: a jelly settling under nothing but its own weight already loses 0.3% to
-  // 4.0% of its area - purple is the 4.0% - and the term must not fire on that. `sim.run` ends when
-  // every body is asleep, so a term that fired forever would push every jelly scene off `sleep` and
-  // onto the quiescence backstop. 0.06 clears every shape on the bench with headroom.
+  // Below this much compression the area term is exactly zero. The control it is sized against is
+  // the crush bench's LOAD = 0 row (test/bench_crush.js): a jelly settling under nothing but its
+  // own weight loses 0.1% to 1.0% of its area - green is the 1.0%, teal and purple 0.9% - and the
+  // term must not fire on that. `sim.run` ends when every body is asleep, so a term that fired
+  // forever would push every jelly scene off `sleep` and onto the quiescence backstop. That the
+  // band really is silent there is measured, not argued: the whole LOAD = 0 table comes back
+  // byte-identical at gains 0, 1, 4 and 64, so unloaded the term never fires at any gain.
+  //
+  // 0.06 against a worst unloaded 1.0% is 6x headroom. An earlier measurement chain reported 4.0%
+  // for a resting purple - 1.5x headroom - and this bench does not reproduce it, reading purple at
+  // 0.9%. Trust the bench: it is the instrument, and its LOAD = 0 row is one shape on a floor
+  // rather than a shape somewhere in a pile.
+  //
+  // The extra headroom is NOT room to lower the band. At a gain high enough that the force cap no
+  // longer binds, P -> 0 requires ratio^2 -> (1 + DEADBAND)^2, so the settled area tends to
+  // 1 / (1 + DEADBAND) = -5.66% - measured teal at -5.8% is already on that asymptote. The
+  // deadband IS the steady-state answer, a design choice about how much squash a loaded jelly
+  // keeps, not a safety margin.
   var AREA_DEADBAND = 0.06;
 
   // Per-node force ceiling, as a multiple of that node's OWN weight - which is what keeps it free
   // of scale. Capping the PRESSURE instead would leave the per-node force free by a factor of the
   // edge length, and edge lengths vary across a ring.
-  var AREA_FORCE_CAP = 8;
+  //
+  // 64, not the 8 this shipped at first, because at 8 the cap was silently deciding the answer
+  // rather than limiting a transient. At cap 8, LOAD = 4, gain 1, the bench's teal has a MEAN of
+  // 25.1 of its 32 boundary nodes sitting exactly on the cap on every step that pushes at all
+  // (grey 8.0 of 31, purple 12.5 of 31; worstForce equal to the cap to the last digit). A ring
+  // pinned flat on its ceiling cannot respond to gain, and the feature saturated with it: worst
+  // shape at LOAD = 4 read -38.0, -35.1, -38.0, -38.1, -38.0 at gains 4, 8, 16, 32, 64. No gain
+  // clears the -10% criterion at cap 8.
+  //
+  // 64 and not 128, because 128 buys nothing: the worst-shape row is IDENTICAL at both caps for
+  // every gain up to the pinned one (-25.2, -20.2, -14.5, -10.2, -5.8 at gains 4, 8, 16, 32, 64).
+  // That identity is the evidence that at 64 the cap has stopped setting the answer - it now
+  // clamps a mean of 1.0 node per pushing step on teal, in the impact transient only, which is the
+  // job it was written for. Where a loaded jelly settles is then the deadband's call, not the
+  // limiter's.
+  var AREA_FORCE_CAP = 64;
+
+  // Pinned on the crush bench (test/bench_crush.js), LOAD = 4, softness 25, worst of ten shapes:
+  //
+  //     cap \ gain      4      8     16     32     64    128
+  //           8     -38.0  -35.1  -38.0  -38.1  -38.0  -38.1
+  //          16     -25.4  -23.3  -22.8  -23.0  -23.0  -23.0
+  //          32     -25.7  -20.2  -15.3  -12.8   -8.6   -7.0
+  //          64     -25.2  -20.2  -14.5  -10.2   -5.8   -5.5
+  //         128     -25.2  -20.2  -14.5  -10.2   -5.8   -5.1
+  //
+  // The whole cap-8 row fails the -10% criterion, which is why that table is a cap sweep and not
+  // the gain sweep it was meant to be: the two constants cannot be pinned separately.
+  //
+  // 64 is where the criterion is met with room and the curve flattens: 128 moves the worst shape
+  // by 0.3 points. It flattens because -5.66% is the FLOOR, the deadband asymptote argued above.
+  // Past 64 the gain buys only what the deadband has already conceded, while every extra unit of
+  // it is stiffness the jelly has to absorb on impact.
+  //
+  // Gain ~1 was never dimensionally plausible, which is worth writing down because it was the
+  // first guess. Holding a slab of 4x the jelly's mass needs a pressure of about 4Mg / width,
+  // against P0 = Mg / restPerimeter - a factor of 4 * perimeter / width, which on this scene is
+  // 15.8 for teal and 10.9 at the scene median. At -10% compression the bracket
+  // ratio^2 - (1 + DEADBAND)^2 is only 0.111, so the gain that closes it is 16/0.111 = 140 for
+  // teal and about 98 at the median: the same decade as 64, and two decades away from 1.
+  var AREA_DEFAULT_GAIN = 64;
 
   // Counts DOWN from -1, one per softbody. Negative means "never collide within this group", so a
   // shape does not inflate itself apart on its own overlapping circles; distinct values mean two
@@ -494,4 +546,5 @@
   GR.softPressurePass = softPressurePass;
   GR.SOFT_AREA_DEADBAND = AREA_DEADBAND;
   GR.SOFT_AREA_FORCE_CAP = AREA_FORCE_CAP;
+  GR.SOFT_AREA_DEFAULT_GAIN = AREA_DEFAULT_GAIN;
 })(GR);
