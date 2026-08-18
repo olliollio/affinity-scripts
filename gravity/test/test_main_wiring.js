@@ -2,8 +2,9 @@
  * Wiring tests for main.js: the two pieces of orchestration that decide whether the area term
  * reaches the user at all.
  *
- * main.js is otherwise untestable headlessly — `main()` reads `app.documents.current` on its first
- * line — so only the two pure helpers it exports are exercised here. Everything about the dialog
+ * main.js is otherwise untestable headlessly — `main()` opens by requiring `/application` and
+ * reading `app.documents.current` off it, and gives up when neither exists — so only the two pure
+ * helpers it exports are exercised here. Everything about the dialog
  * itself needs the Affinity `/dialog` module and is NOT covered; the one dialog fact that can be
  * checked without it is the exported defaults object, and it is checked below because the default
  * slider position is what decides the gain almost every run will use.
@@ -32,8 +33,12 @@ module.exports = function (GR, h) {
   // undefined-equals-undefined would sail through if the field were never added at all.
   h.assert('boundaryCount is a real count', spreadM.boundaryCount > 0);
   h.assertEqual('the spread mesh carries boundaryCount', spreadM.boundaryCount, rig.mesh.boundaryCount);
+  // Against the RIG's mesh, not against `rig.nodes`: spreadMeshOf pushes two numbers per
+  // `rig.nodes` entry, so comparing with that would compare its output against the array it just
+  // iterated and could not fail. The rig record <-> mesh node correspondence is the thing the
+  // ringSpans transfer below rests on, and nothing else in the suite checks it.
   h.assertEqual('the node array still pairs with the rig records',
-    spreadM.nodes.length, rig.nodes.length * 2);
+    spreadM.nodes.length, rig.mesh.nodes.length);
 
   // The reason the spans transfer at all: they are INDICES into the node array, and spreadMeshOf
   // rebuilds that array one-for-one in the same order. A span that pointed past the end here would

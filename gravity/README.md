@@ -537,10 +537,12 @@ off `sleep` and onto the quiescence backstop.
 
 **A gain near 1 was never dimensionally possible.** Holding a slab of 4x the jelly's mass needs a
 pressure of about `4Mg / width` against a P0 of `Mg / restPerimeter` — a factor of
-`4 * perimeter / width`, which on this scene is **15.8** for teal and **10.9** at the median. The
-bracket that factor has to be divided by is small: at 10% compression `ratio² - 1.06²` is only
-**0.111**. So the gain that closes it is `15.8 / 0.111 = 143` for teal and **98** at the median —
-the same decade as 64, and two decades away from 1.
+`4 * perimeter / width`. That perimeter is the one the law divides by, which is the **inset node
+loop**, not the drawn outline: on this scene the factor is **13.95** for teal and **9.62** at the
+median (the outline would read 15.84 and 10.92). The bracket that factor has to be divided by is
+small: at 10% compression `ratio² - 1.06²` is only **0.111**. So the gain that closes it is
+`13.95 / 0.111 = 126` for teal and **87** at the median — the same decade as 64, and two decades
+away from 1.
 
 **The force cap is a limiter, and it took 64 to stop it being the answer.** `AREA_FORCE_CAP` bounds
 each node's force at a multiple of that node's OWN weight, which is what keeps it free of scale;

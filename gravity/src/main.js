@@ -53,8 +53,9 @@
    * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
    * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
    *
-   * Lives at module scope, outside `main`, only so the tests can reach it: `main` itself reads
-   * `app.documents.current` on its first line and cannot run headlessly.
+   * Lives at module scope, outside `main`, only so the tests can reach it: `main` opens by
+   * requiring `/application` and reading `app.documents.current` off it, and gives up there when
+   * neither exists, so it cannot run headlessly at all.
    */
   function spreadMeshOf(soft, scale) {
     var pts = [];

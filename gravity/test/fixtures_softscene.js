@@ -458,6 +458,13 @@ function crushOne(GR, shape, load, gain, softness) {
     { name: shape.name, softness: soft, density: 1 });
   if (!rig || rig.fallback) return null;
 
+  // A deliberate copy of `GR.spreadMeshOf` (src/main.js), which is a verified drop-in here.
+  // Calling it would force every loader of this fixture - bench_crush.js included - to add main.js
+  // to its `loadPD` list, coupling a geometry bench to the orchestration layer and to whatever
+  // main.js requires next. The two must stay in step: if the spread lattice ever grows a field
+  // that `evalSoftOutline` or `ringAreas` reads, add it here too, and if bench_crush.js ever loads
+  // main.js for its own reasons the copy should go and `GR.spreadMeshOf(rig, CRUSH_SCALE)` take
+  // its place.
   var pts = [];
   for (n = 0; n < rig.nodes.length; n++) pts.push(rig.nodes[n].ox, rig.nodes[n].oy);
   var springs = [];
@@ -529,6 +536,5 @@ module.exports = {
   teardrop: teardrop,
   squareRing: squareRing,
   cShape: cShape,
-  crushOne: crushOne,
-  CRUSH_SCALE: CRUSH_SCALE
+  crushOne: crushOne
 };
