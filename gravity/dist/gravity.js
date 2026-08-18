@@ -3307,6 +3307,35 @@ GR.planck = (function () {
   }
 
   /**
+   * Signed area and perimeter of each ring's NODE loop, in ringSpans order: faces in input order,
+   * each face's outer ring then its holes.
+   *
+   * `positions` is a flat x,y array in the same order as `mesh.nodes`, so the rest pose is
+   * `mesh.nodes` itself and a settled pose is the node body positions read back.
+   *
+   * Boundary nodes are inset by INSET_FRAC, so an outer ring's loop encloses LESS than the drawn
+   * shape and a hole's loop encloses MORE than the hole. That does not matter: rest and current
+   * are measured identically and only their ratio is ever used.
+   *
+   * The SIGN is the input ring's winding, carried straight through: buildSoftMesh does not
+   * normalise it, so a hole reports whichever way it was drawn. Callers reference each ring's
+   * OWN rest sign rather than an absolute convention - see `softPressurePass` (softbody.js).
+   */
+  function ringAreas(mesh, positions) {
+    var out = [];
+    for (var r = 0; r < mesh.ringSpans.length; r++) {
+      var span = mesh.ringSpans[r];
+      var ring = [];
+      for (var i = 0; i < span.count; i++) {
+        var n = span.start + i;
+        ring.push(positions[n * 2], positions[n * 2 + 1]);
+      }
+      out.push({ area: ringSignedArea(ring), perimeter: ringPerimeter(ring) });
+    }
+    return out;
+  }
+
+  /**
    * Where two segments PROPERLY cross, or null.
    *
    * Strictly interior on both, and a zero determinant rejected, so touching endpoints and collinear
@@ -3710,6 +3739,7 @@ GR.planck = (function () {
   GR.repairRing = repairRing;
   GR.ringCrossings = ringCrossings;
   GR.ringSignedArea = ringSignedArea;
+  GR.ringAreas = ringAreas;
   GR.SOFT_REPAIR_MAX_LOSS = REPAIR_MAX_LOSS;
   GR.SOFT_REPAIR_HAIRLINE = REPAIR_HAIRLINE;
   GR.softMeshComponents = softMeshComponents;
@@ -3831,6 +3861,71 @@ GR.planck = (function () {
   // body is quiet at once. Same lever, same reason, as the rope link damping.
   var NODE_LINEAR_DAMPING = 0.5;
 
+  // Below this much compression the area term is exactly zero. The control it is sized against is
+  // the crush bench's LOAD = 0 row (test/bench_crush.js): a jelly settling under nothing but its
+  // own weight loses 0.1% to 1.0% of its area - green is the 1.0%, teal and purple 0.9% - and the
+  // term must not fire on that. `sim.run` ends when every body is asleep, so a term that fired
+  // forever would push every jelly scene off `sleep` and onto the quiescence backstop. That the
+  // band really is silent there is measured, not argued: the whole LOAD = 0 table comes back
+  // byte-identical at gains 0, 1, 4 and 64, so unloaded the term never fires at any gain.
+  //
+  // 0.06 against a worst unloaded 1.0% is 6x headroom. An earlier measurement chain reported 4.0%
+  // for a resting purple - 1.5x headroom - and this bench does not reproduce it, reading purple at
+  // 0.9%. Trust the bench: it is the instrument, and its LOAD = 0 row is one shape on a floor
+  // rather than a shape somewhere in a pile.
+  //
+  // The extra headroom is NOT room to lower the band. At a gain high enough that the force cap no
+  // longer binds, P -> 0 requires ratio^2 -> (1 + DEADBAND)^2, so the settled area tends to
+  // 1 / (1 + DEADBAND) = -5.66% - measured teal at -5.8% is already on that asymptote. The
+  // deadband IS the steady-state answer, a design choice about how much squash a loaded jelly
+  // keeps, not a safety margin.
+  var AREA_DEADBAND = 0.06;
+
+  // Per-node force ceiling, as a multiple of that node's OWN weight - which is what keeps it free
+  // of scale. Capping the PRESSURE instead would leave the per-node force free by a factor of the
+  // edge length, and edge lengths vary across a ring.
+  //
+  // 64, not the 8 this shipped at first, because at 8 the cap was silently deciding the answer
+  // rather than limiting a transient. At cap 8, LOAD = 4, gain 1, the bench's teal has a MEAN of
+  // 25.1 of its 32 boundary nodes sitting exactly on the cap on every step that pushes at all
+  // (grey 8.0 of 31, purple 12.5 of 31; worstForce equal to the cap to the last digit). A ring
+  // pinned flat on its ceiling cannot respond to gain, and the feature saturated with it: worst
+  // shape at LOAD = 4 read -38.0, -35.1, -38.0, -38.1, -38.0 at gains 4, 8, 16, 32, 64. No gain
+  // clears the -10% criterion at cap 8.
+  //
+  // 64 and not 128, because 128 buys nothing: the worst-shape row is IDENTICAL at both caps for
+  // every gain up to the pinned one (-25.2, -20.2, -14.5, -10.2, -5.8 at gains 4, 8, 16, 32, 64).
+  // That identity is the evidence that at 64 the cap has stopped setting the answer - it now
+  // clamps a mean of 1.0 node per pushing step on teal, in the impact transient only, which is the
+  // job it was written for. Where a loaded jelly settles is then the deadband's call, not the
+  // limiter's.
+  var AREA_FORCE_CAP = 64;
+
+  // Pinned on the crush bench (test/bench_crush.js), LOAD = 4, softness 25, worst of ten shapes:
+  //
+  //     cap \ gain      4      8     16     32     64    128
+  //           8     -38.0  -35.1  -38.0  -38.1  -38.0  -38.1
+  //          16     -25.4  -23.3  -22.8  -23.0  -23.0  -23.0
+  //          32     -25.7  -20.2  -15.3  -12.8   -8.6   -7.0
+  //          64     -25.2  -20.2  -14.5  -10.2   -5.8   -5.5
+  //         128     -25.2  -20.2  -14.5  -10.2   -5.8   -5.1
+  //
+  // The whole cap-8 row fails the -10% criterion, which is why that table is a cap sweep and not
+  // the gain sweep it was meant to be: the two constants cannot be pinned separately.
+  //
+  // 64 is where the criterion is met with room and the curve flattens: 128 moves the worst shape
+  // by 0.3 points. It flattens because -5.66% is the FLOOR, the deadband asymptote argued above.
+  // Past 64 the gain buys only what the deadband has already conceded, while every extra unit of
+  // it is stiffness the jelly has to absorb on impact.
+  //
+  // Gain ~1 was never dimensionally plausible, which is worth writing down because it was the
+  // first guess. Holding a slab of 4x the jelly's mass needs a pressure of about 4Mg / width,
+  // against P0 = Mg / restPerimeter - a factor of 4 * perimeter / width, which on this scene is
+  // 15.8 for teal and 10.9 at the scene median. At -10% compression the bracket
+  // ratio^2 - (1 + DEADBAND)^2 is only 0.111, so the gain that closes it is 16/0.111 = 140 for
+  // teal and about 98 at the median: the same decade as 64, and two decades away from 1.
+  var AREA_DEFAULT_GAIN = 64;
+
   // Counts DOWN from -1, one per softbody. Negative means "never collide within this group", so a
   // shape does not inflate itself apart on its own overlapping circles; distinct values mean two
   // jellies still collide with each other normally.
@@ -3875,7 +3970,7 @@ GR.planck = (function () {
 
     function give(reason, limit) {
       return {
-        nodes: [], mesh: null, groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
+        nodes: [], mesh: null, restRings: [], groupIndex: 0, cell: null, cellsAcross: 0, limit: limit || null,
         frequency: 0, frequencyRequested: 0, frequencyFloored: null,
         springCount: 0, totalMass: 0, fallback: reason,
         // Hard zeros, NOT read from `braces`: give() is called before that exists, and reading it
@@ -4045,9 +4140,15 @@ GR.planck = (function () {
       }));
     }
 
+    // The area the pressure term defends, in SIM units, measured on the same node loop it will
+    // measure later. Recorded here rather than derived at run time because the rest pose stops
+    // existing the moment the first step runs.
+    var restRings = GR.ringAreas(mesh, mesh.nodes);
+
     return {
       nodes: nodes,
       mesh: mesh,
+      restRings: restRings,
       groupIndex: groupIndex,
       cell: sized.cell,
       cellsAcross: sized.cellsAcross,
@@ -4070,6 +4171,129 @@ GR.planck = (function () {
     };
   }
 
+  /**
+   * One step of the area-preservation term. Call before `world.step`.
+   *
+   * Ideal gas, one-sided, per ring:
+   *
+   *   ratio = restArea / area                       signed, so a fold is detectable
+   *   P     = gain * P0 * (ratio^2 - (1+DEADBAND)^2)     clamped at 0 below
+   *   P0    = totalMass * g / ringRestPerimeter
+   *   Fnode = sum over the node's two ring edges, THEN clamped to AREA_FORCE_CAP * nodeMass * g
+   *
+   * `P0` is the load the shape must hold divided by the length holding it - a pressure whose units
+   * are already right, which is what leaves `gain` dimensionless and makes one slider position mean
+   * the same thing at every artwork scale, shape size and cell size. It is the REST perimeter, so
+   * P0 is a fixed reference: taken from the current pose it would grow as the ring shrinks and
+   * compound the ratio^2 non-linearity with a second one nobody chose.
+   *
+   * DIRECTION. The outward normal of edge a->b is (ey, -ex)/len for a ring with POSITIVE signed
+   * area - check it on the CCW unit square (0,0)->(1,0)->(1,1)->(0,1), shoelace +1, where edge
+   * (0,0)->(1,0) gives (0,-1), away from the interior. For a NEGATIVE ring that same expression
+   * points INWARD, and `sign` flips it back out. So both windings end up pushing outward-of-loop,
+   * and every ring defends its OWN enclosed area - for a hole that means away from the hole's
+   * centre, growing a squashed counter back toward its rest size. It does not push into the void.
+   *
+   * The reference is each ring's own REST sign and never an absolute convention, because nothing on
+   * the soft path normalises hole winding. The winding then cancels, so a same-wound hole behaves
+   * identically to a counter-wound one - measured at both windings in test_softbody.js's
+   * `softbody: area pressure` group, which is what keeps this claim honest. `ringAreas` in
+   * softmesh.js defers here for it.
+   *
+   * The deadband is subtracted INSIDE the square rather than gating the term, so P rises
+   * continuously from zero at the threshold instead of jumping to 0.12*P0. A step discontinuity
+   * there is a limit-cycle source sitting precisely where the run needs shapes to sleep.
+   *
+   * Every ring of an object uses the OBJECT's mass, a counter's ring included: what a counter must
+   * resist is the whole object's weight bearing on it, not a share apportioned by area.
+   *
+   * Cheap enough not to think about: 14 us per step over 5 rigs, 805 nodes and 10 rings, against
+   * 2508 us for the `world.step` it precedes on that same scene. Under 1%, and it is O(ring nodes)
+   * while the step is O(bodies + contacts), so the share only falls as scenes grow.
+   *
+   * Returns what it did, so the tests can assert on the force field rather than on its effect.
+   */
+  function softPressurePass(rig, gain, g) {
+    var res = { ringsPushed: 0, nodesClamped: 0, netX: 0, netY: 0, worstForce: 0 };
+    if (!rig || !rig.mesh || !rig.restRings || !(gain > 0) || !(g > 0)) return res;
+    // `rest` below is indexed by the ringSpans loop, so a rig whose two lists ever disagreed would
+    // throw on `rest.area` rather than skip the ring. Bail instead of failing the whole frame.
+    if (rig.restRings.length !== rig.mesh.ringSpans.length) return res;
+
+    var mesh = rig.mesh, nodes = rig.nodes;
+    var positions = [];
+    for (var n = 0; n < nodes.length; n++) {
+      var p = nodes[n].body.getPosition();
+      positions.push(p.x, p.y);
+    }
+    var now = GR.ringAreas(mesh, positions);
+    var thresh = (1 + AREA_DEADBAND) * (1 + AREA_DEADBAND);
+
+    for (var r = 0; r < mesh.ringSpans.length; r++) {
+      var rest = rig.restRings[r], cur = now[r];
+      // Same sign means the ring still winds the way it was built. Opposite - or either area at
+      // zero - means it is folded, and then both candidate direction references are broken: the
+      // rest winding pushes the fold deeper and the current winding has just reversed. Zeroing
+      // fires exactly when the sim is already in trouble, which is the wrong moment to apply the
+      // largest force in the model.
+      if (!(cur.area * rest.area > 0)) continue;
+
+      var ratio = rest.area / cur.area;
+      var P = gain * (rig.totalMass * g / rest.perimeter) * (ratio * ratio - thresh);
+      if (!(P > 0)) continue;
+
+      var span = mesh.ringSpans[r];
+      var fx = [], fy = [], i;
+      for (i = 0; i < span.count; i++) { fx.push(0); fy.push(0); }
+
+      // Turns (ey, -ex) outward for either winding - the derivation is in the docblock.
+      var sign = rest.area > 0 ? 1 : -1;
+      for (i = 0; i < span.count; i++) {
+        var a = span.start + i, b = span.start + ((i + 1) % span.count);
+        var ex = positions[b * 2] - positions[a * 2];
+        var ey = positions[b * 2 + 1] - positions[a * 2 + 1];
+        var len = Math.sqrt(ex * ex + ey * ey);
+        if (!(len > 0)) continue;
+        // P * len, split half to each endpoint. The len cancels against the normal's own, and it
+        // has to be here for that: it is what leaves each contribution LINEAR in the edge vector,
+        // and a sum of edge vectors round a closed loop is zero, so pressure can never thrust the
+        // object sideways. Dropping it - a unit normal per edge - takes the net from 8e-15 to
+        // 0.803470 on the bent 300pt square in test_softbody.js.
+        var half = 0.5 * P * len;
+        var hx = half * sign * ey / len, hy = half * -sign * ex / len;
+        fx[i] += hx; fy[i] += hy;
+        fx[(i + 1) % span.count] += hx; fy[(i + 1) % span.count] += hy;
+      }
+
+      // Every node in a rig is built from one density and one radius, so one cap covers the lot -
+      // hoisted to say so in code, since the tests already lean on that uniformity.
+      var cap = AREA_FORCE_CAP * nodes[span.start].body.getMass() * g;
+      for (i = 0; i < span.count; i++) {
+        var rec = nodes[span.start + i];
+        var mag = Math.sqrt(fx[i] * fx[i] + fy[i] * fy[i]);
+        if (mag > cap && mag > 0) {
+          fx[i] *= cap / mag; fy[i] *= cap / mag;
+          mag = cap;
+          res.nodesClamped++;
+        }
+        if (mag > res.worstForce) res.worstForce = mag;
+        res.netX += fx[i]; res.netY += fy[i];
+        // wake FALSE. An already-sleeping crushed shape is sitting at the equilibrium this term
+        // defines, and waking it would stop every jelly scene ending on `sleep`.
+        //
+        // planck then DROPS the force rather than banking it - `if (wake && !awake) setAwake(true);
+        // if (awake) m_force.add(force)` - so on a sleeping node the term is inert, not merely
+        // non-waking, and its force reads back as exactly (0,0). The tallies above therefore count
+        // what was COMPUTED, not what landed. Nothing consumes them in production today, but a
+        // report line that printed `ringsPushed` for a settled scene would be naming work that
+        // never happened.
+        rec.body.applyForceToCenter(new GR.planck.Vec2(fx[i], fy[i]), false);
+      }
+      res.ringsPushed++;
+    }
+    return res;
+  }
+
   GR.addSoftBody = addSoftBody;
   GR.softnessToFrequency = softnessToFrequency;
   GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
@@ -4078,6 +4302,10 @@ GR.planck = (function () {
   GR.SOFT_MIN_FREQ = MIN_FREQ;
   GR.SOFT_MAX_FREQ = MAX_FREQ;
   GR.SOFT_SHELL_MIN_FREQ = SHELL_MIN_FREQ;
+  GR.softPressurePass = softPressurePass;
+  GR.SOFT_AREA_DEADBAND = AREA_DEADBAND;
+  GR.SOFT_AREA_FORCE_CAP = AREA_FORCE_CAP;
+  GR.SOFT_AREA_DEFAULT_GAIN = AREA_DEFAULT_GAIN;
 })(GR);
 
 // -------------------------------------------------------------------------
@@ -4277,6 +4505,11 @@ GR.planck = (function () {
     var vIters = o.velocityIterations === undefined ? VELOCITY_ITERS : o.velocityIterations;
     var pIters = o.positionIterations === undefined ? POSITION_ITERS : o.positionIterations;
 
+    // Called immediately before each world.step, so a force applied here is integrated by the step
+    // it precedes rather than sitting in planck's accumulator for a frame. Counts STEPS, not
+    // frames: `stepsPerFrame` is a supported option and the two diverge the moment it is above 1.
+    var onStep = o.onStep;
+
     var bodies = W.dynamics;
     var n = bodies.length;
 
@@ -4294,13 +4527,18 @@ GR.planck = (function () {
 
     var frames = new Float64Array(maxFrames * n * 3);
     var frame = 0;
+    var stepIndex = 0;
     var settledAt = -1;
     var settledBy = 'cap';
     var quiet = 0;
     var overlaps = null;
 
     while (frame < maxFrames) {
-      for (var s = 0; s < stepsPerFrame; s++) W.world.step(dt, vIters, pIters);
+      for (var s = 0; s < stepsPerFrame; s++) {
+        if (onStep) onStep(W, stepIndex);
+        W.world.step(dt, vIters, pIters);
+        stepIndex++;
+      }
 
       var base = frame * n * 3;
       for (var i = 0; i < n; i++) {
@@ -5259,7 +5497,17 @@ GR.planck = (function () {
     // scene: clean at 30Hz, gouged at 15.5Hz. The console report now says outright when a shape
     // folded, so the honest instruction is "turn it up until the report stops complaining" rather
     // than a default that pretends the whole range is safe.
-    softness: 25
+    softness: 25,
+    // How hard a jelly refuses to lose its enclosed area, as a PERCENTAGE of the gain the crush
+    // bench calibrated - so 100 is that gain, not "full strength". A mass-spring lattice constrains
+    // edge LENGTHS and nothing at all constrains AREA, so without this a shape under a pile
+    // flattens: measured on the ten-shape crush bench at a 4x load, the worst shape settled at
+    // -55.0% of its rest area, and -5.8% with the term on.
+    //
+    // A percentage rather than the raw gain because the raw number (64) means nothing to a user and
+    // would change meaning every time the bench re-pins it. As a multiplier, re-pinning moves
+    // everyone's default without invalidating what a saved slider position meant.
+    firmness: 100
   };
 
   /**
@@ -5328,6 +5576,15 @@ GR.planck = (function () {
     // open folds shut instead of squashing; the console report says when that happened.
     var softCtl = mat.addUnitValueEditor('Jelly softness %', UnitType.Number, UnitType.Number, d.softness, 0, 100);
     softCtl.setShowPopupSlider(true); softCtl.precision = 0;
+    // Independent of softness: how readily a shape deforms and how hard it resists being squashed
+    // are different questions. Mapped LINEARLY downstream, unlike softness, because the
+    // non-linearity already lives in the pressure law's square. The range runs past 100 because 100
+    // is the calibrated default rather than the maximum - 0 turns the term off entirely and
+    // reproduces the runs from before it existed. 200% is safe rather than merely allowed: on the
+    // crush bench at a 4x load it settles the worst shape at -5.5% against -5.8% at 100%, with no
+    // new folds and every shape still sleeping, because the per-node force cap saturates first.
+    var firmCtl = mat.addUnitValueEditor('Jelly firmness %', UnitType.Number, UnitType.Number, d.firmness, 0, 200);
+    firmCtl.setShowPopupSlider(true); firmCtl.precision = 0;
 
     var beh = col.addGroup('Objects');
     var convertCtl = beh.addCheckBox('Split text into letters', false);
@@ -5368,6 +5625,9 @@ GR.planck = (function () {
       equaliseMass: !!equaliseCtl.value,
       ropeSlack: Math.max(0, Math.min(1, (slackCtl.value === undefined ? d.slack : slackCtl.value) / 100)),
       softness: Math.max(0, Math.min(1, (softCtl.value === undefined ? d.softness : softCtl.value) / 100)),
+      // Clamped to the editor's own 0..200, NOT to 0..1: this is a multiple of the calibrated gain,
+      // and capping it at 1 would deliver a sixty-fourth of the force at the slider's maximum.
+      firmness: Math.max(0, Math.min(2, (firmCtl.value === undefined ? d.firmness : firmCtl.value) / 100)),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,
@@ -5429,6 +5689,72 @@ GR.planck = (function () {
       if (b) where = ' @(' + fmt(b.x, 0) + ',' + fmt(b.y, 0) + ' ' + fmt(b.w, 0) + 'x' + fmt(b.h, 0) + ')';
     } catch (e) { /* bounds unavailable on this node type */ }
     return '"' + name + '"' + where;
+  }
+
+  /**
+   * The rig's rest lattice back in SPREAD points.
+   *
+   * `addSoftBody` meshes in SIM units, so `soft.mesh` cannot be handed to playback as it stands —
+   * the binding, the poses and the mesh all have to be in one space, and poses come back in spread
+   * points. Each node record already carries its own rest position in those units as `ox`/`oy`
+   * (softbody.js keeps it for exactly this), so the lattice is rebuilt from the records rather
+   * than rescaled from the sim mesh, and the y flip comes along for free.
+   *
+   * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
+   * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
+   *
+   * Lives at module scope, outside `main`, only so the tests can reach it: `main` itself reads
+   * `app.documents.current` on its first line and cannot run headlessly.
+   */
+  function spreadMeshOf(soft, scale) {
+    var pts = [];
+    for (var sn = 0; sn < soft.nodes.length; sn++) pts.push(soft.nodes[sn].ox, soft.nodes[sn].oy);
+    var springs = [];
+    for (var sp = 0; sp < soft.mesh.springs.length; sp++) {
+      var spr = soft.mesh.springs[sp];
+      springs.push([spr[0], spr[1], spr[2] * scale]);
+    }
+    return {
+      nodes: pts,
+      springs: springs,
+      cell: soft.cell * scale,
+      // Spans are INDICES into the node array, and the array above is rebuilt one-for-one in the
+      // rig's own order, so they transfer between spaces unchanged - only distances scale. Without
+      // them `ringAreas` cannot read this mesh, and the report cannot measure the one thing the
+      // area term is for.
+      ringSpans: soft.mesh.ringSpans,
+      boundaryCount: soft.mesh.boundaryCount
+    };
+  }
+
+  /**
+   * The per-step area-pressure callback, or `undefined` when there is nothing for it to do.
+   *
+   * Built here rather than in sim.js because it needs the softbody records — mesh, rest ring areas,
+   * total mass — and those exist only in what `addSoftBody` returned.
+   *
+   * `firmness` is a MULTIPLE of `GR.SOFT_AREA_DEFAULT_GAIN`, not a raw gain, and 1 is the default.
+   * The gain the crush bench pinned is 64; a slider carrying that number would mean nothing to a
+   * user, and would silently change meaning the next time the bench re-pins it. As a multiplier,
+   * 100% always means "what the bench calibrated", so re-pinning moves everyone's default without
+   * invalidating what a saved slider position meant. The mapping stays LINEAR either way — the
+   * non-linearity lives in the pressure law's square, not here.
+   *
+   * At firmness 0 no callback is built at all, so the term costs nothing and the run reproduces
+   * exactly what it did before the feature existed.
+   */
+  function areaStepFor(W, softs, firmness) {
+    var f = firmness === undefined ? 1 : firmness;
+    if (!softs || !softs.length || !(f > 0)) return undefined;
+    var gain = f * GR.SOFT_AREA_DEFAULT_GAIN;
+    // The pressure law scales its force by g, so it needs the magnitude rather than a component:
+    // a scene with sideways gravity would otherwise get zero force and the term would look broken
+    // while being wired correctly.
+    var gvec = W.world.getGravity();
+    var gMag = Math.sqrt(gvec.x * gvec.x + gvec.y * gvec.y);
+    return function () {
+      for (var ps = 0; ps < softs.length; ps++) GR.softPressurePass(softs[ps].rig, gain, gMag);
+    };
   }
 
   function main(opts) {
@@ -5773,29 +6099,6 @@ GR.planck = (function () {
     var ropes = [];
     var softs = [];
 
-    /**
-     * The rig's rest lattice back in SPREAD points.
-     *
-     * `addSoftBody` meshes in SIM units, so `soft.mesh` cannot be handed to playback as it stands —
-     * the binding, the poses and the mesh all have to be in one space, and poses come back in spread
-     * points. Each node record already carries its own rest position in those units as `ox`/`oy`
-     * (softbody.js keeps it for exactly this), so the lattice is rebuilt from the records rather
-     * than rescaled from the sim mesh, and the y flip comes along for free.
-     *
-     * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
-     * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
-     */
-    function spreadMeshOf(soft, scale) {
-      var pts = [];
-      for (var sn = 0; sn < soft.nodes.length; sn++) pts.push(soft.nodes[sn].ox, soft.nodes[sn].oy);
-      var springs = [];
-      for (var sp = 0; sp < soft.mesh.springs.length; sp++) {
-        var spr = soft.mesh.springs[sp];
-        springs.push([spr[0], spr[1], spr[2] * scale]);
-      }
-      return { nodes: pts, springs: springs, cell: soft.cell * scale };
-    }
-
     for (var k = 0; k < ex.objects.length; k++) {
       var obj = ex.objects[k];
 
@@ -6032,6 +6335,9 @@ GR.planck = (function () {
 
     // -------------------------------------------------------------------- sim
     var t0 = Date.now();
+    // A multiple of the calibrated gain, defaulting to 1 — see `areaStepFor`. Held in its own
+    // variable rather than passed straight in because the settled report prints it too.
+    var firmness = o.firmness === undefined ? 1 : o.firmness;
     // A jelly is a lattice of springs, and the default 8/3 iterations leave it visibly stretchy —
     // the sag then measures solver error rather than the softness that was asked for. Raised only
     // when a softbody exists, so every scene that had none steps exactly as it did before.
@@ -6039,7 +6345,8 @@ GR.planck = (function () {
       maxFrames: o.maxFrames === undefined ? 900 : o.maxFrames,
       seed: o.seed === undefined ? 1 : o.seed,
       velocityIterations: softs.length ? 24 : undefined,
-      positionIterations: softs.length ? 8 : undefined
+      positionIterations: softs.length ? 8 : undefined,
+      onStep: areaStepFor(W, softs, firmness)
     });
     var ms = Date.now() - t0;
 
@@ -6098,6 +6405,8 @@ GR.planck = (function () {
       // sub-pixel tangle from resampling the outline is not damaged artwork, and a report that
       // calls it a fold sends the user looking for a gouge that is not there.
       var hairShapes = 0, hairLoops = 0;
+      // What the area term actually achieved, or how far the shape was crushed without it.
+      var worstArea = Infinity, worstAreaName = '';
       for (var fs = 0; fs < softs.length; fs++) {
         var sf = softs[fs];
         var fpos = [];
@@ -6105,6 +6414,19 @@ GR.planck = (function () {
           var fp = GR.poseAt(frames, frames.frameCount - 1, sf.nodes[fn].frameIndex);
           fpos.push(fp.x, fp.y);
         }
+        // Both measured on `sf.mesh`, which is the SPREAD lattice: `fpos` comes from `poseAt`, and
+        // `bodyState` maps a sim position through `toSrc` - exactly the map `ox`/`oy` already went
+        // through. So the two areas are in one space and their ratio means something. Measuring the
+        // rest side off `sf.rig.mesh` instead would divide spread points by sim units and report a
+        // number around scale^2, which on the default scale would print as 10000%.
+        var arNow = GR.ringAreas(sf.mesh, fpos);
+        var arRest = GR.ringAreas(sf.mesh, sf.mesh.nodes);
+        for (var ar = 0; ar < arNow.length; ar++) {
+          if (!(Math.abs(arRest[ar].area) > 0)) continue;
+          var held = Math.abs(arNow[ar].area) / Math.abs(arRest[ar].area);
+          if (held < worstArea) { worstArea = held; worstAreaName = sf.name || '(unnamed)'; }
+        }
+
         var shapeCross = 0, shapeRepaired = 0, shapeRefused = 0, shapeHair = 0;
         for (var fr = 0; fr < sf.rings.length; fr++) {
           var outline = GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos);
@@ -6155,6 +6477,14 @@ GR.planck = (function () {
           'each under ' + fmt(100 * GR.SOFT_REPAIR_HAIRLINE, 2) + '% of its shape.');
         console.log('  Those are sub-pixel tangles from resampling the outline, not folded artwork ' +
           '- nothing visible changed.');
+      }
+      // The fold lines are the idiom: they print their OK case too, because "it held its area" is
+      // the result the user came for. Firmness is printed as the percentage the dialog shows, so
+      // the line names the control the user would reach for.
+      if (isFinite(worstArea)) {
+        console.log('  jelly area: worst shape settled at ' + fmt(100 * worstArea, 1) + '% of its ' +
+          'rest area (' + worstAreaName + ')' +
+          (firmness > 0 ? ', firmness ' + fmt(100 * firmness, 0) + '%' : ', firmness OFF'));
       }
     }
 
@@ -6279,6 +6609,8 @@ GR.planck = (function () {
     return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx };
   }
 
+  GR.spreadMeshOf = spreadMeshOf;
+  GR.areaStepFor = areaStepFor;
   GR.main = main;
 
 })(GR);
