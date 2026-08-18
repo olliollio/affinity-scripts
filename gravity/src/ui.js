@@ -26,7 +26,17 @@
     // scene: clean at 30Hz, gouged at 15.5Hz. The console report now says outright when a shape
     // folded, so the honest instruction is "turn it up until the report stops complaining" rather
     // than a default that pretends the whole range is safe.
-    softness: 25
+    softness: 25,
+    // How hard a jelly refuses to lose its enclosed area, as a PERCENTAGE of the gain the crush
+    // bench calibrated - so 100 is that gain, not "full strength". A mass-spring lattice constrains
+    // edge LENGTHS and nothing at all constrains AREA, so without this a shape under a pile
+    // flattens: measured on the ten-shape crush bench at a 4x load, the worst shape settled at
+    // -55.0% of its rest area, and -5.8% with the term on.
+    //
+    // A percentage rather than the raw gain because the raw number (64) means nothing to a user and
+    // would change meaning every time the bench re-pins it. As a multiplier, re-pinning moves
+    // everyone's default without invalidating what a saved slider position meant.
+    firmness: 100
   };
 
   /**
@@ -95,6 +105,15 @@
     // open folds shut instead of squashing; the console report says when that happened.
     var softCtl = mat.addUnitValueEditor('Jelly softness %', UnitType.Number, UnitType.Number, d.softness, 0, 100);
     softCtl.setShowPopupSlider(true); softCtl.precision = 0;
+    // Independent of softness: how readily a shape deforms and how hard it resists being squashed
+    // are different questions. Mapped LINEARLY downstream, unlike softness, because the
+    // non-linearity already lives in the pressure law's square. The range runs past 100 because 100
+    // is the calibrated default rather than the maximum - 0 turns the term off entirely and
+    // reproduces the runs from before it existed. 200% is safe rather than merely allowed: on the
+    // crush bench at a 4x load it settles the worst shape at -5.5% against -5.8% at 100%, with no
+    // new folds and every shape still sleeping, because the per-node force cap saturates first.
+    var firmCtl = mat.addUnitValueEditor('Jelly firmness %', UnitType.Number, UnitType.Number, d.firmness, 0, 200);
+    firmCtl.setShowPopupSlider(true); firmCtl.precision = 0;
 
     var beh = col.addGroup('Objects');
     var convertCtl = beh.addCheckBox('Split text into letters', false);
@@ -135,6 +154,9 @@
       equaliseMass: !!equaliseCtl.value,
       ropeSlack: Math.max(0, Math.min(1, (slackCtl.value === undefined ? d.slack : slackCtl.value) / 100)),
       softness: Math.max(0, Math.min(1, (softCtl.value === undefined ? d.softness : softCtl.value) / 100)),
+      // Clamped to the editor's own 0..200, NOT to 0..1: this is a multiple of the calibrated gain,
+      // and capping it at 1 would deliver a sixty-fourth of the force at the slider's maximum.
+      firmness: Math.max(0, Math.min(2, (firmCtl.value === undefined ? d.firmness : firmCtl.value) / 100)),
       seed: Math.max(1, Math.round(seedCtl.value || d.seed)),
       groupsAsOneBody: !!groupCtl.value,
       convertText: !!convertCtl.value,

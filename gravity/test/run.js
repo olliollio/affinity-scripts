@@ -31,7 +31,11 @@ var SRC = [
   // local to a call. So it loads headlessly, and loading it is what lets the playback interval be
   // asserted. That interval is exactly where the frame rate was being thrown away, so leaving it
   // outside the test suite would leave the one number that caused the bug unguarded.
-  'playback.js'
+  'playback.js',
+  // main.js is the last file build.js concatenates, and it loads headlessly: nothing outside a
+  // function body runs, and `main()` itself is never called from here. Loading it is what lets the
+  // two orchestration helpers - spreadMeshOf and areaStepFor - be asserted at all.
+  'main.js'
 ];
 
 var GR = h.loadPD(SRC, { planck: true });
@@ -50,7 +54,8 @@ var SUITES = [
   require('./test_softmesh'),
   require('./test_softbody'),
   require('./test_timing'),
-  require('./test_playback_handoff')
+  require('./test_playback_handoff'),
+  require('./test_main_wiring')
 ];
 
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);
