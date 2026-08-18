@@ -516,18 +516,26 @@
           // `softCommands` walks this same array and emits one curve per entry into one PolyCurve —
           // a different order there would draw the holes against the wrong outlines.
           var spreadM = spreadMeshOf(madeSoft, W.scale);
-          var bound = [];
+          var bound = [], boundIsOuter = [];
           for (var sf = 0; sf < obj.faces.length; sf++) {
             var sface = obj.faces[sf];
             bound.push(GR.bindOutline(sface.outer, spreadM));
+            boundIsOuter.push(true);
             var sholes = sface.holes || [];
-            for (var sh = 0; sh < sholes.length; sh++) bound.push(GR.bindOutline(sholes[sh], spreadM));
+            for (var sh = 0; sh < sholes.length; sh++) {
+              bound.push(GR.bindOutline(sholes[sh], spreadM));
+              boundIsOuter.push(false);
+            }
           }
 
           softs.push({
             node: obj.node,
             mesh: spreadM,
             rings: bound,
+            // Which entries of `rings` are a face's OUTER ring. Recorded here because this loop is
+            // the only place that still knows: `rings` is a flat list by the time the report reads
+            // it, and the report must not measure a hole as if it were the shape.
+            ringIsOuter: boundIsOuter,
             nodes: madeSoft.nodes,
             name: obj.name,
             object: obj,
@@ -764,22 +772,39 @@
           var fp = GR.poseAt(frames, frames.frameCount - 1, sf.nodes[fn].frameIndex);
           fpos.push(fp.x, fp.y);
         }
-        // Both measured on `sf.mesh`, which is the SPREAD lattice: `fpos` comes from `poseAt`, and
-        // `bodyState` maps a sim position through `toSrc` - exactly the map `ox`/`oy` already went
-        // through. So the two areas are in one space and their ratio means something. Measuring the
-        // rest side off `sf.rig.mesh` instead would divide spread points by sim units and report a
-        // number around scale^2, which on the default scale would print as 10000%.
-        var arNow = GR.ringAreas(sf.mesh, fpos);
-        var arRest = GR.ringAreas(sf.mesh, sf.mesh.nodes);
-        for (var ar = 0; ar < arNow.length; ar++) {
-          if (!(Math.abs(arRest[ar].area) > 0)) continue;
-          var held = Math.abs(arNow[ar].area) / Math.abs(arRest[ar].area);
-          if (held < worstArea) { worstArea = held; worstAreaName = sf.name || '(unnamed)'; }
-        }
 
         var shapeCross = 0, shapeRepaired = 0, shapeRefused = 0, shapeHair = 0;
         for (var fr = 0; fr < sf.rings.length; fr++) {
           var outline = GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos);
+
+          // The OUTLINE's area, not the node loop's. Boundary nodes sit INSET_FRAC inside the drawn
+          // edge, so their loop encloses less than the shape the user sees - on a 400pt square with
+          // a 100pt hole, 129912 against the outline's 160000 - and it is the outline that every
+          // published figure measures: the README table, the constants in softbody.js and the crush
+          // bench all divide `ringSignedArea(evalSoftOutline(...))` by the drawn ring. Across the
+          // ten crush shapes at a 4x load the node loop reads 1.2 to 7.1 points lower, and it would
+          // name orange at -12.0% where the outline, and the calibration those numbers pinned, says
+          // teal at -5.8%. A user reading "88.0% of its rest area" would conclude the term is broken.
+          //
+          // Both sides are evaluated on `sf.mesh`, the SPREAD lattice: `fpos` comes from `poseAt`,
+          // and `bodyState` maps a sim position through `toSrc` - exactly the map `ox`/`oy` already
+          // went through - while the rest side is the lattice's own rest nodes, which reproduce the
+          // drawn ring exactly (160000.000000 against 160000.000000 on that fixture). Feeding
+          // `sf.rig.mesh` positions instead would divide spread points by sim units and report a
+          // number around scale^2, which on the default scale of 100 prints as 1000000.0%.
+          //
+          // HOLES are skipped, because the line names the SHAPE. A hole's outline shrinks as the
+          // material around it swells, so reporting one would say the opposite of what happened; at
+          // rest that same 100pt hole's node loop measures 18350, the nodes being outside it.
+          if (sf.ringIsOuter[fr]) {
+            var restA = Math.abs(GR.ringSignedArea(
+              GR.evalSoftOutline(sf.rings[fr], sf.mesh, sf.mesh.nodes)));
+            if (restA > 0) {
+              var held = Math.abs(GR.ringSignedArea(outline)) / restA;
+              if (held < worstArea) { worstArea = held; worstAreaName = sf.name || '(unnamed)'; }
+            }
+          }
+
           shapeCross += GR.outlineFolds(outline);
           var fix = GR.repairRing(outline);
           if (fix.repaired) {
