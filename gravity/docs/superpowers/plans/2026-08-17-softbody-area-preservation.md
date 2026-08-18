@@ -40,7 +40,7 @@
 - Modify: `src/softmesh.js` (add the function near `ringSignedArea` at ~line 566; add the export beside `GR.ringSignedArea` at ~line 972)
 - Test: `test/test_softmesh.js`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new group to `test/test_softmesh.js`, after the `softmesh: binding` group. `square` and `circle` helpers already exist in that file.
 
@@ -85,12 +85,12 @@ Add a new group to `test/test_softmesh.js`, after the `softmesh: binding` group.
     'outer ' + hrest[0].area.toFixed(3) + ' hole ' + hrest[1].area.toFixed(3));
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `node test/run.js 2>&1 | tail -12`
 Expected: failures reading `GR.ringAreas is not a function`, or a thrown TypeError that stops the suite.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 In `src/softmesh.js`, immediately after `ringSignedArea` (which is at ~line 566), add:
 
@@ -131,12 +131,12 @@ Add the export beside `GR.ringSignedArea`:
   GR.ringAreas = ringAreas;
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `node test/run.js 2>&1 | tail -4`
 Expected: `==== NNN passed, 0 failed ====`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gravity/src/softmesh.js gravity/test/test_softmesh.js
@@ -156,7 +156,7 @@ winding is not trusted here."
 - Modify: `src/softbody.js` (the return record at ~line 319)
 - Test: `test/test_softbody.js`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `test/test_softbody.js`, in the `softbody: rig` group (the `soft` rig on a 300pt square already exists there as `soft`):
 
@@ -169,12 +169,12 @@ Add to `test/test_softbody.js`, in the `softbody: rig` group (the `soft` rig on 
   h.assert('a rest ring has perimeter', soft.restRings[0].perimeter > 0);
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `node test/run.js 2>&1 | tail -8`
 Expected: `a rig records its rest ring areas` fails.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/softbody.js`, inside `addSoftBody`, after the springs are created and before the `return {`, add:
 
@@ -199,12 +199,12 @@ Also add the same key to the `give()` fallback record (~line 149), so a rig that
 
 > **Why the fallback matters:** `give()` runs BEFORE `mesh` exists. Reading `mesh` there throws out of a test file and takes the whole suite down — this exact bug happened once already with `braces`. Hard-code the empty array.
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `node test/run.js 2>&1 | tail -4`
 Expected: `==== NNN passed, 0 failed ====`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gravity/src/softbody.js gravity/test/test_softbody.js
@@ -222,7 +222,7 @@ existing the moment the first step runs."
 - Modify: `src/softbody.js` (constants near `NODE_LINEAR_DAMPING` ~line 103; function after `addSoftBody`; exports at the tail)
 - Test: `test/test_softbody.js`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add a new group to `test/test_softbody.js`:
 
@@ -278,6 +278,72 @@ Add a new group to `test/test_softbody.js`:
   var pFlip = squashed(-0.5);
   h.assertEqual('a flipped ring is skipped', GR.softPressurePass(pFlip.rig, 1, 10).ringsPushed, 0);
 
+  // A HOLE, at both windings. Every other fixture here is a solid square, so without this the
+  // `sign` branch - the entire reason the signed area is called load-bearing - has no test at all.
+  // A SAME-wound hole is not hypothetical: nothing on the soft path normalises winding
+  // (sanitizeFace is reached only by the RIGID path via decompose), so it is what real artwork can
+  // hand us, and it must behave identically to a counter-wound one.
+  //
+  // Direction cannot be read off the return value - it reports aggregates, not per-node vectors -
+  // so it is measured as motion, against a gain-0 control run on an identical rig. The control is
+  // what subtracts the springs out: they pull on these same nodes during the step and would
+  // otherwise swamp the term being tested.
+  function holeRadial(holeRing, gain) {
+    var Wh = GR.makeWorld({ scale: 100 });
+    // Gravity off in the WORLD, but still passed to the pass, so the only thing moving these nodes
+    // is the term under test plus the springs the control subtracts.
+    Wh.world.setGravity(new GR.planck.Vec2(0, 0));
+    var rig = GR.addSoftBody(Wh, [{ outer: square(0, 0, 300, 300), holes: [holeRing] }],
+      { name: 'h', softness: 0.25, density: 1 });
+
+    // Squash uniformly toward the rig centroid. This shrinks the hole's node loop too, which is
+    // what puts its ratio above the deadband.
+    var cx = 0, cy = 0, i;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var q = rig.nodes[i].body.getPosition();
+      cx += q.x; cy += q.y;
+    }
+    cx /= rig.nodes.length; cy /= rig.nodes.length;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var b = rig.nodes[i].body, q2 = b.getPosition();
+      b.setTransform(new GR.planck.Vec2(cx + (q2.x - cx) * 0.7, cy + (q2.y - cy) * 0.7), 0);
+      b.setLinearVelocity(new GR.planck.Vec2(0, 0));
+    }
+
+    // Ring 1 is the hole - ringSpans is outer first, then that face's holes.
+    var span = rig.mesh.ringSpans[1];
+    var hx = 0, hy = 0;
+    for (i = 0; i < span.count; i++) {
+      var hp = rig.nodes[span.start + i].body.getPosition();
+      hx += hp.x; hy += hp.y;
+    }
+    hx /= span.count; hy /= span.count;
+
+    GR.softPressurePass(rig, gain, 10);
+    Wh.world.step(1 / 60, 8, 3);
+
+    // Mean outward-from-the-hole-centre velocity. Positive means the counter is being defended.
+    var radial = 0;
+    for (i = 0; i < span.count; i++) {
+      var rec = rig.nodes[span.start + i], rp = rec.body.getPosition(), rv = rec.body.getLinearVelocity();
+      var dx = rp.x - hx, dy = rp.y - hy, d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 0) radial += (rv.x * dx + rv.y * dy) / d;
+    }
+    return radial / span.count;
+  }
+
+  var holeCCW = square(110, 110, 80, 80);
+  var holeCW = [];
+  for (var hw = holeCCW.length - 2; hw >= 0; hw -= 2) holeCW.push(holeCCW[hw], holeCCW[hw + 1]);
+
+  var ccwPush = holeRadial(holeCCW, 1) - holeRadial(holeCCW, 0);
+  var cwPush = holeRadial(holeCW, 1) - holeRadial(holeCW, 0);
+  h.assert('a squashed hole is pushed away from its own centre', ccwPush > 0,
+    'radial ' + ccwPush.toFixed(5));
+  h.assert('and identically when the hole winds the other way', cwPush > 0,
+    'radial ' + cwPush.toFixed(5));
+  h.assertClose('winding changes nothing but the sign it is read from', ccwPush, cwPush, 1e-6);
+
   // The cap is per NODE on the accumulated vector. A per-edge clamp would cap a node at 2*FMAX and
   // depend on the order edges are visited.
   var pCap = squashed(0.2);
@@ -289,12 +355,12 @@ Add a new group to `test/test_softbody.js`:
     'worst ' + capRes.worstForce);
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `node test/run.js 2>&1 | tail -12`
 Expected: `GR.softPressurePass is not a function`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/softbody.js`, beside `NODE_LINEAR_DAMPING`, add the constants:
 
@@ -368,9 +434,19 @@ After `addSoftBody`, add:
       var fx = [], fy = [], i;
       for (i = 0; i < span.count; i++) { fx.push(0); fy.push(0); }
 
-      // Outward normal of edge a->b is (ey, -ex)/len for a ring with POSITIVE signed area. The
-      // sign flips the whole thing for a negative one, which is how a hole pushes into its own
-      // emptiness using the same code.
+      // Outward normal of edge a->b is (ey, -ex)/len for a ring with POSITIVE signed area - check
+      // it on the CCW unit square (0,0)->(1,0)->(1,1)->(0,1), shoelace +1, where edge (0,0)->(1,0)
+      // gives (0,-1), away from the interior. For a NEGATIVE ring that same expression points
+      // inward, and this sign flips it back out. So both windings end up pushing outward-of-loop,
+      // and every ring defends its OWN enclosed area - for a hole that means away from the hole's
+      // centre, growing a squashed counter back toward its rest size.
+      //
+      // The reference is each ring's own REST sign, never an absolute convention, and that is not
+      // a stylistic choice: nothing on the soft path normalises hole winding. sanitizeFace is
+      // reached only by the RIGID path via decompose; the soft path is main.js -> addSoftBody ->
+      // convertRing (scale and y-flip only) -> buildSoftMesh, and contours.js says outright that
+      // rings arrive "by reference, unmodified". A same-wound hole must therefore work identically,
+      // and it does, because the winding cancels.
       var sign = rest.area > 0 ? 1 : -1;
       for (i = 0; i < span.count; i++) {
         var a = span.start + i, b = span.start + ((i + 1) % span.count);
@@ -413,14 +489,14 @@ Add the exports at the tail of `softbody.js`:
   GR.SOFT_AREA_FORCE_CAP = AREA_FORCE_CAP;
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `node test/run.js 2>&1 | tail -6`
 Expected: `==== NNN passed, 0 failed ====`
 
 If `pressure has no net force` fails by a large amount, the outward normal sign is wrong — check it against a counter-clockwise unit square: edge `(0,0)->(1,0)` must give normal `(0,-1)`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gravity/src/softbody.js gravity/test/test_softbody.js
@@ -443,7 +519,7 @@ exists for."
 - Modify: `src/sim.js:188-240`
 - Test: `test/test_engine.js`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `test/test_engine.js` (it already builds worlds and calls `GR.run`):
 
@@ -484,12 +560,12 @@ Add to `test/test_engine.js` (it already builds worlds and calls `GR.run`):
   h.assert('a run without a hook still works', GR.run(plainW, { maxFrames: 3 }).frameCount === 3);
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `node test/run.js 2>&1 | tail -8`
 Expected: `onStep runs once per step` fails with `expected "N" got "0"`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `src/sim.js`, inside `run`, beside the other option reads:
 
@@ -510,12 +586,12 @@ Add `var stepIndex = 0;` beside `var frame = 0;`, and replace the step loop:
       }
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+- [x] **Step 4: Run to verify it passes**
 
 Run: `node test/run.js 2>&1 | tail -4`
 Expected: `==== NNN passed, 0 failed ====`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gravity/src/sim.js gravity/test/test_engine.js
@@ -536,7 +612,7 @@ This is the measurement task. It produces two numbers the rest of the plan depen
 - Create: `test/bench_crush.js`
 - Test: `test/test_softbody.js`
 
-- [ ] **Step 1: Write the bench**
+- [x] **Step 1: Write the bench**
 
 Create `test/bench_crush.js`. It is a benchmark, not a test: it asserts nothing and always exits 0, exactly like the existing `test/bench.js`.
 
@@ -675,12 +751,12 @@ console.log('worst: ' + worstName + ' at ' + (100 * worst - 100).toFixed(1) + '%
 
 > **`frameIndex`:** `GR.run` assigns it (`sim.js`), so it is available the moment `run` returns. It used to be set only in `playbackPrepare` — which is how the settled report ended up reading `undefined` for every node and printing "797 loop(s) removed" about an all-NaN outline. If you find yourself reaching for a fallback here, something has regressed; check `test_engine.js`'s `sim: every body knows its index into the recording` group first.
 
-- [ ] **Step 2: Run the bench with GAIN=0 to confirm it reproduces the defect**
+- [x] **Step 2: Run the bench with GAIN=0 to confirm it reproduces the defect**
 
 Run: `LOAD=4 GAIN=0 node test/bench_crush.js`
 Expected: teal about −55%, purple about −52%, green about −24%, yellowgreen about −1%. If those are wildly different, stop — the bench is not measuring what the spec measured, and every constant below would be tuned against the wrong thing.
 
-- [ ] **Step 3: Sweep the gain**
+- [x] **Step 3: Sweep the gain**
 
 Run each and record the worst shape:
 
@@ -702,7 +778,7 @@ Then confirm at LOAD=0 that nothing overshoots: `LOAD=0 GAIN=<pinned> node test/
 
 Raising the gain past the overshoot gate is **not** on the list: a shape that rings past its rest area is a worse artefact than one that stays squashed, because it is visible in motion.
 
-- [ ] **Step 4: Write the criterion into the test suite**
+- [x] **Step 4: Write the criterion into the test suite**
 
 The full sweep is ~1.2s per load over ten shapes, too slow for the commit gate. Put the three worst shapes only into `test/test_softbody.js`:
 
@@ -735,7 +811,12 @@ The full sweep is ~1.2s per load over ten shapes, too slow for the commit gate. 
 
 Factor `crush()` out of the bench into a small shared helper so both use one copy — put it in `test/fixtures_softscene.js` as `crushOne(GR, shape, load, gain)` and have `bench_crush.js` call it too. DRY: two copies of a measurement rig will drift and then disagree, and there is no way to tell which one was right.
 
-- [ ] **Step 5: Record the pinned gain as a constant**
+> **Carried forward from Task 3's review — three mutations survive the commit gate, and this is where two of them get closed.**
+> - `AREA_FORCE_CAP 8 -> 16` survives, because `'no node exceeds the cap'` compares `worstForce` against `GR.SOFT_AREA_FORCE_CAP` itself. That assertion is self-referential: ANY cap value passes it. The cap has to be pinned against something external — the bench is that something.
+> - `AREA_DEADBAND 0.06 -> 0.12` survives, because only the band's LOWER edge is pinned (by `squashed(0.97)`). The upper edge is what the "an unloaded jelly is left alone" control is really testing, so state the measured margin rather than assuming it.
+> - `wake false -> true` also survives. It is a `settledBy` question, so the `still sleeps` assertions below are its natural home — confirm they actually fail with `wake true`, or say why they do not.
+
+- [x] **Step 5: Record the pinned gain as a constant**
 
 In `src/softbody.js`, beside `AREA_FORCE_CAP`:
 
@@ -748,12 +829,12 @@ In `src/softbody.js`, beside `AREA_FORCE_CAP`:
 
 Export it: `GR.SOFT_AREA_DEFAULT_GAIN = AREA_DEFAULT_GAIN;`
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `node test/run.js 2>&1 | tail -4`
 Expected: `==== NNN passed, 0 failed ====`
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add gravity/test/bench_crush.js gravity/test/fixtures_softscene.js gravity/test/test_softbody.js gravity/src/softbody.js
@@ -776,7 +857,7 @@ because at 1.2s a load it is too slow for the gate."
 - Modify: `src/main.js` (`spreadMeshOf` ~line 398, the `GR.run` call ~line 648, the settled report block ~line 703)
 - Modify: `src/ui.js` (default ~line 29, editor ~line 96, normalise ~line 137)
 
-- [ ] **Step 1: Carry `ringSpans` onto the spread mesh**
+- [x] **Step 1: Carry `ringSpans` onto the spread mesh**
 
 `spreadMeshOf` currently returns `{ nodes, springs, cell }`, which `ringAreas` cannot read. In `src/main.js`:
 
@@ -792,7 +873,7 @@ because at 1.2s a load it is too slow for the gate."
       };
 ```
 
-- [ ] **Step 2: Pass the callback to `sim.run`**
+- [x] **Step 2: Pass the callback to `sim.run`**
 
 In `src/main.js`, just before the `GR.run` call:
 
@@ -809,7 +890,7 @@ In `src/main.js`, just before the `GR.run` call:
 
 and add `onStep: areaStep,` to the options object.
 
-- [ ] **Step 3: Add the report line**
+- [x] **Step 3: Add the report line**
 
 In the settled report block in `src/main.js` (the one that prints the fold and hairline lines), inside the existing per-softbody loop that already computes `fpos`, accumulate:
 
@@ -836,7 +917,7 @@ with `var worstArea = Infinity, worstAreaName = '';` declared beside the other a
       }
 ```
 
-- [ ] **Step 4: Add the slider**
+- [x] **Step 4: Add the slider**
 
 In `src/ui.js`, beside `softness: 25` in the defaults:
 
@@ -863,14 +944,14 @@ beside the `softness` normalise line:
       firmness: Math.max(0, Math.min(1, (firmCtl.value === undefined ? d.firmness : firmCtl.value) / 100)),
 ```
 
-- [ ] **Step 5: Run the suite**
+- [x] **Step 5: Run the suite**
 
 Run: `node test/run.js 2>&1 | tail -4`
 Expected: `==== NNN passed, 0 failed ====`
 
 The `playback` and `main` tests should be untouched — if `test_playback_handoff.js` goes red, `spreadMeshOf` returned the wrong shape.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gravity/src/main.js gravity/src/ui.js
@@ -892,21 +973,21 @@ one thing this feature is for."
 - Modify: `README.md` (the Softbodies section, after the outline-repair subsection)
 - Modify: `gravity/dist/gravity.js` (generated)
 
-- [ ] **Step 1: Write the README section**
+- [x] **Step 1: Write the README section**
 
 Add after the "The outline is repaired on the way into the document" subsection. It must contain: the defect table from the real run, the crush bench table at GAIN=0 and at the pinned gain, the law, and every constant with the measurement that pinned it. Regenerate the tables with `node test/bench_crush.js` rather than copying them from the spec — the spec's numbers were taken before the term existed, and a published number that was never regenerated is the thing this README exists to prevent.
 
-- [ ] **Step 2: Rebuild the bundle**
+- [x] **Step 2: Rebuild the bundle**
 
 Run: `node build.js`
 Expected: `wrote dist/gravity.js  NNNKB, NNNN lines`
 
-- [ ] **Step 3: Run the suite one last time**
+- [x] **Step 3: Run the suite one last time**
 
 Run: `node test/run.js 2>&1 | tail -4`
 Expected: `==== NNN passed, 0 failed ====`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add gravity/README.md gravity/dist/gravity.js
