@@ -102,6 +102,18 @@
   // body is quiet at once. Same lever, same reason, as the rope link damping.
   var NODE_LINEAR_DAMPING = 0.5;
 
+  // Below this much compression the area term is exactly zero. Measured on the crush bench: a jelly
+  // settling under nothing but its own weight already loses 0.3% to 4.0% of its area - purple is
+  // the 4.0% - and the term must not fire on that. `sim.run` ends when every body is asleep, so a
+  // term that fired forever would push every jelly scene off `sleep` and onto the quiescence
+  // backstop. 0.06 clears every shape on the bench with headroom.
+  var AREA_DEADBAND = 0.06;
+
+  // Per-node force ceiling, as a multiple of that node's OWN weight - which is what keeps it free
+  // of scale. Capping the PRESSURE instead would leave the per-node force free by a factor of the
+  // edge length, and edge lengths vary across a ring.
+  var AREA_FORCE_CAP = 8;
+
   // Counts DOWN from -1, one per softbody. Negative means "never collide within this group", so a
   // shape does not inflate itself apart on its own overlapping circles; distinct values mean two
   // jellies still collide with each other normally.
@@ -347,6 +359,114 @@
     };
   }
 
+  /**
+   * One step of the area-preservation term. Call before `world.step`.
+   *
+   * Ideal gas, one-sided, per ring:
+   *
+   *   ratio = restArea / area                       signed, so a fold is detectable
+   *   P     = gain * P0 * (ratio^2 - (1+DEADBAND)^2)     clamped at 0 below
+   *   P0    = totalMass * g / ringRestPerimeter
+   *   Fnode = sum over the node's two ring edges, THEN clamped to FMAX
+   *
+   * `P0` is the load the shape must hold divided by the length holding it - a pressure whose units
+   * are already right, which is what leaves `gain` dimensionless and makes one slider position mean
+   * the same thing at every artwork scale, shape size and cell size. It is the REST perimeter, so
+   * P0 is a fixed reference: taken from the current pose it would grow as the ring shrinks and
+   * compound the ratio^2 non-linearity with a second one nobody chose.
+   *
+   * DIRECTION. The outward normal of edge a->b is (ey, -ex)/len for a ring with POSITIVE signed
+   * area - check it on the CCW unit square (0,0)->(1,0)->(1,1)->(0,1), shoelace +1, where edge
+   * (0,0)->(1,0) gives (0,-1), away from the interior. For a NEGATIVE ring that same expression
+   * points INWARD, and `sign` flips it back out. So both windings end up pushing outward-of-loop,
+   * and every ring defends its OWN enclosed area - for a hole that means away from the hole's
+   * centre, growing a squashed counter back toward its rest size. It does not push into the void.
+   *
+   * The reference is each ring's own REST sign, never an absolute convention, and that is not a
+   * stylistic choice: nothing on the soft path normalises hole winding. sanitizeFace is reached
+   * only by the RIGID path via decompose; the soft path is main.js -> addSoftBody -> convertRing
+   * (scale and y flip only) -> buildSoftMesh, and contours.js says outright that rings arrive "by
+   * reference, unmodified". A same-wound hole must therefore work identically to a counter-wound
+   * one, and it does, because the winding cancels. `ringAreas` in softmesh.js defers here for this.
+   *
+   * The deadband is subtracted INSIDE the square rather than gating the term, so P rises
+   * continuously from zero at the threshold instead of jumping to 0.12*P0. A step discontinuity
+   * there is a limit-cycle source sitting precisely where the run needs shapes to sleep.
+   *
+   * Every ring of an object uses the OBJECT's mass, a counter's ring included: what a counter must
+   * resist is the whole object's weight bearing on it, not a share apportioned by area.
+   *
+   * Returns what it did, so the tests can assert on the force field rather than on its effect.
+   */
+  function softPressurePass(rig, gain, g) {
+    var res = { ringsPushed: 0, nodesClamped: 0, netX: 0, netY: 0, worstForce: 0 };
+    if (!rig || !rig.mesh || !rig.restRings || !(gain > 0) || !(g > 0)) return res;
+
+    var mesh = rig.mesh, nodes = rig.nodes;
+    var positions = [];
+    for (var n = 0; n < nodes.length; n++) {
+      var p = nodes[n].body.getPosition();
+      positions.push(p.x, p.y);
+    }
+    var now = GR.ringAreas(mesh, positions);
+    var thresh = (1 + AREA_DEADBAND) * (1 + AREA_DEADBAND);
+
+    for (var r = 0; r < mesh.ringSpans.length; r++) {
+      var rest = rig.restRings[r], cur = now[r];
+      // Same sign means the ring still winds the way it was built. Opposite - or either area at
+      // zero - means it is folded, and then both candidate direction references are broken: the
+      // rest winding pushes the fold deeper and the current winding has just reversed. Zeroing
+      // fires exactly when the sim is already in trouble, which is the wrong moment to apply the
+      // largest force in the model.
+      if (!(cur.area * rest.area > 0)) continue;
+
+      var ratio = rest.area / cur.area;
+      var P = gain * (rig.totalMass * g / rest.perimeter) * (ratio * ratio - thresh);
+      if (!(P > 0)) continue;
+
+      var span = mesh.ringSpans[r];
+      var fx = [], fy = [], i;
+      for (i = 0; i < span.count; i++) { fx.push(0); fy.push(0); }
+
+      // Turns (ey, -ex) outward for either winding - the derivation is in the docblock.
+      var sign = rest.area > 0 ? 1 : -1;
+      for (i = 0; i < span.count; i++) {
+        var a = span.start + i, b = span.start + ((i + 1) % span.count);
+        var ex = positions[b * 2] - positions[a * 2];
+        var ey = positions[b * 2 + 1] - positions[a * 2 + 1];
+        var len = Math.sqrt(ex * ex + ey * ey);
+        if (!(len > 0)) continue;
+        // P * len, split half to each endpoint. The len cancels against the normal's own, and it
+        // has to be here for that: it is what leaves each contribution LINEAR in the edge vector,
+        // and a sum of edge vectors round a closed loop is zero, so pressure can never thrust the
+        // object sideways. Dropping it - a unit normal per edge - takes the net from 8e-15 to
+        // 0.803470 on the bent 300pt square in test_softbody.js.
+        var half = 0.5 * P * len;
+        var hx = half * sign * ey / len, hy = half * -sign * ex / len;
+        fx[i] += hx; fy[i] += hy;
+        fx[(i + 1) % span.count] += hx; fy[(i + 1) % span.count] += hy;
+      }
+
+      for (i = 0; i < span.count; i++) {
+        var rec = nodes[span.start + i];
+        var cap = AREA_FORCE_CAP * rec.body.getMass() * g;
+        var mag = Math.sqrt(fx[i] * fx[i] + fy[i] * fy[i]);
+        if (mag > cap && mag > 0) {
+          fx[i] *= cap / mag; fy[i] *= cap / mag;
+          mag = cap;
+          res.nodesClamped++;
+        }
+        if (mag > res.worstForce) res.worstForce = mag;
+        res.netX += fx[i]; res.netY += fy[i];
+        // wake FALSE. An already-sleeping crushed shape is sitting at the equilibrium this term
+        // defines, and waking it would stop every jelly scene ending on `sleep`.
+        rec.body.applyForceToCenter(new GR.planck.Vec2(fx[i], fy[i]), false);
+      }
+      res.ringsPushed++;
+    }
+    return res;
+  }
+
   GR.addSoftBody = addSoftBody;
   GR.softnessToFrequency = softnessToFrequency;
   GR.SOFT_RADIUS_FRAC = RADIUS_FRAC;
@@ -355,4 +475,7 @@
   GR.SOFT_MIN_FREQ = MIN_FREQ;
   GR.SOFT_MAX_FREQ = MAX_FREQ;
   GR.SOFT_SHELL_MIN_FREQ = SHELL_MIN_FREQ;
+  GR.softPressurePass = softPressurePass;
+  GR.SOFT_AREA_DEADBAND = AREA_DEADBAND;
+  GR.SOFT_AREA_FORCE_CAP = AREA_FORCE_CAP;
 })(GR);
