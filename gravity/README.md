@@ -362,11 +362,12 @@ the geometric mean, **15.5Hz**.
 **A shape with a hole in it BUCKLES, and is floored at 26Hz.** Read the "O" column: a ring holds from
 30 to 26 and then falls off a cliff, losing two thirds of its height between 26 and 22 and reaching
 0.120 by 8Hz — flatter than the shape ever gets by landing. This is structural, not a tuning failure.
-A mass-spring lattice has no area preservation and nothing at all resists the hole ovalising, so once
+A mass-spring lattice preserves no area of its own and no spring resists the hole ovalising, so once
 the wall starts to fold there is no restoring force for the shape as a whole, only for each spring's
-own length. The known fix is a pressure or volume-preservation term — a per-face constraint that
-resists a change in enclosed area — and it is not built. Until it is, `SHELL_MIN_FREQ = 28` clamps
-any face with holes to at least 26Hz however soft the user asked for, and the report says so. The
+own length. The fix is a pressure term that resists a change in enclosed area, and it is built — see
+"A jelly holds its own area" below — but the retention table above was measured without it and the
+buckling cliff has not been re-measured with it active. Until it has, `SHELL_MIN_FREQ = 28` clamps
+any face with holes to at least 28Hz however soft the user asked for, and the report says so. The
 softness setting is a REQUEST that the shape's own structure can override, the same idiom rope slack
 already uses when measured clearance clamps the slack that was asked for. The floor applies to the
 SETTING only: an explicit `frequencyHz` is a caller taking control of the solver and is never
@@ -480,6 +481,128 @@ compared against pixels. Multi-ring fills are unmeasured on canvas. So is previe
 counts: ropes have a measured 0.7ms per rewrite, a jelly has no such figure yet and has considerably
 more points. Settling behaviour on real scenes — whether a lattice reliably reaches planck's sleep
 thresholds, or leans on the quiescence backstop — is also unmeasured.
+
+### A jelly holds its own area
+
+**A mass-spring lattice constrains edge LENGTHS and nothing at all constrains AREA.** Every spring
+in a squashed shape can sit at its own rest length while the shape as a whole is a puddle, so a
+jelly under a load flattens and does not come back. It is the same missing term the buckling cliff
+above is made of, seen from the other side.
+
+Measured on the crush bench — `node gravity/test/bench_crush.js`, one jelly at softness 25 dropped
+on a floor with a rigid slab of **4x its own mass** laid on top, run until every body sleeps. The
+area measured is the DRAWN outline's, not the lattice's, and `cross` counts self-intersections in
+that outline before `repairRing` sees it:
+
+| shape | firmness OFF | cross | firmness 100% | cross |
+|---|---|---|---|---|
+| teal | **-55.0%** | 4 | -5.8% | 1 |
+| grey | -39.1% | 0 | -3.3% | 0 |
+| orange | -16.0% | 1 | -4.9% | 1 |
+| blue | -6.7% | 0 | -5.5% | 0 |
+| amber | -12.9% | 1 | -2.8% | 0 |
+| cyan | -12.6% | 0 | -2.7% | 0 |
+| pink | -3.6% | 0 | -2.5% | 0 |
+| purple | -52.2% | 1 | -3.9% | 0 |
+| yellowgreen | -1.2% | 0 | -1.2% | 0 |
+| green | -24.2% | 1 | -4.8% | 0 |
+
+Without the term five of the ten shapes fold through themselves and the worst keeps under half of
+what it was. With it, nothing is worse than **-5.8%**, and six of the eight crossings are gone.
+`sim.run` reports the worst of them on its own line, so a real scene says what it did rather than
+leaving it to be inferred from the artwork.
+
+**The law is a one-sided ideal gas, per ring, applied immediately before each `world.step`:**
+
+```
+ratio = restArea / area                            signed, so a fold is detectable
+P     = gain * P0 * (ratio^2 - (1+DEADBAND)^2)     clamped at 0 below
+P0    = totalMass * g / restPerimeter
+Fnode = sum over the node's two ring edges, THEN clamped to CAP * nodeMass * g
+```
+
+`P0` is the load the shape must hold divided by the length holding it — a pressure whose units are
+already right, which is what leaves `gain` dimensionless and makes one slider position mean the
+same thing at every artwork scale, shape size and cell size. It is the REST perimeter, so P0 is a
+fixed reference: taken from the current pose it would grow as the ring shrank and compound the
+`ratio²` non-linearity with a second one nobody chose. Per RING means a counter defends its own
+enclosed area — outward of its own loop, away from the hole's centre, never into the void — using
+the whole object's mass rather than a share apportioned by area, because what a counter resists is
+the weight bearing on it. Each ring's REST winding is the direction reference, so a same-wound hole
+behaves identically to a counter-wound one; nothing on the soft path normalises hole winding, so an
+absolute convention would have been a guess. When the two areas disagree in sign the ring is folded
+and the term is skipped rather than applied to a broken reference. The force is applied **without
+waking** a sleeping node, or a term that is only ever in equilibrium would push every jelly scene
+off `sleep` and onto the quiescence backstop.
+
+**A gain near 1 was never dimensionally possible.** Holding a slab of 4x the jelly's mass needs a
+pressure of about `4Mg / width` against a P0 of `Mg / restPerimeter` — a factor of
+`4 * perimeter / width`, which on this scene is **15.8** for teal and **10.9** at the median. The
+bracket that factor has to be divided by is small: at 10% compression `ratio² - 1.06²` is only
+**0.111**. So the gain that closes it is `15.8 / 0.111 = 143` for teal and **98** at the median —
+the same decade as 64, and two decades away from 1.
+
+**The force cap is a limiter, and it took 64 to stop it being the answer.** `AREA_FORCE_CAP` bounds
+each node's force at a multiple of that node's OWN weight, which is what keeps it free of scale;
+capping the pressure instead would leave the per-node force free by a factor of the edge length, and
+edge lengths vary around a ring. A small cap — 8 — sets the settled area instead of limiting a
+transient, and the two constants therefore cannot be pinned separately. Worst of the ten shapes at
+a 4x load, sweeping both:
+
+| cap (down) / gain (across) | 4 | 8 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|---|
+| 8 | -38.0 | -35.1 | -38.0 | -38.1 | -38.0 | -38.1 |
+| 16 | -25.4 | -23.3 | -22.8 | -23.0 | -23.0 | -23.0 |
+| 32 | -25.7 | -20.2 | -15.3 | -12.8 | -8.6 | -7.0 |
+| 64 | -25.2 | -20.2 | -14.5 | -10.2 | **-5.8** | -5.5 |
+| 128 | -25.2 | -20.2 | -14.5 | -10.2 | -5.8 | -5.1 |
+
+**The whole cap-8 row is flat.** A 16x sweep of the gain moves the worst shape by nothing, because
+the ring is pinned on its ceiling and cannot respond: at cap 8 and gain 1, teal has a mean of
+**25.1 of its 32** boundary nodes sitting exactly on the cap on every step that pushes at all
+(grey 8.0 of 31, purple 12.5 of 31). At gain 64 that becomes **31.8 of 32** — the entire boundary,
+every step — with six of the ten shapes clamped essentially all the way round and all ten reaching
+the cap exactly. A stability limiter was deciding where a loaded jelly settles. At cap 64 and the
+shipped gain the same measurement reads a mean of **1.0** node per pushing step on teal, in the
+impact transient only, which is the job it was written for.
+
+**64 and not 128, because 128 buys nothing.** The two rows are identical at every gain up to the
+pinned one, and 0.4 points apart above it. That identity is itself the evidence that at 64 the cap
+has stopped setting the answer — where a loaded jelly settles is the deadband's call now, not the
+limiter's.
+
+**The deadband is the steady-state answer, not a safety margin.** At a gain high enough that the
+cap no longer binds, `P -> 0` requires `ratio² -> (1 + DEADBAND)²`, so the settled area tends to
+`1 / (1 + DEADBAND)` = **-5.66%**. Teal at -5.8% is already sitting on that asymptote, which is why
+the gain column flattens: past 64 the gain can only buy what the deadband has conceded, while every
+extra unit of it is stiffness the shape has to absorb on impact.
+
+`AREA_DEADBAND = 0.06` is sized against the unloaded control — the same bench with no slab, where a
+jelly settling under nothing but its own weight loses between **0.1% and 1.0%** of its area (green
+is the 1.0%, teal and purple 0.9%, cyan the 0.1%). The term must not fire on that, and it does not:
+the whole unloaded table prints identically at gains 0, 1, 4, 64 and 128, so unloaded the band is
+silent at any gain. 0.06 against a worst of 1.0% is 6x of headroom. An earlier measurement chain
+put a resting purple at 4.0% instead — 1.5x — and this bench does not reproduce it, reading purple
+at 0.9%; the bench is the instrument, and its unloaded row is one shape on a floor rather than a
+shape somewhere in a pile.
+
+**The slider is a MULTIPLIER, not a gain.** "Jelly firmness %" runs 0..200 with a default of 100,
+and 100% means `AREA_DEFAULT_GAIN = 64` — the number the bench pinned. A slider carrying 64 would
+mean nothing to a reader and would silently change meaning the next time the bench re-pins it; as a
+multiplier, re-pinning moves everyone's default without invalidating what a saved slider position
+meant. The mapping is LINEAR, unlike softness, because the non-linearity already lives in the law's
+square. At firmness 0 no callback is built at all, so the term costs nothing and the run reproduces
+exactly what it did before the feature existed.
+
+**It is cheap enough not to think about.** Over the ten-shape bench — 718 nodes, 3623 frames — the
+pass costs **2.7µs per frame against a 321µs frame, 0.85%**, and 1.7% on the worst single shape. It
+is O(ring nodes) while the step it precedes is O(bodies + contacts), so the share only falls as
+scenes grow.
+
+**What is not verified.** The bench is one jelly, one outer ring, no holes and one rigid slab; it is
+not a pile, and a pile is what the feature is for. Nothing here has run against the real Affinity
+SDK. The cap raise is least tested exactly where contact forces stack — a jelly under another jelly
+— and on shapes with counters, where the winding branch runs and where the bench has no row at all.
 
 ## Settling
 
