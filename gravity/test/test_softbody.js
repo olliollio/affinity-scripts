@@ -52,6 +52,13 @@ module.exports = function (GR, h) {
   // Springs are what make the nodes one object rather than a heap of circles.
   h.assert('a softbody has springs', soft.springCount > 0);
 
+  // The reference the pressure term defends. Recorded at build, in SIM units, because that is the
+  // space softmesh works in and the ratio must not depend on where the artwork sat on the page.
+  h.assert('a rig records its rest ring areas', !!soft.restRings);
+  h.assertEqual('one rest ring per mesh ring', soft.restRings.length, soft.mesh.ringSpans.length);
+  h.assert('a rest ring has area', Math.abs(soft.restRings[0].area) > 0);
+  h.assert('a rest ring has perimeter', soft.restRings[0].perimeter > 0);
+
   h.group('softbody: softness');
 
   // Log-spaced, so the midpoint is the geometric mean rather than the arithmetic one.
