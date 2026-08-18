@@ -430,10 +430,19 @@ module.exports = function (GR, h) {
   GR.addBounds(hookW, { x: 0, y: 0, width: 400, height: 400 });
   GR.addBody(hookW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'box' });
   var seen = [];
-  var hookRec = GR.run(hookW, { maxFrames: 5, quietFrames: 0, onStep: function (W, i) {
+  // The worlds are collected and checked after the run rather than thrown on inside the callback:
+  // a throw here aborts the whole runner, so the one thing that would go wrong takes the summary
+  // line down with it instead of reporting one FAIL. Named `hw` because `W` at the top of this
+  // file is a different world.
+  var seenWorlds = [];
+  var hookRec = GR.run(hookW, { maxFrames: 5, quietFrames: 0, onStep: function (hw, i) {
     seen.push(i);
-    if (W !== hookW) throw new Error('onStep got the wrong world');
+    seenWorlds.push(hw);
   } });
+  var sameWorld = seenWorlds.length > 0;
+  for (var sw = 0; sw < seenWorlds.length; sw++) if (seenWorlds[sw] !== hookW) sameWorld = false;
+  h.assert('onStep is handed the world it was run on', sameWorld,
+    seenWorlds.length + ' call(s)');
 
   // Steps, not frames. `stepsPerFrame` is a supported option and the two diverge the moment it is
   // above 1 - defining the hook against frames now would have to be corrected later.
@@ -447,17 +456,21 @@ module.exports = function (GR, h) {
   // a per-frame stepIndex) reproduces every assertion above unchanged at stepsPerFrame 1, so the
   // steps-not-frames property needs a fixture where the two axes actually diverge to be checked at
   // all.
-  var multiSeen = [];
+  var multiSeen = [], multiWorldOK = true;
   var multiW = GR.makeWorld({ scale: 100 });
   GR.addBounds(multiW, { x: 0, y: 0, width: 400, height: 400 });
   GR.addBody(multiW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'box' });
-  var multiRec = GR.run(multiW, { maxFrames: 2, quietFrames: 0, stepsPerFrame: 3, onStep: function (W, i) {
+  var multiRec = GR.run(multiW, { maxFrames: 2, quietFrames: 0, stepsPerFrame: 3, onStep: function (mw, i) {
     multiSeen.push(i);
+    // The world argument is checked HERE too, not only above, because this is the one fixture
+    // where the inner step loop runs more than once per frame - the loop the hook call sits in.
+    if (mw !== multiW) multiWorldOK = false;
   } });
   h.assertEqual('with stepsPerFrame above 1, onStep runs that many times per frame',
     multiSeen.length, multiRec.frameCount * 3);
   h.assertEqual('and the step index keeps counting across frames rather than resetting each one',
     multiSeen.join(','), '0,1,2,3,4,5');
+  h.assert('every one of those calls is handed the world it was run on', multiWorldOK);
 
   // BEFORE the step, so a force applied in the hook is integrated by the step it precedes rather
   // than surviving a frame in planck's accumulator.
