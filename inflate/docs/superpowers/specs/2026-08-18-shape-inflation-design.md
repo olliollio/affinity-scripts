@@ -92,55 +92,74 @@ Affinity.
 
 ## Local thickness
 
-**`t` is measured per SEGMENT, at the segment's midpoint, and an anchor takes the larger of its two
-adjacent segments' values.** For a segment with midpoint `M` and inward normal `−m`, `t = 2r` where
-`r` is the largest value satisfying
+**`t` is measured per SEGMENT, probed at the segment's curve midpoint.** For a segment with
 
 ```
-distanceToRings(M + r·(−m), face) >= r − tau ,   tau = 2·flattenTol + 1e-9·bboxDiagonal
+M     = B(0.5)  = (A + 3c1 + 3c2 + B) / 8
+m     = the unit normal of B'(0.5) = (3/4)(B + c2 - c1 - A), times the ring sign
 ```
 
-found by bisection over `[0, halfBboxDiagonal]`. Each step is one `distanceToRings` call against the
+`t = 2r`, where `r` is the largest value satisfying
+
+```
+distanceToRings(M + r·(-m), face) >= r - tau ,   tau = 2·flattenTol + 1e-9·faceBboxDiagonal
+```
+
+found by bisection over `[0, halfFaceBboxDiagonal]`. `distanceToRings` is evaluated against the
 segment's own face — its outer ring and its holes, and no ring of any other face, so the stem of an
-"i" does not measure across the gap to its dot.
+"i" does not measure across the gap to its dot. `bboxDiagonal` is the face's, not the selection's.
 
-**Why the probe is not the anchor.** Because `M` lies on the boundary, `distanceToRings(M + r·(−m))`
+`M` is the curve midpoint, never the chord midpoint. On a straight segment the two coincide, but on
+a quarter-arc of a disc of radius `R` the chord midpoint sits `R(1 - cos 45°) = 0.293R` inside the
+material, and the probe returns `t = 1.71R` instead of `2R` — so a disc would grow to `1.86R` at
+100% rather than doubling. The probe direction comes from the curve tangent for the same reason: on
+an asymmetric segment the chord normal is not the surface normal.
+
+**Why the probe is not an anchor.** Because `M` lies on the boundary, `distanceToRings(M + r·(-m))`
 can never exceed `r`, so the predicate is really an equality: it finds the largest disc *tangent to
 the boundary at the probe point*. At a convex corner that disc has radius zero — the nearest boundary
-point to any nearby interior point is not the corner itself. Probing at anchors would therefore
-return `t = 0` at every corner of a polygon, and a square, whose only anchors are its corners, would
-come back unchanged.
+point to a nearby interior point is not the corner itself. Probing at anchors therefore returns `t`
+near zero at every corner of a polygon, and a square, whose only anchors are its corners, would come
+back unchanged.
 
-**Why `tau`.** The rings are flattened, and a chord of a convex boundary lies inside the true curve,
-so the measured distance falls short of `r` by roughly `flattenTol·r/R` on a curve of radius `R`.
-Without slack the predicate is false for every `r > 0` on any curved shape. `tau` does not
-over-report: on a true circle of radius `R`, `r > R` gives a distance of `r − R`, so the search still
-caps at `R + tau`.
+**An anchor takes its own probe where that probe is well posed, and the larger of its two adjacent
+segments where it is not.** The degeneracy above is a property of convex corners only; at a smooth
+anchor the anchor probe is perfectly well behaved and is the more accurate measure. On a rounded
+rectangle 300x100 with corner radius 20, the anchors joining arc to side measure 40 by their own
+probe, against 100 for the adjacent long side — taking the larger would over-report by 2.5x at
+exactly the anchors where nothing was wrong. No fixed combining rule over the two segments works:
+at a reflex junction, such as a disc meeting a narrow stem, the larger value is the right one and
+the smaller would crease the notch away from the disc it belongs to.
 
-**The bisection is well posed, with no second root.** If the disc of radius `r` about `M + r·(−m)`
-is boundary-free, then for any `r' < r` the smaller disc is contained in it, so the satisfying set is
-exactly `[0, r*]` — connected and monotone. This holds on concave shapes too, which is what makes
-bisection legitimate rather than merely convenient.
+An anchor probe counts as degenerate when it returns `r < 4·tau`. The floor is a multiple of `tau`
+rather than an absolute epsilon because a square corner probe returns a small but non-zero radius —
+of order the flattening tolerance, not of order `1e-9`.
 
-Values this yields:
+**The bisection is well posed, with no second root, for any `tau`.** `dist(C(r))` is 1-Lipschitz in
+`r` and `|dC/dr| = 1`, so `dist(C(r)) - r` is non-increasing; the satisfying set is therefore exactly
+`[0, r*]`. This holds on concave shapes too, which is what makes bisection legitimate rather than
+merely convenient.
 
-| Probe | `r` | `t` |
-|---|---|---|
-| Slab of width `w` | `w/2` | `w` |
-| Square, edge midpoint | `w/2` | `w` |
-| Square, corner anchor | — | `w`, as the max of its two edges |
-| Disc of radius `R` | `R` | `2R` |
-| Annulus of wall `w` | `w/2` | `w` |
-| Mid-spike on a star point | local half-width | the local width, not the star's diameter |
+**`tau` does not over-report.** On a true circle of radius `R`, a probe centre at `r > R` has passed
+the centre, so its distance to the boundary is `2R - r` and the search caps at `R + tau/2`. On a slab
+it caps at `(w + tau)/2`.
+
+Values this yields, measured:
+
+| Probe | `t` |
+|---|---|
+| Slab of width `w` | `w` |
+| Square, edge midpoint | `w` |
+| Square, corner anchor | `w`, via the fallback |
+| Rounded rect, side midpoint / arc anchor | `100` / `40` |
+| Disc of radius `R` | `2R` |
+| Annulus of wall `w` | `w` |
+| Mid-spike on a star point | the local width, not the star's diameter |
 
 `distanceToRings` is **unsigned**, so a probe that has escaped the material satisfies the predicate
-just as readily as one inside it, and a flipped normal would yield a plausible `t` in silence. The
-probe centre is therefore checked with `pointInFace`; a probe that lands outside fails the segment,
-which is named in the console.
-
-Where the search returns `r` below `1e-9 · bboxDiagonal` — a zero-area ring, a doubled-back path —
-the segment contributes no thickness, and an anchor with no thickness on either side is left in place
-and named.
+as readily as one inside it, and a flipped normal would yield a plausible `t` in silence. The probe
+centre is therefore checked with `pointInFace`; a probe that lands outside fails its segment, which
+is named in the console.
 
 ## Ring sign
 
@@ -161,8 +180,7 @@ mirroring transform base and spread windings differ, and the rule is reflection-
 both come from the same space.
 
 and every normal derived from that ring is multiplied by it. That is one shoelace per ring, not a
-test per anchor. `enforceWinding` is used to normalise the flattened working copies for
-classification only, never as the source of a normal.
+test per anchor.
 
 This is the opposite convention to `gravity`'s `softPressurePass`, which flips per ring so that every
 ring defends its own enclosed area and a squashed counter grows back. Inflation increases material
@@ -197,44 +215,66 @@ would imply. This miter shortfall is accepted: it is part of the pinched-corner 
 
 ## The two rules
 
-For an anchor `P` with normal `n` and thickness `t`, and a segment `A→B` with handles `c1, c2`,
-segment normal `m` and segment thickness `t_seg`:
+For an anchor `P` with normal `n` and thickness `t`, and a segment `A->B` with handles `c1, c2`,
+curve midpoint `M`, midpoint normal `n_M` and thickness `t_seg`:
 
 ```
-P'  = P + n · amount · t/2
+P'   = P + n · amount · t/2
 
-chord growth      s = |B − A| < LINE_EPS ? 1 : |B' − A'| / |B − A|
-tangential term   h1 = collapsed(c1, A) ? amount·(B − A)/3 : (c1 − A)
-                  h2 = collapsed(c2, B) ? amount·(A − B)/3 : (c2 − B)
+s    = |B - A| < LINE_EPS ? 1 : |B' - A'| / |B - A|
+h1   = collapsed(c1, A) ? amount·(B - A)/3 : (c1 - A)
+h2   = collapsed(c2, B) ? amount·(A - B)/3 : (c2 - B)
 
-cornerness        k_A = clamp(1 − dot(unit T_in(A), unit T_out(A)), 0, 1)
-bow               b   = K · amount · min(|B − A|, t_seg) / 2
+M'      = M + n_M · amount · t_seg/2                 where the midpoint should land
+M_naive = (A' + 3(A' + h1·s) + 3(B' + h2·s) + B') / 8    where it lands without a bow
+b       = dot(M' - M_naive, n_M) / 0.75
 
-c1' = A' + h1·s + m · b · k_A
-c2' = B' + h2·s + m · b · k_B
+c1' = A' + h1·s + n_M · b
+c2' = B' + h2·s + n_M · b
 ```
 
 **Handles must carry a tangential term.** A straight segment's handles sit on its anchors, so a
 translate-only rule leaves the outgoing tangent equal to the bow — normal to the edge. Every anchor
-would become a 90° kink and a square would inflate into four bulges meeting at spikes. Substituting
-`chord/3` for a collapsed handle gives the curve somewhere to leave from, and gating that
-substitution by `amount` is what keeps `amount = 0` the identity.
+would become a 90 degree kink and a square would inflate into four bulges meeting at spikes.
+Substituting `chord/3` for a collapsed handle gives the curve somewhere to leave from, and gating
+that substitution by `amount` is what keeps `amount = 0` the identity.
 
 **Scaling by `s`** preserves whatever curvature the user drew as the shape grows. Handles keep their
 original direction rather than rotating with the chord; where the two ends have different `t` the
 chord rotates and the handles do not follow it.
 
-**Cornerness gates the bow per end.** `k` is 0 where the two adjacent tangents are parallel — a
-smooth node — and 1 at a right angle. So the bow vanishes on an already-round shape, whose handles
-merely scale, and applies at full strength at the corners of a polygon, which is where a bulge has
-to come from. This also preserves tangent continuity: a bow applied at a smooth anchor would give
-its two sides different tangents and put a visible break in a curve that had none.
+**The bow is derived, not tuned.** It is exactly the residual between where the pillow surface puts
+the segment's midpoint and where the translated, scaled handles already put it, divided by `0.75`
+because that is the midpoint's sensitivity to a symmetric handle offset — `B(0.5) = (A + 3c1 + 3c2 +
+B)/8`. There is no gain constant to calibrate. The consequences fall out rather than being asserted:
 
-**`amount = 0` is the identity.** Every term carries an `amount` factor and `s = 1`. Equality is to
-within floating-point reassociation, not bit-exact, since `A + (c1 − A)` need not reproduce `c1`.
+- **A circle needs no bow.** Its handles scaled by `s = 1 + amount` already land the midpoint on the
+  grown circle, so `M_naive = M'` and `b = 0`. The circle stays exactly a circle.
+- **A rounded rectangle's flat sides bulge.** Their anchors move by the corner arcs' thickness while
+  the side's own midpoint target is the full half-width, so `b` is large and positive — the case an
+  anchor-smoothness gate gets wrong, because a straight side between two smooth anchors is precisely
+  where a bulge is needed.
+- **A square's edges bulge by the miter shortfall**, `amount·w/2·(1 - cos 45°)`, which is what its
+  corners moving along their bisectors leaves uncovered.
+- **A segment already on target gets nothing.**
 
-A useful number for calibrating `K`: the bow moves a segment's midpoint by `0.75·b`, since
-`B(0.5) = (A + 3c1 + 3c2 + B)/8`.
+**Tangent continuity at a smooth anchor is restored by a post-pass.** A bow points along its own
+segment's normal, so at an anchor shared by two bowed segments the two handles pick up different
+directions and a curve that was smooth acquires a visible break. After all handles are computed,
+every anchor whose *input* tangents were parallel has its two output handles re-collinearised:
+their directions are replaced by the normalised sum of the two, lengths unchanged. This preserves
+node count and continuity at the cost of a small midpoint error, and it runs only where the input
+was smooth.
+
+**Tangent direction convention.** Both tangents are taken in the direction of travel:
+`T_in(A) = A - c2_prev` and `T_out(A) = c1 - A`, each falling back to the chord where the handle is
+collapsed. Affinity stores the incoming handle as `c2`, and `c2 - A` points backward — using it
+directly makes every smooth node look like a cusp, and the failure shows up as a bow artefact rather
+than a sign error.
+
+**`amount = 0` is the identity.** Every term carries an `amount` factor, `s = 1`, and `M_naive = M`
+so `b = 0`. Equality is to within floating-point reassociation, not bit-exact, since `A + (c1 - A)`
+need not reproduce `c1`.
 
 ## The amount parameter
 
@@ -282,21 +322,29 @@ Everything but `main.js` and `ui.js` is headless.
 - **A counter closes while its outer ring grows**, on the same face, in one call.
 - **A slab doubles at 100%**, within `1e-5·w + tau`. This pins the amount definition; the tolerance is
   the bisection's precision plus the flattening slack, and cannot be tightened past them.
-- **Corner thickness.** `t` at a square's corner anchor equals `t` at its edge midpoints. A measure
-  probed at the anchor rather than the segment returns 0 here, and returning 0 means a square is
+- **Corner thickness.** `t` at a square's corner anchor equals `t` at its edge midpoints, within
+  `tau`. A measure probed only at the anchor returns near zero here, and near zero means a square is
   never inflated at all.
+- **Smooth-anchor thickness.** On a rounded rectangle, an anchor joining a corner arc to a flat side
+  measures the arc's thickness, not the side's. Taking the larger of the two adjacent segments
+  over-reports by 2.5x here.
+- **A disc doubles at 100%.** Radius `R` in, `2R` out. This is what fails when the thickness probe
+  uses the chord midpoint instead of the curve midpoint — the disc grows to `1.86R` and the circle
+  assertion below still passes, because a uniform wrong `t` still yields an exact circle.
+- **A rounded rectangle bulges.** Its flat sides are not straight in the output. This is what fails
+  when the bow is gated on anchor smoothness, which turns the whole operation into an offset.
 - **Spike thickness.** `t` on a five-point star's spike is close to the local width there, not to the
   star's diameter. This is what fails for a single-ray measure.
 - **Straight-segment tangent continuity.** The output tangent at an anchor is not perpendicular to the
   input edge — what fails for a translate-only handle rule.
 - **Smooth-anchor tangent continuity.** At an anchor whose input tangents are parallel, the output
-  tangents are too. This is what `cornerness` exists to guarantee, and without it a bow at a smooth
-  anchor puts a visible break in a curve that had none.
-- **A circle inflates to a circle**, exactly, to the bisection's precision. A circle's anchors are all
-  smooth, so `cornerness` is 0, no bow is applied, and the handles scale by `s = 1 + amount` — which
-  is exactly the handle length a circle of radius `R(1 + amount)` requires, since `k·R·(1 + amount) =
-  k·R'` for `k = (4/3)(√2 − 1)`. Under a translate-only rule the handles instead fall short by
-  `k · amount · R` and the result is a rounded square.
+  tangents are too. A bow points along its own segment's normal, so without the re-collinearising
+  post-pass a smooth curve acquires a break at every anchor.
+- **A circle inflates to a circle**, exactly, to the bisection's precision. Its handles scale by
+  `s = 1 + amount`, which is exactly the handle length a circle of radius `R(1 + amount)` requires
+  since `k·R·(1 + amount) = k·R'` for `k = (4/3)(sqrt2 - 1)`, so the midpoint is already on target and
+  `b = 0`. Under a translate-only rule the handles instead fall short by `k · amount · R` and the
+  result is a rounded square.
 - **Scale invariance.** The same percentage on a 2× shape gives 2× displacement, with `flattenTol`
   scaled alongside. `FLATTEN_TOL` is an absolute 0.1 source units, so without scaling it a 2× shape
   flattens to a differently-shaped polygon and the equality does not hold.
@@ -312,9 +360,11 @@ are both that kind of test.
 
 ## Known risks and unmeasured constants
 
-- **`K`, and whether displacement should be linear in `t`, are unmeasured.** They are shape
-  heuristics. A provisional `K = 0.5` is a starting point, not a result. `cornerness` is derived
-  rather than tuned, so it carries no free parameter. The first
+- **Whether displacement should be linear in `t` is unmeasured.** It is the one shape heuristic
+  left; the bow is derived from it rather than tuned alongside it, so there is no second parameter to
+  trade against. The first real output is the calibration.
+- **The re-collinearising post-pass trades midpoint accuracy for continuity**, and how visible that
+  trade is has not been measured. The first
   real output is the calibration; nothing in this document is a prediction of how it looks.
 - **`FLATTEN_TOL` is an absolute 0.1 source units**, inherited from `flatten.js`. It bounds the
   accuracy of `t` and dominates on small artwork. It may need to become relative to the shape's
