@@ -581,6 +581,40 @@
   }
 
   /**
+   * Signed area and perimeter of each ring's NODE loop, in ringSpans order.
+   *
+   * `positions` is a flat x,y array in the same order as `mesh.nodes`, so the rest pose is
+   * `mesh.nodes` itself and a settled pose is the node body positions read back.
+   *
+   * Boundary nodes are inset by INSET_FRAC, so an outer ring's loop encloses LESS than the drawn
+   * shape and a hole's loop encloses MORE than the hole. That does not matter: rest and current
+   * are measured identically and only their ratio is ever used.
+   *
+   * The SIGN is load-bearing: it is each ring's own reference, not an absolute winding convention.
+   * The (ey,-ex) edge normal points outward-of-loop for a positively-wound ring and inward for a
+   * negatively-wound one, so a pressure term that flips it by this ring's own rest sign always ends
+   * up pushing outward-of-loop regardless of which way the ring winds - for a hole, that is away
+   * from the hole's own centre, defending its enclosed emptiness, never into it. Nothing on the
+   * soft path normalises hole winding to make this true - `convertRing` (softbody.js) is scale and
+   * y-flip only, and `contours.js` says outright that rings reach it "by reference, unmodified" -
+   * so a same-wound hole has to work identically, and it does, because the reference is each ring's
+   * own rest sign and not a convention.
+   */
+  function ringAreas(mesh, positions) {
+    var out = [];
+    for (var r = 0; r < mesh.ringSpans.length; r++) {
+      var span = mesh.ringSpans[r];
+      var ring = [];
+      for (var i = 0; i < span.count; i++) {
+        var n = span.start + i;
+        ring.push(positions[n * 2], positions[n * 2 + 1]);
+      }
+      out.push({ area: ringSignedArea(ring), perimeter: ringPerimeter(ring) });
+    }
+    return out;
+  }
+
+  /**
    * Where two segments PROPERLY cross, or null.
    *
    * Strictly interior on both, and a zero determinant rejected, so touching endpoints and collinear
@@ -984,6 +1018,7 @@
   GR.repairRing = repairRing;
   GR.ringCrossings = ringCrossings;
   GR.ringSignedArea = ringSignedArea;
+  GR.ringAreas = ringAreas;
   GR.SOFT_REPAIR_MAX_LOSS = REPAIR_MAX_LOSS;
   GR.SOFT_REPAIR_HAIRLINE = REPAIR_HAIRLINE;
   GR.softMeshComponents = softMeshComponents;

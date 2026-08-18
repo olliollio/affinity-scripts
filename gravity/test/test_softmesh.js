@@ -333,6 +333,64 @@ module.exports = function (GR, h) {
   }
   h.assertClose('rotating every node rotates the outline', rWorst, 0, 1e-6);
 
+  h.group('softmesh: ring areas');
+
+  // One entry per ring, in ringSpans order - outer ring first, then that face's holes.
+  var aface = { outer: square(0, 0, 4, 4), holes: [] };
+  var amesh = GR.buildSoftMesh([aface], { cell: 0.5 });
+  var arest = GR.ringAreas(amesh, amesh.nodes);
+  h.assertEqual('one entry per ring', arest.length, amesh.ringSpans.length);
+  h.assert('a ring has a non-zero area', Math.abs(arest[0].area) > 0);
+  h.assert('a ring has a positive perimeter', arest[0].perimeter > 0);
+
+  // The node loop is INSET by INSET_FRAC, so it encloses less than the drawn square. That is fine
+  // - only the ratio of rest to current is ever used - but it must be true, or the inset is not
+  // being applied and the mesh is wrong.
+  h.assert('the node loop is inside the drawn ring', Math.abs(arest[0].area) < 16);
+
+  // Rigid motion cannot change either number, or the term would fire on a shape that merely moved.
+  var amoved = amesh.nodes.slice();
+  for (var aq = 0; aq < amoved.length; aq += 2) { amoved[aq] += 9; amoved[aq + 1] -= 4; }
+  var amov = GR.ringAreas(amesh, amoved);
+  h.assertClose('translation does not change the area', amov[0].area, arest[0].area, 1e-9);
+  h.assertClose('translation does not change the perimeter', amov[0].perimeter, arest[0].perimeter, 1e-9);
+
+  // Halving every coordinate quarters the area and halves the perimeter. This is what makes the
+  // ratio scale-free, which is what lets one gain mean the same thing on every shape.
+  var ahalf = amesh.nodes.slice();
+  for (aq = 0; aq < ahalf.length; aq++) ahalf[aq] *= 0.5;
+  var ahlf = GR.ringAreas(amesh, ahalf);
+  h.assertClose('halving quarters the area', ahlf[0].area, arest[0].area * 0.25, 1e-9);
+  h.assertClose('halving halves the perimeter', ahlf[0].perimeter, arest[0].perimeter * 0.5, 1e-9);
+
+  // buildSoftMesh does not touch winding - convertRing (the soft path's only caller, softbody.js)
+  // is scale and y-flip only, and contours.js says outright that rings reach it "by reference,
+  // unmodified". sanitizeFace DOES normalise winding, but its one caller is decompose, which is
+  // reached only by the RIGID path (main.js); nothing on the soft path ever calls it. So a hole
+  // reaching buildSoftMesh can be wound either way, and ringAreas must report whichever winding it
+  // was actually given, with the magnitude untouched.
+  //
+  // square() alone always winds the same way regardless of where it is placed, same as circle()
+  // does - which is why every other winding-sensitive fixture in this file pairs it with a
+  // reversed helper (circleCW). hHoleCW is that reversal for a square: the vertex order walked
+  // backwards.
+  var hOuter = square(0, 0, 8, 8);
+  var hHoleCCW = square(3, 3, 2, 2);
+  var hHoleCW = [];
+  for (var hq = hHoleCCW.length - 2; hq >= 0; hq -= 2) hHoleCW.push(hHoleCCW[hq], hHoleCCW[hq + 1]);
+
+  function ringAreasOf(holeRing) {
+    var m = GR.buildSoftMesh([{ outer: hOuter, holes: [holeRing] }], { cell: 0.5 });
+    return GR.ringAreas(m, m.nodes);
+  }
+  var hSame = ringAreasOf(hHoleCCW);
+  var hOpp = ringAreasOf(hHoleCW);
+  h.assertEqual('a face with a hole has two rings', hOpp.length, 2);
+  h.assert('a reversed hole reports the opposite sign', hOpp[1].area * hSame[1].area < 0,
+    'ccw ' + hSame[1].area.toFixed(3) + ' cw ' + hOpp[1].area.toFixed(3));
+  h.assertClose('and the same magnitude', Math.abs(hOpp[1].area), Math.abs(hSame[1].area), 1e-9);
+  h.assertClose('while the outer ring is untouched', hOpp[0].area, hSame[0].area, 1e-9);
+
   h.group('softmesh: degenerate input');
 
   function meshOrRefusal(faces) {
