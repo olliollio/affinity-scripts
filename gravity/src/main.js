@@ -41,6 +41,72 @@
     return '"' + name + '"' + where;
   }
 
+  /**
+   * The rig's rest lattice back in SPREAD points.
+   *
+   * `addSoftBody` meshes in SIM units, so `soft.mesh` cannot be handed to playback as it stands —
+   * the binding, the poses and the mesh all have to be in one space, and poses come back in spread
+   * points. Each node record already carries its own rest position in those units as `ox`/`oy`
+   * (softbody.js keeps it for exactly this), so the lattice is rebuilt from the records rather
+   * than rescaled from the sim mesh, and the y flip comes along for free.
+   *
+   * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
+   * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
+   *
+   * Lives at module scope, outside `main`, only so the tests can reach it: `main` itself reads
+   * `app.documents.current` on its first line and cannot run headlessly.
+   */
+  function spreadMeshOf(soft, scale) {
+    var pts = [];
+    for (var sn = 0; sn < soft.nodes.length; sn++) pts.push(soft.nodes[sn].ox, soft.nodes[sn].oy);
+    var springs = [];
+    for (var sp = 0; sp < soft.mesh.springs.length; sp++) {
+      var spr = soft.mesh.springs[sp];
+      springs.push([spr[0], spr[1], spr[2] * scale]);
+    }
+    return {
+      nodes: pts,
+      springs: springs,
+      cell: soft.cell * scale,
+      // Spans are INDICES into the node array, and the array above is rebuilt one-for-one in the
+      // rig's own order, so they transfer between spaces unchanged - only distances scale. Without
+      // them `ringAreas` cannot read this mesh, and the report cannot measure the one thing the
+      // area term is for.
+      ringSpans: soft.mesh.ringSpans,
+      boundaryCount: soft.mesh.boundaryCount
+    };
+  }
+
+  /**
+   * The per-step area-pressure callback, or `undefined` when there is nothing for it to do.
+   *
+   * Built here rather than in sim.js because it needs the softbody records — mesh, rest ring areas,
+   * total mass — and those exist only in what `addSoftBody` returned.
+   *
+   * `firmness` is a MULTIPLE of `GR.SOFT_AREA_DEFAULT_GAIN`, not a raw gain, and 1 is the default.
+   * The gain the crush bench pinned is 64; a slider carrying that number would mean nothing to a
+   * user, and would silently change meaning the next time the bench re-pins it. As a multiplier,
+   * 100% always means "what the bench calibrated", so re-pinning moves everyone's default without
+   * invalidating what a saved slider position meant. The mapping stays LINEAR either way — the
+   * non-linearity lives in the pressure law's square, not here.
+   *
+   * At firmness 0 no callback is built at all, so the term costs nothing and the run reproduces
+   * exactly what it did before the feature existed.
+   */
+  function areaStepFor(W, softs, firmness) {
+    var f = firmness === undefined ? 1 : firmness;
+    if (!softs || !softs.length || !(f > 0)) return undefined;
+    var gain = f * GR.SOFT_AREA_DEFAULT_GAIN;
+    // The pressure law scales its force by g, so it needs the magnitude rather than a component:
+    // a scene with sideways gravity would otherwise get zero force and the term would look broken
+    // while being wired correctly.
+    var gvec = W.world.getGravity();
+    var gMag = Math.sqrt(gvec.x * gvec.x + gvec.y * gvec.y);
+    return function () {
+      for (var ps = 0; ps < softs.length; ps++) GR.softPressurePass(softs[ps].rig, gain, gMag);
+    };
+  }
+
   function main(opts) {
     var o = opts || {};
     var app;
@@ -383,29 +449,6 @@
     var ropes = [];
     var softs = [];
 
-    /**
-     * The rig's rest lattice back in SPREAD points.
-     *
-     * `addSoftBody` meshes in SIM units, so `soft.mesh` cannot be handed to playback as it stands —
-     * the binding, the poses and the mesh all have to be in one space, and poses come back in spread
-     * points. Each node record already carries its own rest position in those units as `ox`/`oy`
-     * (softbody.js keeps it for exactly this), so the lattice is rebuilt from the records rather
-     * than rescaled from the sim mesh, and the y flip comes along for free.
-     *
-     * The spring INDICES are space-independent and transfer unchanged; only the rest length is a
-     * distance, and it is scaled for consistency even though `evalSoftOutline` never reads it.
-     */
-    function spreadMeshOf(soft, scale) {
-      var pts = [];
-      for (var sn = 0; sn < soft.nodes.length; sn++) pts.push(soft.nodes[sn].ox, soft.nodes[sn].oy);
-      var springs = [];
-      for (var sp = 0; sp < soft.mesh.springs.length; sp++) {
-        var spr = soft.mesh.springs[sp];
-        springs.push([spr[0], spr[1], spr[2] * scale]);
-      }
-      return { nodes: pts, springs: springs, cell: soft.cell * scale };
-    }
-
     for (var k = 0; k < ex.objects.length; k++) {
       var obj = ex.objects[k];
 
@@ -642,6 +685,9 @@
 
     // -------------------------------------------------------------------- sim
     var t0 = Date.now();
+    // A multiple of the calibrated gain, defaulting to 1 — see `areaStepFor`. Held in its own
+    // variable rather than passed straight in because the settled report prints it too.
+    var firmness = o.firmness === undefined ? 1 : o.firmness;
     // A jelly is a lattice of springs, and the default 8/3 iterations leave it visibly stretchy —
     // the sag then measures solver error rather than the softness that was asked for. Raised only
     // when a softbody exists, so every scene that had none steps exactly as it did before.
@@ -649,7 +695,8 @@
       maxFrames: o.maxFrames === undefined ? 900 : o.maxFrames,
       seed: o.seed === undefined ? 1 : o.seed,
       velocityIterations: softs.length ? 24 : undefined,
-      positionIterations: softs.length ? 8 : undefined
+      positionIterations: softs.length ? 8 : undefined,
+      onStep: areaStepFor(W, softs, firmness)
     });
     var ms = Date.now() - t0;
 
@@ -708,6 +755,8 @@
       // sub-pixel tangle from resampling the outline is not damaged artwork, and a report that
       // calls it a fold sends the user looking for a gouge that is not there.
       var hairShapes = 0, hairLoops = 0;
+      // What the area term actually achieved, or how far the shape was crushed without it.
+      var worstArea = Infinity, worstAreaName = '';
       for (var fs = 0; fs < softs.length; fs++) {
         var sf = softs[fs];
         var fpos = [];
@@ -715,6 +764,19 @@
           var fp = GR.poseAt(frames, frames.frameCount - 1, sf.nodes[fn].frameIndex);
           fpos.push(fp.x, fp.y);
         }
+        // Both measured on `sf.mesh`, which is the SPREAD lattice: `fpos` comes from `poseAt`, and
+        // `bodyState` maps a sim position through `toSrc` - exactly the map `ox`/`oy` already went
+        // through. So the two areas are in one space and their ratio means something. Measuring the
+        // rest side off `sf.rig.mesh` instead would divide spread points by sim units and report a
+        // number around scale^2, which on the default scale would print as 10000%.
+        var arNow = GR.ringAreas(sf.mesh, fpos);
+        var arRest = GR.ringAreas(sf.mesh, sf.mesh.nodes);
+        for (var ar = 0; ar < arNow.length; ar++) {
+          if (!(Math.abs(arRest[ar].area) > 0)) continue;
+          var held = Math.abs(arNow[ar].area) / Math.abs(arRest[ar].area);
+          if (held < worstArea) { worstArea = held; worstAreaName = sf.name || '(unnamed)'; }
+        }
+
         var shapeCross = 0, shapeRepaired = 0, shapeRefused = 0, shapeHair = 0;
         for (var fr = 0; fr < sf.rings.length; fr++) {
           var outline = GR.evalSoftOutline(sf.rings[fr], sf.mesh, fpos);
@@ -765,6 +827,14 @@
           'each under ' + fmt(100 * GR.SOFT_REPAIR_HAIRLINE, 2) + '% of its shape.');
         console.log('  Those are sub-pixel tangles from resampling the outline, not folded artwork ' +
           '- nothing visible changed.');
+      }
+      // The fold lines are the idiom: they print their OK case too, because "it held its area" is
+      // the result the user came for. Firmness is printed as the percentage the dialog shows, so
+      // the line names the control the user would reach for.
+      if (isFinite(worstArea)) {
+        console.log('  jelly area: worst shape settled at ' + fmt(100 * worstArea, 1) + '% of its ' +
+          'rest area (' + worstAreaName + ')' +
+          (firmness > 0 ? ', firmness ' + fmt(100 * firmness, 0) + '%' : ', firmness OFF'));
       }
     }
 
@@ -889,6 +959,8 @@
     return { world: W, bodies: made, frames: frames, extracted: ex, playback: ctx };
   }
 
+  GR.spreadMeshOf = spreadMeshOf;
+  GR.areaStepFor = areaStepFor;
   GR.main = main;
 
 })(GR);
