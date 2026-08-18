@@ -55,7 +55,7 @@ module.exports = function (GR, h) {
   // The reference the pressure term defends. Recorded at build, in SIM units, because that is the
   // space softmesh works in and the ratio must not depend on where the artwork sat on the page.
   h.assert('a rig records its rest ring areas', !!soft.restRings);
-  h.assertEqual('one rest ring per mesh ring', soft.restRings.length, soft.mesh.ringSpans.length);
+  h.assertEqual('a hole-less face has one rest ring', soft.restRings.length, 1);
   h.assert('a rest ring has area', Math.abs(soft.restRings[0].area) > 0);
   h.assert('a rest ring has perimeter', soft.restRings[0].perimeter > 0);
 
@@ -519,4 +519,224 @@ module.exports = function (GR, h) {
     if (cRig.fallback) continue;
     h.assertEqual('no brace welds the C shut at ' + APERTURES[ai] + ' rad', cRig.braceAcrossGap, 0);
   }
+
+  h.group('softbody: area pressure');
+
+  // A helper, because every test here needs a rig sitting at some known compression.
+  //
+  // `bend` displaces x by bend * (squashed y - cy)^2, which breaks the pose's central symmetry
+  // without touching its area: x' = x + f(y) has determinant 1, and the ring area came back
+  // -5.115302 either way. Both halves of that matter - see the net force assertion below.
+  function squashed(frac, bend) {
+    var Wp = GR.makeWorld({ scale: 100 });
+    var rig = GR.addSoftBody(Wp, [{ outer: square(0, 0, 300, 300), holes: [] }],
+      { name: 'p', softness: 0.25, density: 1 });
+    // Move every node toward the rig's centroid vertically. Nothing is stepped, so this is a pose,
+    // not a simulation - the pass must be a pure function of where the nodes ARE.
+    var cy = 0;
+    for (var i = 0; i < rig.nodes.length; i++) cy += rig.nodes[i].body.getPosition().y;
+    cy /= rig.nodes.length;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var p = rig.nodes[i].body.getPosition();
+      var ny = cy + (p.y - cy) * frac;
+      rig.nodes[i].body.setTransform(
+        new GR.planck.Vec2(p.x + (bend || 0) * (ny - cy) * (ny - cy), ny), 0);
+    }
+    return { W: Wp, rig: rig };
+  }
+
+  // GAIN 0 IS OFF. Every measurement already in this file was taken without this term, and they
+  // stay valid only if zero really means zero.
+  var pOff = squashed(0.5);
+  var offRes = GR.softPressurePass(pOff.rig, 0, 10);
+  h.assertEqual('gain 0 pushes no ring', offRes.ringsPushed, 0);
+
+  // THE DEADBAND. A jelly settling under its own weight alone loses up to 4.0% of its area on the
+  // crush bench, and if the term fires on that no jelly scene ever reaches `sleep` - the run ends
+  // on the quiescence backstop instead. 0.97 is 3% compression, inside the 6% deadband.
+  var pRest = squashed(0.97);
+  h.assertEqual('a barely-squashed ring is left alone',
+    GR.softPressurePass(pRest.rig, 1, 10).ringsPushed, 0);
+
+  // And it does fire once past the band.
+  var pHard = squashed(0.5);
+  h.assertEqual('a crushed ring is pushed', GR.softPressurePass(pHard.rig, 1, 10).ringsPushed, 1);
+
+  // ZERO NET FORCE. Sum(outward normal x edge length) = 0 around any closed loop, so pressure
+  // cannot thrust an object sideways however lopsided the compression.
+  //
+  // BENT on purpose. A plain squash leaves the node ring centrally symmetric, and under central
+  // symmetry every edge pairs with a reversed one, so ANY per-edge force linear in the edge vector
+  // cancels - the wrong ones included. Measured by mutating the source: dropping the edge-length
+  // factor, so each edge pushes a unit normal instead, leaves this assertion PASSING on the
+  // unbent pose and fails it at net 0.803470 on the bent one. The bend is the whole reason this
+  // assertion can fail at all.
+  //
+  // Asserted on the UNCLAMPED field: once FMAX binds on some nodes and not others the applied
+  // forces genuinely do have a net component, and that is deliberate - see the clamped case below.
+  // 0.7 rather than 0.5 for exactly that reason: at 0.5 with this same bend and gain, 20 nodes sit
+  // on the 4.260355 cap and the net comes back 6.7e-2. At 0.7 the worst node force is 2.2183
+  // against that same cap, nothing binds, and the loop identity is what is being measured.
+  var pNet = squashed(0.7, 1);
+  var netRes = GR.softPressurePass(pNet.rig, 1, 10);
+  h.assertEqual('a bent ring is still pushed', netRes.ringsPushed, 1);
+  h.assertEqual('no node was clamped in this pose', netRes.nodesClamped, 0);
+  var netMag = Math.abs(netRes.netX) + Math.abs(netRes.netY);
+  h.assert('pressure has no net force', netMag < 1e-9, 'net ' + netMag);
+
+  // A ring whose signed area has FLIPPED is folded. The ratio is meaningless and the outward
+  // direction reference is exactly what the flip is evidence of having broken, so the ring is
+  // skipped rather than driven at maximum force - which would push the fold deeper.
+  var pFlip = squashed(-0.5);
+  h.assertEqual('a flipped ring is skipped', GR.softPressurePass(pFlip.rig, 1, 10).ringsPushed, 0);
+
+  // A HOLE, at both windings. Every other fixture here is a solid square, so without this the
+  // `sign` branch - the entire reason the signed area is called load-bearing - has no test at all.
+  // A SAME-wound hole is not hypothetical: nothing on the soft path normalises winding
+  // (sanitizeFace is reached only by the RIGID path via decompose), so it is what real artwork can
+  // hand us, and it must behave identically to a counter-wound one.
+  //
+  // Direction cannot be read off the return value - it reports aggregates, not per-node vectors -
+  // so it is measured as motion, against a gain-0 control run on an identical rig. The control is
+  // what subtracts the springs out: they pull on these same nodes during the step and would
+  // otherwise swamp the term being tested.
+  function holeRadial(holeRing, gain) {
+    var Wh = GR.makeWorld({ scale: 100 });
+    // Gravity off in the WORLD, but still passed to the pass, so the only thing moving these nodes
+    // is the term under test plus the springs the control subtracts.
+    Wh.world.setGravity(new GR.planck.Vec2(0, 0));
+    var rig = GR.addSoftBody(Wh, [{ outer: square(0, 0, 300, 300), holes: [holeRing] }],
+      { name: 'h', softness: 0.25, density: 1 });
+
+    // Squash uniformly toward the rig centroid. This shrinks the hole's node loop too, which is
+    // what puts its ratio above the deadband.
+    var cx = 0, cy = 0, i;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var q = rig.nodes[i].body.getPosition();
+      cx += q.x; cy += q.y;
+    }
+    cx /= rig.nodes.length; cy /= rig.nodes.length;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var b = rig.nodes[i].body, q2 = b.getPosition();
+      b.setTransform(new GR.planck.Vec2(cx + (q2.x - cx) * 0.7, cy + (q2.y - cy) * 0.7), 0);
+      b.setLinearVelocity(new GR.planck.Vec2(0, 0));
+    }
+
+    // Ring 1 is the hole - ringSpans is outer first, then that face's holes.
+    var span = rig.mesh.ringSpans[1];
+    var hx = 0, hy = 0;
+    for (i = 0; i < span.count; i++) {
+      var hp = rig.nodes[span.start + i].body.getPosition();
+      hx += hp.x; hy += hp.y;
+    }
+    hx /= span.count; hy /= span.count;
+
+    GR.softPressurePass(rig, gain, 10);
+    Wh.world.step(1 / 60, 8, 3);
+
+    // Mean outward-from-the-hole-centre velocity. Positive means the counter is being defended.
+    var radial = 0;
+    for (i = 0; i < span.count; i++) {
+      var rec = rig.nodes[span.start + i], rp = rec.body.getPosition(), rv = rec.body.getLinearVelocity();
+      var dx = rp.x - hx, dy = rp.y - hy, d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 0) radial += (rv.x * dx + rv.y * dy) / d;
+    }
+    return radial / span.count;
+  }
+
+  // Written CCW in SOURCE units, so after convertRing's y flip this is the ring whose rest area is
+  // -1.11098 - the SAME sign as the outer ring's -7.30757. It is the same-wound case, and it is
+  // also the one that catches a missing `sign`: drop the flip and only this fixture reverses.
+  var holeCCW = square(110, 110, 80, 80);
+  var holeCW = [];
+  for (var hw = holeCCW.length - 2; hw >= 0; hw -= 2) holeCW.push(holeCCW[hw], holeCCW[hw + 1]);
+
+  // Guard first. An 80pt hole in a 300pt square is not far off the cell floor, and `holeRadial`
+  // reads ringSpans[1] on faith: if the hole failed to mesh, every assertion below would be
+  // reporting a TypeError's cause instead of a physical one. Measured: 2 rings, 48 outer nodes and
+  // 13 hole nodes. The count is a floor rather than a pin: the exact 13 is a mesher detail this
+  // test has no stake in, but a future change that all but collapses the hole should surface here
+  // rather than as a quietly weaker measurement below.
+  var holeProbe = GR.addSoftBody(GR.makeWorld({ scale: 100 }),
+    [{ outer: square(0, 0, 300, 300), holes: [holeCCW] }],
+    { name: 'hp', softness: 0.25, density: 1 });
+  h.assert('the hole fixture meshes', !holeProbe.fallback, holeProbe.fallback || '');
+  h.assertEqual('the hole is a ring of its own', holeProbe.mesh.ringSpans.length, 2);
+  h.assert('and a ring, not a stub', holeProbe.mesh.ringSpans[1].count >= 8,
+    'hole nodes ' + holeProbe.mesh.ringSpans[1].count);
+
+  var ccwPush = holeRadial(holeCCW, 1) - holeRadial(holeCCW, 0);
+  var cwPush = holeRadial(holeCW, 1) - holeRadial(holeCW, 0);
+  h.assert('a squashed hole is pushed away from its own centre', ccwPush > 0,
+    'radial ' + ccwPush.toFixed(5));
+  h.assert('and identically when the hole winds the other way', cwPush > 0,
+    'radial ' + cwPush.toFixed(5));
+
+  // Measured 0.353061 against 0.354131 - 0.303% apart, not equal, and they cannot be. Reversing the
+  // hole's vertex list makes buildSoftMesh walk that ring from the other end, and the 13 hole nodes
+  // come out MIRRORED about the hole's own horizontal axis (matched to 4.4e-16) rather than in the
+  // same places. Everything else is untouched: the other 148 nodes are position-identical, and the
+  // 589 springs have the same rest-length multiset. So the two rigs are the same rig with the hole
+  // ring's nodes relabelled onto mirrored sites, the springs joining them to the lattice differ,
+  // and 0.303% is the size of that. 1% is that number with room, not a fitted tolerance.
+  h.assert('winding changes nothing but the sign it is read from',
+    Math.abs(ccwPush - cwPush) < 0.01 * Math.abs(ccwPush),
+    ccwPush.toFixed(6) + ' vs ' + cwPush.toFixed(6));
+
+  // THE REST PERIMETER, pinned in closed form. P0 divides by the ring's REST perimeter and not by
+  // its current one, and nothing above can tell those apart - the docblock argues the choice, this
+  // measures it, without a golden number anywhere.
+  //
+  // A pose scaled UNIFORMLY by s is SIMILAR to the rest pose, and similarity is what makes this
+  // exact: the area carries s^2 so ratio = 1/s^2, every edge carries one s, and every node's force
+  // is P * s * L0 * k with the same k, so `worstForce` is attained at the same node whatever s is.
+  //
+  //     worstForce(s) = gain * (M*g / restPerimeter) * (s^-4 - T) * s * L0 * k
+  //
+  // Take the ratio of two scales and M, g, L0, k and the rest perimeter all cancel, leaving a
+  // number the deadband alone predicts. Dividing by the CURRENT perimeter instead inserts a 1/s
+  // and the prediction loses exactly its s1/s2 factor: that mutant measures 0.19989630, which is
+  // 3/4 of this and 25% away, against the 2.1e-15 the real thing lands at.
+  function scaledPose(s) {
+    var Ws = GR.makeWorld({ scale: 100 });
+    var rig = GR.addSoftBody(Ws, [{ outer: square(0, 0, 300, 300), holes: [] }],
+      { name: 's', softness: 0.25, density: 1 });
+    var cx = 0, cy = 0, i;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var q = rig.nodes[i].body.getPosition();
+      cx += q.x; cy += q.y;
+    }
+    cx /= rig.nodes.length; cy /= rig.nodes.length;
+    for (i = 0; i < rig.nodes.length; i++) {
+      var b = rig.nodes[i].body, q2 = b.getPosition();
+      b.setTransform(new GR.planck.Vec2(cx + (q2.x - cx) * s, cy + (q2.y - cy) * s), 0);
+    }
+    return rig;
+  }
+
+  // Gain 0.02 because the identity is about the UNCLAMPED field: FMAX is not similarity-covariant,
+  // so a single clamped node would break the argument rather than the code.
+  var S1 = 0.8, S2 = 0.6;
+  var wide = GR.softPressurePass(scaledPose(S1), 0.02, 10);
+  var tight = GR.softPressurePass(scaledPose(S2), 0.02, 10);
+  h.assertEqual('both scaled poses are pushed', wide.ringsPushed + tight.ringsPushed, 2);
+  h.assertEqual('and neither clamps', wide.nodesClamped + tight.nodesClamped, 0);
+  var T = (1 + GR.SOFT_AREA_DEADBAND) * (1 + GR.SOFT_AREA_DEADBAND);
+  var predicted = ((Math.pow(S1, -4) - T) / (Math.pow(S2, -4) - T)) * (S1 / S2);
+  h.assertClose('P0 divides by the ring\'s REST perimeter',
+    wide.worstForce / tight.worstForce, predicted, 1e-9);
+
+  // The cap is per NODE on the accumulated vector. A per-edge clamp would cap a node at 2*FMAX and
+  // depend on the order edges are visited - not in theory: clamping each edge contribution instead
+  // and dropping the node clamp brings this fixture back at worstForce 8.520710, which is 2 x the
+  // 4.260355 cap to the digit.
+  var pCap = squashed(0.2);
+  var capRes = GR.softPressurePass(pCap.rig, 400, 10);
+  h.assert('a huge gain clamps some nodes', capRes.nodesClamped > 0);
+  // One density and one radius for every node in a rig, so nodes[0]'s mass is every node's mass
+  // and one cap covers the lot.
+  var capNode = pCap.rig.nodes[0];
+  h.assert('no node exceeds the cap',
+    capRes.worstForce <= GR.SOFT_AREA_FORCE_CAP * capNode.body.getMass() * 10 * (1 + 1e-9),
+    'worst ' + capRes.worstForce);
 };
