@@ -339,14 +339,16 @@ module.exports = function (GR, h) {
   var aface = { outer: square(0, 0, 4, 4), holes: [] };
   var amesh = GR.buildSoftMesh([aface], { cell: 0.5 });
   var arest = GR.ringAreas(amesh, amesh.nodes);
-  h.assertEqual('one entry per ring', arest.length, amesh.ringSpans.length);
+  h.assertEqual('a hole-less face has one ring', arest.length, 1);
   h.assert('a ring has a non-zero area', Math.abs(arest[0].area) > 0);
   h.assert('a ring has a positive perimeter', arest[0].perimeter > 0);
 
-  // The node loop is INSET by INSET_FRAC, so it encloses less than the drawn square. That is fine
-  // - only the ratio of rest to current is ever used - but it must be true, or the inset is not
-  // being applied and the mesh is wrong.
-  h.assert('the node loop is inside the drawn ring', Math.abs(arest[0].area) < 16);
+  // The node loop is INSET by INSET_FRAC, so it encloses less than the drawn square: predicted
+  // (4 - 2*0.6*0.5)^2 = 11.56, actual 11.6303. The 0.6% gap is the corner bisector, which insets a
+  // corner along the angle bisector rather than straight in, so it does not land exactly on the
+  // INSET_FRAC offset. That is fine - only the ratio of rest to current is ever used - but the
+  // number must land near 11.56, or the inset is not being applied and the mesh is wrong.
+  h.assertClose('the node loop is inset by INSET_FRAC', Math.abs(arest[0].area), 11.56, 0.1);
 
   // Rigid motion cannot change either number, or the term would fire on a shape that merely moved.
   var amoved = amesh.nodes.slice();
@@ -359,9 +361,18 @@ module.exports = function (GR, h) {
   // ratio scale-free, which is what lets one gain mean the same thing on every shape.
   var ahalf = amesh.nodes.slice();
   for (aq = 0; aq < ahalf.length; aq++) ahalf[aq] *= 0.5;
-  var ahlf = GR.ringAreas(amesh, ahalf);
-  h.assertClose('halving quarters the area', ahlf[0].area, arest[0].area * 0.25, 1e-9);
-  h.assertClose('halving halves the perimeter', ahlf[0].perimeter, arest[0].perimeter * 0.5, 1e-9);
+  var ahalved = GR.ringAreas(amesh, ahalf);
+  h.assertClose('halving quarters the area', ahalved[0].area, arest[0].area * 0.25, 1e-9);
+  h.assertClose('halving halves the perimeter', ahalved[0].perimeter, arest[0].perimeter * 0.5, 1e-9);
+
+  // Shear preserves area but not perimeter, which no bbox or hull measure does. This is what pins
+  // the number to the shoelace rather than to something that merely tracks the same square -
+  // bboxArea(ring) * Math.sign(shoelace(ring)) would satisfy every assertion above it.
+  var ashear = amesh.nodes.slice();
+  for (aq = 0; aq < ashear.length; aq += 2) ashear[aq] += 0.5 * ashear[aq + 1];
+  var ashr = GR.ringAreas(amesh, ashear);
+  h.assertClose('shear preserves the area', ashr[0].area, arest[0].area, 1e-9);
+  h.assert('but stretches the perimeter', ashr[0].perimeter > arest[0].perimeter * 1.05);
 
   // buildSoftMesh does not touch winding - convertRing (the soft path's only caller, softbody.js)
   // is scale and y-flip only, and contours.js says outright that rings reach it "by reference,
@@ -390,6 +401,13 @@ module.exports = function (GR, h) {
     'ccw ' + hSame[1].area.toFixed(3) + ' cw ' + hOpp[1].area.toFixed(3));
   h.assertClose('and the same magnitude', Math.abs(hOpp[1].area), Math.abs(hSame[1].area), 1e-9);
   h.assertClose('while the outer ring is untouched', hOpp[0].area, hSame[0].area, 1e-9);
+  h.assert('a hole node loop encloses more than the hole', Math.abs(hSame[1].area) > 4);
+
+  // Not just that the two hole rings differ - each one's sign follows the winding it was actually
+  // given, which is the stronger and still winding-agnostic claim.
+  h.assert('a ring reports the winding it was given',
+    hSame[1].area * GR.ringSignedArea(hHoleCCW) > 0 &&
+    hOpp[1].area * GR.ringSignedArea(hHoleCW) > 0);
 
   h.group('softmesh: degenerate input');
 

@@ -581,7 +581,8 @@
   }
 
   /**
-   * Signed area and perimeter of each ring's NODE loop, in ringSpans order.
+   * Signed area and perimeter of each ring's NODE loop, in ringSpans order: faces in input order,
+   * each face's outer ring then its holes.
    *
    * `positions` is a flat x,y array in the same order as `mesh.nodes`, so the rest pose is
    * `mesh.nodes` itself and a settled pose is the node body positions read back.
@@ -590,15 +591,9 @@
    * shape and a hole's loop encloses MORE than the hole. That does not matter: rest and current
    * are measured identically and only their ratio is ever used.
    *
-   * The SIGN is load-bearing: it is each ring's own reference, not an absolute winding convention.
-   * The (ey,-ex) edge normal points outward-of-loop for a positively-wound ring and inward for a
-   * negatively-wound one, so a pressure term that flips it by this ring's own rest sign always ends
-   * up pushing outward-of-loop regardless of which way the ring winds - for a hole, that is away
-   * from the hole's own centre, defending its enclosed emptiness, never into it. Nothing on the
-   * soft path normalises hole winding to make this true - `convertRing` (softbody.js) is scale and
-   * y-flip only, and `contours.js` says outright that rings reach it "by reference, unmodified" -
-   * so a same-wound hole has to work identically, and it does, because the reference is each ring's
-   * own rest sign and not a convention.
+   * The SIGN is the input ring's winding, carried straight through: buildSoftMesh does not
+   * normalise it, so a hole reports whichever way it was drawn. Callers reference each ring's
+   * OWN rest sign rather than an absolute convention - see `softPressurePass` (softbody.js).
    */
   function ringAreas(mesh, positions) {
     var out = [];
