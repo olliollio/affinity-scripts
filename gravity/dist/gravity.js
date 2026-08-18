@@ -5539,7 +5539,11 @@ GR.planck = (function () {
     var Dialog = mod.Dialog, DialogResult = mod.DialogResult, UnitType = mod.UnitType;
 
     var dlg = Dialog.create('Gravity');
-    dlg.initialWidth = 480;
+    // Width buys HEIGHT back. The panel does not scroll, so once it outgrows the screen the OK and
+    // Cancel buttons go off the bottom and it cannot be dismissed at all. Every full-width help
+    // paragraph wraps to about three lines at 480 and about two at 720, so widening is the one
+    // lever that shortens the dialog without deleting anything the user needs to read.
+    dlg.initialWidth = 720;
     var col = dlg.addColumn();
 
     var sim = col.addGroup('Simulation');
@@ -5599,24 +5603,18 @@ GR.planck = (function () {
     // would be measuring the first one's output.
     var dryCtl = beh.addCheckBox('Dry run, report only', false);
 
+    // Only what the checkbox and slider labels CANNOT say. The naming triggers are the one thing
+    // here that is undiscoverable - nothing in the dialog hints that a layer called "floor" becomes
+    // scenery - so they stay. Everything the labels already carry ("Split text into letters",
+    // "Export image sequence", "Dry run, report only") was cut: at roughly two wrapped lines a
+    // paragraph, prose is what pushes the buttons off the bottom of a panel that cannot scroll.
     var help = col.addGroup('How to use');
-    help.addStaticText('', 'Select objects and run. Name an object or group "collider", "wall", ' +
-      '"floor", "ramp" or "ground" — or lock it — to make it scenery that never moves.').setIsFullWidth(true);
-    help.addStaticText('', 'Live text drops as one piece. "Split text into letters" converts it to ' +
-      'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
-    // Softness and firmness read as two ends of one axis unless something says otherwise, and this
-    // is the only place the non-obvious fact about the firmness slider fits: 100 is the calibrated
-    // default, not the top of the range. Carried in the jelly paragraph rather than its own,
-    // because every full-width paragraph costs real height and the dialog has no scroll - past a
-    // certain length the OK and Cancel buttons go off-screen and the dialog cannot be dismissed.
-    help.addStaticText('', 'Name a closed shape "jelly", "soft" or "squish" to make it wobble ' +
-      'instead of staying rigid. Chunky shapes work best. Softness is how easily it deforms; ' +
-      'firmness is how hard it resists being squashed — 100% is the default, not the maximum.').setIsFullWidth(true);
-    help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
-      'a 30fps sequence to your Desktop.').setIsFullWidth(true);
-    help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +
-      'undo step and the same seed always repeats. "Dry run" reports to the console and stops — ' +
-      'nothing plays, nothing is exported, the document is untouched.').setIsFullWidth(true);
+    help.addStaticText('', 'Select objects and run. Name an object "collider", "wall", "floor", ' +
+      '"ramp" or "ground" — or lock it — to make it scenery that never moves. Name a closed shape ' +
+      '"jelly", "soft" or "squish" to make it wobble; chunky shapes work best.').setIsFullWidth(true);
+    help.addStaticText('', 'Softness is how easily a jelly deforms; firmness is how hard it ' +
+      'resists being squashed — 100% is the calibrated default, not the maximum, and 0% turns it ' +
+      'off. The same seed always repeats a run, and the whole drop is one undo step.').setIsFullWidth(true);
 
     var result = dlg.runModal();
     if (!result || result.value !== DialogResult.Ok.value) return null;
