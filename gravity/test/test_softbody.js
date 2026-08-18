@@ -542,13 +542,13 @@ module.exports = function (GR, h) {
       rig.nodes[i].body.setTransform(
         new GR.planck.Vec2(p.x + (bend || 0) * (ny - cy) * (ny - cy), ny), 0);
     }
-    return { W: Wp, rig: rig };
+    return rig;
   }
 
   // GAIN 0 IS OFF. Every measurement already in this file was taken without this term, and they
   // stay valid only if zero really means zero.
   var pOff = squashed(0.5);
-  var offRes = GR.softPressurePass(pOff.rig, 0, 10);
+  var offRes = GR.softPressurePass(pOff, 0, 10);
   h.assertEqual('gain 0 pushes no ring', offRes.ringsPushed, 0);
 
   // THE DEADBAND. A jelly settling under its own weight alone loses up to 4.0% of its area on the
@@ -556,11 +556,11 @@ module.exports = function (GR, h) {
   // on the quiescence backstop instead. 0.97 is 3% compression, inside the 6% deadband.
   var pRest = squashed(0.97);
   h.assertEqual('a barely-squashed ring is left alone',
-    GR.softPressurePass(pRest.rig, 1, 10).ringsPushed, 0);
+    GR.softPressurePass(pRest, 1, 10).ringsPushed, 0);
 
   // And it does fire once past the band.
   var pHard = squashed(0.5);
-  h.assertEqual('a crushed ring is pushed', GR.softPressurePass(pHard.rig, 1, 10).ringsPushed, 1);
+  h.assertEqual('a crushed ring is pushed', GR.softPressurePass(pHard, 1, 10).ringsPushed, 1);
 
   // ZERO NET FORCE. Sum(outward normal x edge length) = 0 around any closed loop, so pressure
   // cannot thrust an object sideways however lopsided the compression.
@@ -572,13 +572,13 @@ module.exports = function (GR, h) {
   // unbent pose and fails it at net 0.803470 on the bent one. The bend is the whole reason this
   // assertion can fail at all.
   //
-  // Asserted on the UNCLAMPED field: once FMAX binds on some nodes and not others the applied
+  // Asserted on the UNCLAMPED field: once the cap binds on some nodes and not others the applied
   // forces genuinely do have a net component, and that is deliberate - see the clamped case below.
   // 0.7 rather than 0.5 for exactly that reason: at 0.5 with this same bend and gain, 20 nodes sit
   // on the 4.260355 cap and the net comes back 6.7e-2. At 0.7 the worst node force is 2.2183
   // against that same cap, nothing binds, and the loop identity is what is being measured.
   var pNet = squashed(0.7, 1);
-  var netRes = GR.softPressurePass(pNet.rig, 1, 10);
+  var netRes = GR.softPressurePass(pNet, 1, 10);
   h.assertEqual('a bent ring is still pushed', netRes.ringsPushed, 1);
   h.assertEqual('no node was clamped in this pose', netRes.nodesClamped, 0);
   var netMag = Math.abs(netRes.netX) + Math.abs(netRes.netY);
@@ -588,7 +588,7 @@ module.exports = function (GR, h) {
   // direction reference is exactly what the flip is evidence of having broken, so the ring is
   // skipped rather than driven at maximum force - which would push the fold deeper.
   var pFlip = squashed(-0.5);
-  h.assertEqual('a flipped ring is skipped', GR.softPressurePass(pFlip.rig, 1, 10).ringsPushed, 0);
+  h.assertEqual('a flipped ring is skipped', GR.softPressurePass(pFlip, 1, 10).ringsPushed, 0);
 
   // A HOLE, at both windings. Every other fixture here is a solid square, so without this the
   // `sign` branch - the entire reason the signed area is called load-bearing - has no test at all.
@@ -714,8 +714,8 @@ module.exports = function (GR, h) {
     return rig;
   }
 
-  // Gain 0.02 because the identity is about the UNCLAMPED field: FMAX is not similarity-covariant,
-  // so a single clamped node would break the argument rather than the code.
+  // Gain 0.02 because the identity is about the UNCLAMPED field: the cap is not
+  // similarity-covariant, so a single clamped node would break the argument rather than the code.
   var S1 = 0.8, S2 = 0.6;
   var wide = GR.softPressurePass(scaledPose(S1), 0.02, 10);
   var tight = GR.softPressurePass(scaledPose(S2), 0.02, 10);
@@ -726,17 +726,49 @@ module.exports = function (GR, h) {
   h.assertClose('P0 divides by the ring\'s REST perimeter',
     wide.worstForce / tight.worstForce, predicted, 1e-9);
 
-  // The cap is per NODE on the accumulated vector. A per-edge clamp would cap a node at 2*FMAX and
-  // depend on the order edges are visited - not in theory: clamping each edge contribution instead
-  // and dropping the node clamp brings this fixture back at worstForce 8.520710, which is 2 x the
-  // 4.260355 cap to the digit.
+  // The cap is per NODE on the accumulated vector. A per-edge clamp would let a node reach twice
+  // it and would depend on the order edges are visited - not in theory: clamping each edge
+  // contribution instead and dropping the node clamp brings this fixture back at worstForce
+  // 8.520710, which is 2 x the 4.260355 cap to the digit.
   var pCap = squashed(0.2);
-  var capRes = GR.softPressurePass(pCap.rig, 400, 10);
+  var capRes = GR.softPressurePass(pCap, 400, 10);
   h.assert('a huge gain clamps some nodes', capRes.nodesClamped > 0);
   // One density and one radius for every node in a rig, so nodes[0]'s mass is every node's mass
   // and one cap covers the lot.
-  var capNode = pCap.rig.nodes[0];
-  h.assert('no node exceeds the cap',
-    capRes.worstForce <= GR.SOFT_AREA_FORCE_CAP * capNode.body.getMass() * 10 * (1 + 1e-9),
-    'worst ' + capRes.worstForce);
+  var capNode = pCap.nodes[0];
+  var capLimit = GR.SOFT_AREA_FORCE_CAP * capNode.body.getMass() * 10 * (1 + 1e-9);
+
+  // Read the APPLIED force off the bodies, not the returned tally. The tally cannot fail this:
+  // `worstForce` is assigned `cap` inside the clamp branch and is below it outside, so checking it
+  // against the cap re-encodes the code. Proved by mutation - delete the two scaling lines and
+  // keep `mag = cap`, so the clamp is counted but never applied, and the whole suite stayed at
+  // 975 passed, 0 failed. Reading m_force kills that mutant. Precedent for reaching into planck
+  // here is the m_radius read further up this file.
+  //
+  // The tolerance is not slack: the worst applied force comes back 4.260355029585799 against a cap
+  // of 4.260355029585798, one ulp over, because the clamp scales by cap/mag rather than assigning.
+  var worstApplied = 0;
+  for (var cn = 0; cn < pCap.nodes.length; cn++) {
+    var cf = pCap.nodes[cn].body.m_force;
+    worstApplied = Math.max(worstApplied, Math.sqrt(cf.x * cf.x + cf.y * cf.y));
+  }
+  h.assert('no applied force exceeds the cap', worstApplied <= capLimit, 'worst ' + worstApplied);
+  h.assert('and the tally agrees with what landed',
+    Math.abs(worstApplied - capRes.worstForce) <= 1e-9 * capLimit,
+    worstApplied + ' vs ' + capRes.worstForce);
+
+  // WAKE FALSE, on a fresh rig because applyForceToCenter accumulates and the pass above has
+  // already loaded pCap's bodies. The whole deadband argument rests on this flag: a crushed shape
+  // that has reached the equilibrium this term defines must be allowed to stay asleep, or no jelly
+  // scene ever ends on `sleep`. Flipping it to true leaves the suite green without this.
+  //
+  // And planck does not bank the force for later either - it adds to m_force only when the body is
+  // already awake - so the term is fully inert on a sleeper, measured as exactly (0,0).
+  var sleepRig = squashed(0.2);
+  var sleeper = sleepRig.nodes[0].body;
+  sleeper.setAwake(false);
+  GR.softPressurePass(sleepRig, 400, 10);
+  h.assert('the pass does not wake a sleeping node', !sleeper.isAwake());
+  h.assertClose('and planck drops its force outright',
+    Math.abs(sleeper.m_force.x) + Math.abs(sleeper.m_force.y), 0, 0);
 };

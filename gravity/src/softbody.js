@@ -102,11 +102,12 @@
   // body is quiet at once. Same lever, same reason, as the rope link damping.
   var NODE_LINEAR_DAMPING = 0.5;
 
-  // Below this much compression the area term is exactly zero. Measured on the crush bench: a jelly
-  // settling under nothing but its own weight already loses 0.3% to 4.0% of its area - purple is
-  // the 4.0% - and the term must not fire on that. `sim.run` ends when every body is asleep, so a
-  // term that fired forever would push every jelly scene off `sleep` and onto the quiescence
-  // backstop. 0.06 clears every shape on the bench with headroom.
+  // Below this much compression the area term is exactly zero. Measured on the crush bench, whose
+  // LOAD = 0 row is in the design spec (2026-08-17-softbody-area-preservation-design.md) until the
+  // bench itself lands: a jelly settling under nothing but its own weight already loses 0.3% to
+  // 4.0% of its area - purple is the 4.0% - and the term must not fire on that. `sim.run` ends when
+  // every body is asleep, so a term that fired forever would push every jelly scene off `sleep` and
+  // onto the quiescence backstop. 0.06 clears every shape on the bench with headroom.
   var AREA_DEADBAND = 0.06;
 
   // Per-node force ceiling, as a multiple of that node's OWN weight - which is what keeps it free
@@ -367,7 +368,7 @@
    *   ratio = restArea / area                       signed, so a fold is detectable
    *   P     = gain * P0 * (ratio^2 - (1+DEADBAND)^2)     clamped at 0 below
    *   P0    = totalMass * g / ringRestPerimeter
-   *   Fnode = sum over the node's two ring edges, THEN clamped to FMAX
+   *   Fnode = sum over the node's two ring edges, THEN clamped to AREA_FORCE_CAP * nodeMass * g
    *
    * `P0` is the load the shape must hold divided by the length holding it - a pressure whose units
    * are already right, which is what leaves `gain` dimensionless and makes one slider position mean
@@ -382,12 +383,11 @@
    * and every ring defends its OWN enclosed area - for a hole that means away from the hole's
    * centre, growing a squashed counter back toward its rest size. It does not push into the void.
    *
-   * The reference is each ring's own REST sign, never an absolute convention, and that is not a
-   * stylistic choice: nothing on the soft path normalises hole winding. sanitizeFace is reached
-   * only by the RIGID path via decompose; the soft path is main.js -> addSoftBody -> convertRing
-   * (scale and y flip only) -> buildSoftMesh, and contours.js says outright that rings arrive "by
-   * reference, unmodified". A same-wound hole must therefore work identically to a counter-wound
-   * one, and it does, because the winding cancels. `ringAreas` in softmesh.js defers here for this.
+   * The reference is each ring's own REST sign and never an absolute convention, because nothing on
+   * the soft path normalises hole winding. The winding then cancels, so a same-wound hole behaves
+   * identically to a counter-wound one - measured at both windings in test_softbody.js's
+   * `softbody: area pressure` group, which is what keeps this claim honest. `ringAreas` in
+   * softmesh.js defers here for it.
    *
    * The deadband is subtracted INSIDE the square rather than gating the term, so P rises
    * continuously from zero at the threshold instead of jumping to 0.12*P0. A step discontinuity
@@ -396,11 +396,18 @@
    * Every ring of an object uses the OBJECT's mass, a counter's ring included: what a counter must
    * resist is the whole object's weight bearing on it, not a share apportioned by area.
    *
+   * Cheap enough not to think about: 14 us per step over 5 rigs, 805 nodes and 10 rings, against
+   * 2508 us for the `world.step` it precedes on that same scene. Under 1%, and it is O(ring nodes)
+   * while the step is O(bodies + contacts), so the share only falls as scenes grow.
+   *
    * Returns what it did, so the tests can assert on the force field rather than on its effect.
    */
   function softPressurePass(rig, gain, g) {
     var res = { ringsPushed: 0, nodesClamped: 0, netX: 0, netY: 0, worstForce: 0 };
     if (!rig || !rig.mesh || !rig.restRings || !(gain > 0) || !(g > 0)) return res;
+    // `rest` below is indexed by the ringSpans loop, so a rig whose two lists ever disagreed would
+    // throw on `rest.area` rather than skip the ring. Bail instead of failing the whole frame.
+    if (rig.restRings.length !== rig.mesh.ringSpans.length) return res;
 
     var mesh = rig.mesh, nodes = rig.nodes;
     var positions = [];
@@ -447,9 +454,11 @@
         fx[(i + 1) % span.count] += hx; fy[(i + 1) % span.count] += hy;
       }
 
+      // Every node in a rig is built from one density and one radius, so one cap covers the lot -
+      // hoisted to say so in code, since the tests already lean on that uniformity.
+      var cap = AREA_FORCE_CAP * nodes[span.start].body.getMass() * g;
       for (i = 0; i < span.count; i++) {
         var rec = nodes[span.start + i];
-        var cap = AREA_FORCE_CAP * rec.body.getMass() * g;
         var mag = Math.sqrt(fx[i] * fx[i] + fy[i] * fy[i]);
         if (mag > cap && mag > 0) {
           fx[i] *= cap / mag; fy[i] *= cap / mag;
@@ -460,6 +469,13 @@
         res.netX += fx[i]; res.netY += fy[i];
         // wake FALSE. An already-sleeping crushed shape is sitting at the equilibrium this term
         // defines, and waking it would stop every jelly scene ending on `sleep`.
+        //
+        // planck then DROPS the force rather than banking it - `if (wake && !awake) setAwake(true);
+        // if (awake) m_force.add(force)` - so on a sleeping node the term is inert, not merely
+        // non-waking, and its force reads back as exactly (0,0). The tallies above therefore count
+        // what was COMPUTED, not what landed. Nothing consumes them in production today, but a
+        // report line that printed `ringsPushed` for a settled scene would be naming work that
+        // never happened.
         rec.body.applyForceToCenter(new GR.planck.Vec2(fx[i], fy[i]), false);
       }
       res.ringsPushed++;
