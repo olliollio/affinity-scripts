@@ -819,11 +819,15 @@ module.exports = function (GR, h) {
     h.assert(CRUSH[cs] + ' does not ring past its rest area', held && held.peak <= 1.05,
       held ? 'peak ' + (100 * held.peak - 100).toFixed(1) + '%' : 'did not mesh');
     // `sleep`, not `quiescence`: a term that never stopped pushing would end every jelly run on
-    // the backstop instead. Stated as a watchdog, not as a proof - it is worth being honest that
-    // no mutation tried so far turns it red. `wake false -> true` does not (the run still ends on
-    // sleep; the two pose assertions further up are what kill that one), and neither does
-    // `DEADBAND 0.06 -> 0.12` or `-> 0`. It is here because the failure it names is real, cheap to
-    // watch for, and would otherwise be invisible until someone ran a scene.
+    // the backstop instead. This is the SOLE upper bound on the pinned gain - nothing else in the
+    // suite notices one that is too high. `AREA_DEFAULT_GAIN 64 -> 256` fails it on teal and purple
+    // with `cap`, meaning maxFrames exhausted (sim.js), which is exactly the never-settles failure
+    // it names; `-> 4096` fails it on purple, along with the overshoot gate above at peak 6.0%.
+    // With the criterion above failing low at `-> 32` (teal at -10.2%), the pinned 64 is bracketed
+    // from both sides. Mutations that leave this one green: `wake false -> true` (the run still
+    // ends on sleep; the two sleeper assertions further up are what kill that one),
+    // `DEADBAND 0.06 -> 0.12` (which kills the criterion above, teal at -10.3%) and `-> 0` (which
+    // kills `a barely-squashed ring is left alone`).
     h.assert(CRUSH[cs] + ' still sleeps', held && held.settledBy === 'sleep',
       held ? held.settledBy : 'did not mesh');
   }

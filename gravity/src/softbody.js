@@ -161,10 +161,13 @@
   //
   // Gain ~1 was never dimensionally plausible, which is worth writing down because it was the
   // first guess. Holding a slab of 4x the jelly's mass needs a pressure of about 4Mg / width,
-  // against P0 = Mg / restPerimeter - a factor of 4 * perimeter / width, which on this scene is
-  // 15.8 for teal and 10.9 at the scene median. At -10% compression the bracket
-  // ratio^2 - (1 + DEADBAND)^2 is only 0.111, so the gain that closes it is 16/0.111 = 140 for
-  // teal and about 98 at the median: the same decade as 64, and two decades away from 1.
+  // against P0 = Mg / restPerimeter - a factor of 4 * perimeter / width. The perimeter is the one
+  // this law divides by: `rest.perimeter` comes from ringAreas(mesh, mesh.nodes), so it is the
+  // INSET NODE LOOP, not the drawn outline. Measured on this scene that factor is 13.95 for teal
+  // and 9.62 at the median (the outline would read 15.84 and 10.92, and is the wrong basis here).
+  // At -10% compression the bracket ratio^2 - (1 + DEADBAND)^2 is only 0.111, so the gain that
+  // closes it is 13.95/0.111 = 126 for teal and about 87 at the median: the same decade as 64, and
+  // two decades away from 1.
   var AREA_DEFAULT_GAIN = 64;
 
   // Counts DOWN from -1, one per softbody. Negative means "never collide within this group", so a

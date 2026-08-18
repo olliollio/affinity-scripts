@@ -132,6 +132,12 @@
       'curves first so each letter falls on its own — that changes the document.').setIsFullWidth(true);
     help.addStaticText('', 'Name a closed shape "jelly", "soft" or "squish" to make it wobble ' +
       'instead of staying rigid. Chunky shapes work best; thin artwork stays rigid.').setIsFullWidth(true);
+    // Softness and firmness are not two ends of one axis, and read as a soft-to-firm pair if
+    // nothing says otherwise. This is also the only place the one non-obvious fact about the
+    // firmness slider can be stated: 100 is the calibrated default, not the top of the range.
+    help.addStaticText('', 'Jelly softness is how easily a shape deforms; jelly firmness is how ' +
+      'hard it pushes back against being squashed. Firmness 100% is the default, not the maximum ' +
+      '— 0% turns it off.').setIsFullWidth(true);
     help.addStaticText('', 'Equalise mass stops big artwork bulldozing small artwork. Export writes ' +
       'a 30fps sequence to your Desktop.').setIsFullWidth(true);
     help.addStaticText('', 'The drop plays on canvas, then you can scrub to any frame. It is one ' +

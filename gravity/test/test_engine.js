@@ -470,7 +470,10 @@ module.exports = function (GR, h) {
     multiSeen.length, multiRec.frameCount * 3);
   h.assertEqual('and the step index keeps counting across frames rather than resetting each one',
     multiSeen.join(','), '0,1,2,3,4,5');
-  h.assert('every one of those calls is handed the world it was run on', multiWorldOK);
+  // Guarded on the call count for the same reason its sibling above is: `multiWorldOK` starts true,
+  // so a hook that never ran at all would pass this vacuously.
+  h.assert('every one of those calls is handed the world it was run on',
+    multiWorldOK && multiSeen.length > 0, multiSeen.length + ' call(s)');
 
   // BEFORE the step, so a force applied in the hook is integrated by the step it precedes rather
   // than surviving a frame in planck's accumulator.
