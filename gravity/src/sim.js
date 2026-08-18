@@ -193,6 +193,11 @@
     var vIters = o.velocityIterations === undefined ? VELOCITY_ITERS : o.velocityIterations;
     var pIters = o.positionIterations === undefined ? POSITION_ITERS : o.positionIterations;
 
+    // Called immediately before each world.step, so a force applied here is integrated by the step
+    // it precedes rather than sitting in planck's accumulator for a frame. Counts STEPS, not
+    // frames: `stepsPerFrame` is a supported option and the two diverge the moment it is above 1.
+    var onStep = o.onStep;
+
     var bodies = W.dynamics;
     var n = bodies.length;
 
@@ -210,13 +215,18 @@
 
     var frames = new Float64Array(maxFrames * n * 3);
     var frame = 0;
+    var stepIndex = 0;
     var settledAt = -1;
     var settledBy = 'cap';
     var quiet = 0;
     var overlaps = null;
 
     while (frame < maxFrames) {
-      for (var s = 0; s < stepsPerFrame; s++) W.world.step(dt, vIters, pIters);
+      for (var s = 0; s < stepsPerFrame; s++) {
+        if (onStep) onStep(W, stepIndex);
+        W.world.step(dt, vIters, pIters);
+        stepIndex++;
+      }
 
       var base = frame * n * 3;
       for (var i = 0; i < n; i++) {

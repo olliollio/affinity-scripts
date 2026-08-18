@@ -422,4 +422,57 @@ module.exports = function (GR, h) {
   var finalY = GR.bodyState(W6, bullet).y;
   h.assert('a fast small body does not tunnel through a wall', finalY < 260,
     'ended at y=' + finalY.toFixed(2) + ' (wall at 200)');
+
+  // ------------------------------------------------------------------- onStep hook
+  h.group('sim: the onStep hook');
+
+  var hookW = GR.makeWorld({ scale: 100 });
+  GR.addBounds(hookW, { x: 0, y: 0, width: 400, height: 400 });
+  GR.addBody(hookW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'box' });
+  var seen = [];
+  var hookRec = GR.run(hookW, { maxFrames: 5, quietFrames: 0, onStep: function (W, i) {
+    seen.push(i);
+    if (W !== hookW) throw new Error('onStep got the wrong world');
+  } });
+
+  // Steps, not frames. `stepsPerFrame` is a supported option and the two diverge the moment it is
+  // above 1 - defining the hook against frames now would have to be corrected later.
+  h.assertEqual('onStep runs once per step',
+    seen.length, hookRec.frameCount * GR.SIM_DEFAULTS.stepsPerFrame);
+  h.assertEqual('the step index starts at zero', seen[0], 0);
+  h.assertEqual('the step index increments', seen[1], 1);
+
+  // Every fixture above this line runs at the default stepsPerFrame of 1, where "once per frame"
+  // and "once per step" are numerically the same call. Measured: reverting to a per-frame call (or
+  // a per-frame stepIndex) reproduces every assertion above unchanged at stepsPerFrame 1, so the
+  // steps-not-frames property needs a fixture where the two axes actually diverge to be checked at
+  // all.
+  var multiSeen = [];
+  var multiW = GR.makeWorld({ scale: 100 });
+  GR.addBounds(multiW, { x: 0, y: 0, width: 400, height: 400 });
+  GR.addBody(multiW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'box' });
+  var multiRec = GR.run(multiW, { maxFrames: 2, quietFrames: 0, stepsPerFrame: 3, onStep: function (W, i) {
+    multiSeen.push(i);
+  } });
+  h.assertEqual('with stepsPerFrame above 1, onStep runs that many times per frame',
+    multiSeen.length, multiRec.frameCount * 3);
+  h.assertEqual('and the step index keeps counting across frames rather than resetting each one',
+    multiSeen.join(','), '0,1,2,3,4,5');
+
+  // BEFORE the step, so a force applied in the hook is integrated by the step it precedes rather
+  // than surviving a frame in planck's accumulator.
+  var order = [];
+  var orderW = GR.makeWorld({ scale: 100 });
+  GR.addBounds(orderW, { x: 0, y: 0, width: 400, height: 400 });
+  var ob = GR.addBody(orderW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'box' });
+  GR.run(orderW, { maxFrames: 1, quietFrames: 0, onStep: function () {
+    order.push(ob.body.getLinearVelocity().y);
+  } });
+  h.assertEqual('the hook runs before the first step', order[0], 0);
+
+  // Absent by default, so nothing that does not ask for it pays anything.
+  var plainW = GR.makeWorld({ scale: 100 });
+  GR.addBounds(plainW, { x: 0, y: 0, width: 400, height: 400 });
+  GR.addBody(plainW, [[50, 50, 90, 50, 90, 90, 50, 90]], { name: 'box' });
+  h.assert('a run without a hook still works', GR.run(plainW, { maxFrames: 3 }).frameCount === 3);
 };
