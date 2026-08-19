@@ -456,10 +456,18 @@ var F = require('./fixtures');
 module.exports = function (GR, h) {
   h.group('thickness — classification and sign');
 
-  // tau over-reports by tau/(1 - cos th) where th is the angle the binding wall makes with the
-  // probe path. Head-on (a slab, a disc, an annulus wall, a flat side) that is exactly tau. Across
-  // a convex corner it is not: on this rounded rectangle the binding wall is the top edge at 45
-  // degrees, giving 6.8*tau. That is a property of the geometry, not a slack to be tightened.
+  // tau inflates the probe RADIUS by tau/(1 - cos th), where th is the angle between the binding
+  // wall and the probe path. t = 2r, so the error in t is DOUBLE that - the two numbers below are
+  // easy to conflate and the factor of two is real, not a fudge.
+  //
+  // Head-on, the radius error is tau/2 and the t error is tau: measured exactly on the slab and the
+  // annulus wall, and 0.858*tau on the disc, where the flattening deficit partly cancels it. So a
+  // head-on tolerance of tau is an upper bound.
+  //
+  // Across a convex corner it is not head-on. On this rounded rectangle the probe centre passes the
+  // corner arc's own centre and the binding walls become the top and right edges, symmetric at 45
+  // degrees to the probe path: tau/(1 - cos 45) = 3.41*tau of radius error, measured 3.38, so
+  // 6.8*tau on t, measured 6.76. That is a property of the geometry, not slack to be tightened.
   //
   // The head-on over-report is EXACTLY tau by construction, so asserting "within tau" is asserting
   // equality at the boundary and fails on floating-point dust — measured at 6.7e-15 over, on the
@@ -473,6 +481,12 @@ module.exports = function (GR, h) {
   }
 
   var TOL = 0.1;   // absolute here ONLY so these unit numbers stay hand-checkable
+
+  // Every tolerance below is a multiple of ctx.tau, so widening tau would loosen the whole suite in
+  // lockstep and stay green while accuracy degraded. The tau = 0 test at the bottom pins the floor;
+  // this pins the ceiling. tau = 2*tol + float dust, and TOL is 0.1 here.
+  h.assertClose('tau is twice the flatten tolerance',
+    GR.inflProbeCtx(GR.inflClassify([F.rect(0, 0, 40, 400)], TOL).recs[0].face, TOL).tau, 0.2, 1e-6);
 
   var slab = one([F.rect(0, 0, 40, 400)], TOL);
   h.assertClose('slab of width 40 measures 40',
@@ -519,6 +533,25 @@ module.exports = function (GR, h) {
     GR.inflSegmentThickness(revd.recs[0].curve.segments[0], revd.recs[0].sign,
                             GR.inflProbeCtx(revd.recs[0].face, TOL)).t, 200, disc.ctx.tau * MARGIN);
 
+  h.group('thickness — the tolerance classify chose is the one the probe must use');
+  // Every other assertion here hands classify an explicit TOL, which leaves TOL_FRAC, hullDiagonal
+  // and tolFor untested — and hides the coupling that matters: classify picks ONE tolerance for the
+  // whole selection from the hull of every curve, so a face's own box is not what its rings were
+  // flattened at. A letter "i" is the smallest shape where those diverge. classify's hull is 408
+  // across and picks tol 0.2040, while the dot's own box is 70.7 and would pick 0.0354 — a tau five
+  // times too small to cover chords flattened at the stem's scale. Measured, the dot then reads
+  // 31.00 against a true 50: not a zero that fails loudly, a plausible number that ships as "the
+  // dots on the i's look under-inflated". probeCtx now REQUIRES the tolerance for that reason, and
+  // this measures the small face at the tolerance classify actually used.
+  var stem = F.rect(0, 0, 40, 300), dot = F.circle(20, -80, 25);
+  var iCls = GR.inflClassify([stem, dot]);            // no explicit tol: tolFor picks it
+  var dotCtx = GR.inflProbeCtx(iCls.recs[1].face, iCls.tol);
+  // A premise guard: if a later edit made these two shapes overlap they would collapse to one face
+  // and the assertion below would still pass while testing nothing.
+  h.assertEqual('an "i" is two faces', iCls.faces.length, 2);
+  h.assertClose('the small face measures at the SELECTION tolerance, not its own',
+    GR.inflSegmentThickness(dot.segments[0], iCls.recs[1].sign, dotCtx).t, 50, dotCtx.tau * MARGIN);
+
   h.group('thickness — pass-through cases');
   var pt = GR.inflClassify([F.openPath(), F.degenerateRing()], TOL);
   h.assertEqual('an open path is marked for pass-through', pt.recs[0].skip, 'open');
@@ -560,7 +593,8 @@ does not run at all.
   // Relative: a handle counts as collapsed when it sits within this fraction of the chord length of
   // its anchor. flatten.js's LINE_EPS is module-local and ABSOLUTE; the SDK reference says a
   // straight segment stores `c1 ~= start`, not `c1 == start`, so an absolute threshold would be a
-  // guess against unverified data. UNVERIFIED against real curves until Task 9 probes it.
+  // guess against unverified data. This threshold has NOT been validated against real Affinity
+  // curve data; the first real run is what sets it from measurement rather than from a guess.
   var LINE_EPS = 1e-6;
 
   // The flatten tolerance, as a fraction of the face's bounding-box diagonal. RELATIVE, not the
@@ -569,6 +603,10 @@ does not run at all.
   // tolerance gives -600%; this gives the same 1.0% at every scale.
   var TOL_FRAC = 5e-4;
 
+  // A ring encloses nothing if its area is negligible against the face's own scale. Area goes as
+  // length squared, so the comparison is against diag*diag; 1e-9 is far below any real shape and
+  // far above float dust. The FACE's box rather than the ring's own, so a small counter is judged
+  // at the scale it will be inflated at.
   var ZERO_AREA_REL = 1e-9;
 
   function collapsed(cx, cy, ax, ay, chordLen) {
@@ -592,8 +630,13 @@ does not run at all.
    * (ey, -ex)/|e|, times the ring sign.
    *
    * That formula points OUT of the enclosed region of a positively-wound ring and INTO it for a
-   * negatively-wound one. So with outer rings signed +1 and counters -1, one formula points away
-   * from the MATERIAL everywhere: outward on an outer ring, into the void on a hole.
+   * negatively-wound one. Multiplying by the ring sign makes ONE formula point away from the
+   * MATERIAL everywhere: outward on an outer ring, into the void on a counter.
+   *
+   * The sign is NOT simply +1 outer / -1 counter. It is the ring's ROLE times its OWN WINDING,
+   * because (ey, -ex) already points into the void of a negatively-wound hole and needs no flip
+   * there - so such a hole signs +1. classify computes that product; do not "correct" it to a
+   * constant.
    */
   function normalOf(dx, dy, sign) {
     var len = Math.sqrt(dx * dx + dy * dy);
@@ -647,7 +690,7 @@ does not run at all.
    * ring sign.
    *
    * The original curves are NOT rewound. Reversing them would reorder the output nodes, and node
-   * order is what this feature exists to preserve, so the sign is carried alongside instead — one
+   * order is what this feature exists to preserve, so the sign is carried alongside instead — a
    * shoelace per ring, not a test per anchor.
    *
    * buildFaces pushes the CALLER'S array references, so a face's ring is mapped back to the curve
@@ -669,6 +712,9 @@ does not run at all.
     for (i = 0; i < recs.length; i++) if (recs[i].ring) rings.push(recs[i].ring);
     var faces = GR.buildFaces(rings);
 
+    // A linear scan rather than a map: identity is the only key available, and keying on it would
+    // need either an ES6 Map or a property stamped onto the caller's own arrays, which this
+    // function promises not to touch. buildFaces above is already O(n^2) over these same rings.
     function tag(ring, face, outerSign) {
       for (var k = 0; k < recs.length; k++) {
         if (recs[k].ring === ring) {                       // identity, not value
@@ -707,9 +753,21 @@ does not run at all.
    * is the sagitta bound plus a factor of two.
    */
   function probeCtx(face, flattenTol) {
+    // flattenTol is REQUIRED, and must be the tolerance this face's rings were actually flattened
+    // at - classify returns it as `.tol` for exactly this reason. It cannot be defaulted here:
+    // classify picks one tolerance for the whole SELECTION, from the hull of every curve, while a
+    // face knows only its own box. On a letter "i" those differ by 5x, and a tau computed from the
+    // dot's own box is too small to cover chords flattened at the stem's scale - the dot then
+    // measures 31.0 against a true 50. That is the tau-collapse this module's own test guards,
+    // reached through a default. It degrades into a PLAUSIBLE number rather than a zero, so it
+    // would ship as "the dots on the i's look under-inflated" rather than as a failure.
+    if (typeof flattenTol !== 'number' || !isFinite(flattenTol)) {
+      throw new Error('inflProbeCtx: flattenTol is required - pass the tol classify() returned');
+    }
     var diag = faceBBoxDiagonal(face);
-    var tol = flattenTol === undefined ? TOL_FRAC * diag : flattenTol;
-    return { face: face, tau: 2 * tol + 1e-9 * diag, maxR: diag / 2, diag: diag };
+    // The 1e-9*diag term is float dust, scaled so it stays meaningful on large artwork; 2*tol is
+    // the part that does the work, and the paragraph above is about that.
+    return { face: face, tau: 2 * flattenTol + 1e-9 * diag, maxR: diag / 2, diag: diag };
   }
 
   /**
@@ -727,6 +785,9 @@ does not run at all.
    */
   function probeRadius(px, py, nx, ny, face, maxR, tau) {
     var lo = 0, hi = maxR;
+    // 60 halvings take maxR below the last representable bit, which is far past anything tau lets
+    // this claim: accuracy is bounded by tau long before the bisection runs out. Deliberate slack,
+    // not a tuned count - measured, N = 52 is already bit-identical to N = 60.
     for (var it = 0; it < 60; it++) {
       var mid = (lo + hi) / 2;
       if (GR.distanceToRings(px - mid * nx, py - mid * ny, face) >= mid - tau) lo = mid; else hi = mid;
@@ -740,7 +801,9 @@ does not run at all.
     var M = midPoint(seg), T = midTangent(seg);
     var n = normalOf(T.x, T.y, sign);
     if (!n) n = normalOf(seg.end.x - seg.start.x, seg.end.y - seg.start.y, sign);
-    if (!n) return { t: 0, r: 0, M: M, n: null };
+    // -1, matching anchorThickness. A 0 here would be indistinguishable from a legitimate
+    // zero-radius tangency, and a caller scaling a displacement by t would silently use it.
+    if (!n) return { t: -1, r: -1, M: M, n: null };
     var r = probeRadius(M.x, M.y, n.x, n.y, ctx.face, ctx.maxR, ctx.tau);
     return { t: r < 0 ? -1 : 2 * r, r: r, M: M, n: n };
   }
