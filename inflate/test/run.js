@@ -19,10 +19,12 @@ var GR = h.loadPD([
   'src/thickness.js'
 ]);
 
-var SUITES = [];
+var SUITES = [
+  require('./test_thickness')
+];
 
 // Zero suites still reports "0 passed, 0 failed" and exits 0, which is a green light from a suite
-// that asserts nothing. Say so out loud until Task 3 lands the first one.
+// that asserts nothing. Say so out loud rather than exiting green on an empty run.
 if (!SUITES.length) console.log('(no suites yet - this run asserts nothing)');
 
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);
