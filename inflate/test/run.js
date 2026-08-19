@@ -18,12 +18,14 @@ var GR = h.loadPD([
   '../gravity/src/softmesh.js',
   'src/thickness.js',
   'src/inflate.js',
-  'src/ui.js'
+  'src/ui.js',
+  'src/main.js'
 ]);
 
 var SUITES = [
   require('./test_thickness'),
-  require('./test_inflate')
+  require('./test_inflate'),
+  require('./test_main_wiring')
 ];
 
 // Zero suites still reports "0 passed, 0 failed" and exits 0, which is a green light from a suite
