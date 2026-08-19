@@ -185,18 +185,15 @@ entirely (nothing is vendored), change `read()` to resolve against `ROOT` rather
 and make `SRC` hold root-relative paths.
 
 ```js
-var ROOT = path.join(__dirname);
-// Keep BOTH: gravity's body calls fs.existsSync(OUT_DIR) and fs.mkdirSync(OUT_DIR), so replacing
-// the pair with a single OUT_FILE gives `ReferenceError: OUT_DIR is not defined` at write time.
+var ROOT = __dirname;
 var OUT_DIR = path.join(ROOT, 'dist');
 var OUT_FILE = path.join(OUT_DIR, 'inflate.js');
 
 // Paths are relative to the INFLATE ROOT so that gravity's pure-geometry modules can be named
 // directly. They are reused by reference rather than copied: a copy goes stale silently, and
 // nothing would fail loudly when it had.
-// `read()` exits 1 on a missing file, so SRC must name only what EXISTS at this task. Each later
-// task appends its own entry as it creates the file; the order below is the dependency order and
-// new entries go at the end.
+// read() exits 1 on a missing file, so every entry must name a file that exists. Order is
+// dependency order: a module may use anything defined above it, and new ones go at the end.
 var SRC = [
   '../gravity/src/contours.js',
   '../gravity/src/flatten.js',
@@ -209,7 +206,29 @@ function read(rel) {
   if (!fs.existsSync(p)) { console.error('build: missing ' + rel); process.exit(1); }
   return fs.readFileSync(p, 'utf8');
 }
+
+// read() catches a file named in SRC but absent from disk. This catches the OPPOSITE, which is the
+// one that fails quietly: a src file that exists and was never added to SRC ships nothing, and
+// --check still passes, because --check only compares dist against what SRC named. The omission
+// would surface first inside Affinity, where there is no debugger.
+function checkSrcComplete() {
+  var onDisk = fs.readdirSync(path.join(ROOT, 'src'));
+  for (var d = 0; d < onDisk.length; d++) {
+    if (/\.js$/.test(onDisk[d]) && SRC.indexOf('src/' + onDisk[d]) < 0) {
+      console.error('build: src/' + onDisk[d] + ' exists but is not in SRC');
+      process.exit(1);
+    }
+  }
+}
 ```
+
+**Note on `OUT_DIR`:** keep both `OUT_DIR` and `OUT_FILE`. Gravity's body calls `fs.existsSync(OUT_DIR)`
+and `fs.mkdirSync(OUT_DIR)`, so collapsing the pair into a single `OUT_FILE` gives
+`ReferenceError: OUT_DIR is not defined` at write time. This is a note to you, not a comment for the
+file — do not paste it into the source.
+
+Call `checkSrcComplete()` once at the top of `build()`. Every later task appends its file to `SRC` in
+the same task that creates it, and this is what makes forgetting loud rather than silent.
 
 Three more edits gravity's file needs, all of which fail loudly but cost a cycle each if missed:
 
@@ -225,11 +244,20 @@ Keep gravity's `--check` mode verbatim — it is what stops a stale `dist/` bein
 
 ```js
 // inflate/src/thickness.js
+/**
+ * thickness.js — local thickness at a point on a boundary. Pure geometry, no Affinity API.
+ *
+ * A stub until Task 3. It exists so the concatenation has a body to eat and so the module's
+ * contract is stated before anything depends on it.
+ */
 (function (GR) {
   'use strict';
-  GR.inflateVersion = '1.0.0-dev';
 })(GR);
 ```
+
+Deliberately no `GR.inflateVersion`: the version already lives in `HEADER` in `build.js`, and a second
+copy inside a geometry module is a source of truth that drifts the first time either changes.
+An empty IIFE concatenates and loads perfectly well.
 
 ```js
 // inflate/test/run.js
@@ -242,6 +270,9 @@ var GR = h.loadPD([
   'src/thickness.js'
 ]);
 var SUITES = [];
+// Zero suites still reports "0 passed, 0 failed" and exits 0, which is a green light from a suite
+// that asserts nothing. Say so out loud until Task 3 lands the first one.
+if (!SUITES.length) console.log('(no suites yet - this run asserts nothing)');
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);
 process.exit(h.reportTests() ? 0 : 1);
 ```
