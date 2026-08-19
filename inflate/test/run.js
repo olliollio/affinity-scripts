@@ -25,7 +25,8 @@ var GR = h.loadPD([
 var SUITES = [
   require('./test_thickness'),
   require('./test_inflate'),
-  require('./test_main_wiring')
+  require('./test_main_wiring'),
+  require('./test_ui')
 ];
 
 // Zero suites still reports "0 passed, 0 failed" and exits 0, which is a green light from a suite

@@ -1964,12 +1964,22 @@ var GR = {};
     // itself perpendicular to each edge, so a corner falls SHORT of the flat-wall doubling — that
     // shortfall is the pinched-corner look, not a bug in it), and the one input that silently does
     // nothing: live shapes (need Convert to Curves first — inflate only ever moves curve anchors).
-    col.addText('Grows each shape by the room inside it: a fat body swells, a thin arm barely ' +
-                'moves, and corners stay pinched rather than rounding off. 100% doubles the ' +
-                'thickness across a flat span. Live shapes are skipped unchanged — Convert to ' +
-                'Curves first. Re-run to compound; undo to dial back.');
+    //
+    // addStaticText on the GROUP, not addText on the column: there is no addText, and calling it
+    // throws before the dialog ever appears. setIsFullWidth is a METHOD - the isFullWidth property
+    // is listed in the API but the setter is the form that works - and addStaticText returns the
+    // control so it chains. Kept in the slider's own group rather than a second one, because a
+    // group header costs height and this panel cannot scroll.
+    grp.addStaticText('', 'Grows each shape by the room inside it: a fat body swells, a thin arm ' +
+      'barely moves, and corners stay pinched rather than rounding off. 100% doubles the ' +
+      'thickness across a flat span. Live shapes are skipped unchanged — Convert to Curves ' +
+      'first. Re-run to compound; undo to dial back.').setIsFullWidth(true);
 
-    if (dlg.runModal() !== DialogResult.Ok) return null;
+    // Compare through .value. Some builds return a DialogResult whose identity does not match the
+    // enum member, and there the direct comparison reads every OK as a Cancel - the dialog closes
+    // and nothing happens, with no error to explain it. Comparing .value is correct on both.
+    var result = dlg.runModal();
+    if (!result || result.value !== DialogResult.Ok.value) return null;
     return { amount: Math.max(0, Math.min(100, ctl.value)) / 100 };
   }
 
