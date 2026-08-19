@@ -187,4 +187,63 @@ module.exports = function (GR, h) {
     Math.hypot(tipOut.x - tipIn.x, tipOut.y - tipIn.y), 0, 1e-12);
   h.assert('and the cusp is named in the notes',
     spOut.notes.join(' ').indexOf('cusp') >= 0, 'notes: ' + spOut.notes.join('; '));
+
+  h.group('inflate — invariants');
+
+  // WINDING INDEPENDENCE. The original curves are deliberately NOT rewound, so the two outputs
+  // differ in vertex ORDER and in nothing else — the comparison is up to reversal, via a quantity
+  // that does not depend on order. This is the assertion that catches a sign taken from a ring's
+  // accidental winding.
+  function absArea(c) { return Math.abs(GR.signedArea(ring(c))); }
+  var fwd = GR.inflateCurves([F.star(0,0,100,40,5)], 0.4)[0];
+  var rev = GR.inflateCurves([F.reverseCurve(F.star(0,0,100,40,5))], 0.4)[0];
+  h.assertClose('same area at either winding', absArea(fwd), absArea(rev), absArea(fwd) * 1e-6);
+  h.assertEqual('same node count at either winding', fwd.segments.length, rev.segments.length);
+
+  // SCALE INVARIANCE. The same percentage on a 2x shape must give 2x displacement. This is what
+  // fails for an ABSOLUTE flatten tolerance: measured across x0.005/x1/x20 the scaled displacement
+  // spread 198% with an absolute tolerance and 0.00% with a relative one.
+  var disp = [0.005, 1, 20].map(function (S) {
+    var o = GR.inflateCurves([F.roundRect(0, 0, 300*S, 100*S, 20*S)], 0.5)[0];
+    return Math.abs(o.segments[0].start.y) / S;
+  });
+  h.assertClose('displacement scales with the shape (x0.005 vs x1)', disp[0], disp[1], disp[1] * 1e-3);
+  h.assertClose('displacement scales with the shape (x20 vs x1)', disp[2], disp[1], disp[1] * 1e-3);
+
+  // An offset passes this too, so it is not coverage of the PILLOW behaviour. It is not redundant
+  // either, and the reason is worth stating: every other invariant here compares magnitudes or
+  // ratios, which are sign-symmetric, so a displacement that ran INWARD would leave winding
+  // independence, scale invariance and the fat-versus-thin ratio all intact. Measured with a
+  // negative amount: those three pass unchanged while the area falls 11755 -> 3693. This is the
+  // only assertion in the suite that knows which way "out" is.
+  var prev = -1, mono = true;
+  [0, 0.1, 0.25, 0.5, 0.75, 1].forEach(function (a) {
+    var ar = absArea(GR.inflateCurves([F.star(0,0,100,40,5)], a)[0]);
+    if (ar <= prev) mono = false;
+    prev = ar;
+  });
+  h.assert('enclosed area increases monotonically in amount', mono);
+
+  // THE PILLOW PROPERTY ITSELF, which the monotonic test above does NOT cover: a fat body must grow
+  // more than a thin arm. Under an offset both grow the same.
+  //
+  // MEASURE THE ANCHOR, NOT THE MIDPOINT. This is the trap: mid() reads the BOW-CORRECTED bezier
+  // midpoint, and the bow independently re-derives from segT[i] and solves for whatever residual
+  // lands the midpoint on the pillow surface — regardless of where the anchor was put. So a mutant
+  // that replaces the anchor rule with a CONSTANT, turning the whole feature into the offset this
+  // assertion exists to rule out, still reports 9.82:1 through mid() and passes. Measured. The raw
+  // anchors tie at 1.00 under that same mutant, which is what an offset actually looks like.
+  //
+  // Both are asserted: the anchor ratio is what pins the rule, and the midpoint ratio is what pins
+  // the bow agreeing with it.
+  var fat = GR.inflateCurves([F.rect(0, 0, 200, 200)], 0.5)[0];
+  var thin = GR.inflateCurves([F.rect(0, 0, 20, 200)], 0.5)[0];
+  var fatAnchor = Math.abs(fat.segments[0].start.y);
+  var thinAnchor = Math.abs(thin.segments[0].start.y);
+  h.assert('a fat body\'s ANCHOR moves further than a thin arm\'s', fatAnchor > thinAnchor * 5,
+    'fat ' + fatAnchor.toFixed(2) + ' vs thin ' + thinAnchor.toFixed(2) + ' — an offset would tie');
+  var fatGrow = Math.abs(mid(fat.segments[0]).y);
+  var thinGrow = Math.abs(mid(thin.segments[0]).y);
+  h.assert('and so does its surface', fatGrow > thinGrow * 5,
+    'fat ' + fatGrow.toFixed(2) + ' vs thin ' + thinGrow.toFixed(2) + ' — an offset would tie');
 };
