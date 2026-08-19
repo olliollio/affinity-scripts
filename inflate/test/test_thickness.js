@@ -110,4 +110,37 @@ module.exports = function (GR, h) {
   h.assert('tau = 0 collapses a curved probe to nothing',
     GR.inflSegmentThickness(F.circle(0, 0, 100).segments[0], disc.rec.sign, noTau).t < 0.01,
     'got ' + GR.inflSegmentThickness(F.circle(0, 0, 100).segments[0], disc.rec.sign, noTau).t);
+
+  h.group('thickness — the anchor measure across corner angles');
+
+  // A bisector probe at a corner of interior angle th is capped at tau/(1 - sin(th/2)) by the
+  // corner's own walls and by NOTHING to do with the material. At 90 degrees that is 3.41*tau, so a
+  // square slips under a fixed 4*tau floor and a square-only test passes; at 108 degrees it is
+  // 5.2*tau and a pentagon does not. Every one of these must come back as the across-flats width.
+  [3, 4, 5, 6, 8, 12, 24, 48].forEach(function (n) {
+    var g = F.ngon(0, 0, 100, n);
+    var cl = GR.inflClassify([g]), rec = cl.recs[0], ctx = GR.inflProbeCtx(rec.face, cl.tol);
+    var m = GR.inflAnchorMeasure(g.segments, 0, rec.sign, ctx);
+    h.assertClose(n + '-gon anchor measures its across-flats width',
+      m.t, 2 * 100 * Math.cos(Math.PI / n), 8 * ctx.tau);
+  });
+
+  // The other half of the same rule: at a SMOOTH anchor the anchor's own probe is the more accurate
+  // measure and must be kept. On a 300x100 rounded rectangle with corner radius 20, the anchor
+  // joining arc to side measures 40 by its own probe against 100 for the adjacent long side, so
+  // "take the larger adjacent segment" over-reports by 2.5x at exactly the anchors where nothing
+  // was wrong.
+  var rr2 = F.roundRect(0, 0, 300, 100, 20);
+  var rcl = GR.inflClassify([rr2]), rrec = rcl.recs[0], rctx = GR.inflProbeCtx(rrec.face, rcl.tol);
+  var sm = GR.inflAnchorMeasure(rr2.segments, 1, rrec.sign, rctx);
+  h.assert('smooth anchor uses its OWN probe', sm.wellPosed === true, 'wellPosed ' + sm.wellPosed);
+  h.assertClose('smooth anchor measures the arc (40), not the side (100)', sm.t, 40, 8 * rctx.tau);
+
+  // A reflex junction: at the notch of a star the LARGER adjacent segment is the right answer, and
+  // the smaller would crease the notch away from the body it belongs to.
+  var st = F.star(0, 0, 100, 40, 5);
+  var scl = GR.inflClassify([st]), srec = scl.recs[0], sctx = GR.inflProbeCtx(srec.face, scl.tol);
+  var tip = GR.inflAnchorMeasure(st.segments, 0, srec.sign, sctx);
+  h.assert('a spike measures its LOCAL width, not the star diameter', tip.t < 60,
+    'got ' + tip.t.toFixed(2) + ' against a diameter of 200');
 };
