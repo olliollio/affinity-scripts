@@ -6,6 +6,9 @@
  *
  * GENERATED FILE - do not edit. Built from inflate/src/ (and gravity/src/, reused by
  * path) by inflate/build.js. Edit the sources and rebuild; the real diff lives in src/.
+ *
+ * The reused gravity modules carry comments about planck.js and earcut - gravity's
+ * vendored libraries. inflate bundles neither; those comments describe gravity, not this file.
  */
 
 'use strict';
@@ -1387,11 +1390,14 @@ var GR = {};
 
 // -------------------------------------------------------------------------
 // src/thickness.js
+/**
+ * thickness.js — local thickness at a point on a boundary. Pure geometry, no Affinity API.
+ *
+ * A stub until Task 3. It exists so the concatenation has a body to eat and so the module's
+ * contract is stated before anything depends on it.
+ */
 (function (GR) {
   'use strict';
-
-  GR.inflateVersion = '1.0.0-dev';
-
 })(GR);
 
 // -------------------------------------------------------------------------
