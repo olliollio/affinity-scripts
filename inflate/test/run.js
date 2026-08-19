@@ -17,7 +17,8 @@ var GR = h.loadPD([
   '../gravity/src/flatten.js',
   '../gravity/src/softmesh.js',
   'src/thickness.js',
-  'src/inflate.js'
+  'src/inflate.js',
+  'src/ui.js'
 ]);
 
 var SUITES = [
