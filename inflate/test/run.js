@@ -16,11 +16,13 @@ var GR = h.loadPD([
   '../gravity/src/contours.js',
   '../gravity/src/flatten.js',
   '../gravity/src/softmesh.js',
-  'src/thickness.js'
+  'src/thickness.js',
+  'src/inflate.js'
 ]);
 
 var SUITES = [
-  require('./test_thickness')
+  require('./test_thickness'),
+  require('./test_inflate')
 ];
 
 // Zero suites still reports "0 passed, 0 failed" and exits 0, which is a green light from a suite
