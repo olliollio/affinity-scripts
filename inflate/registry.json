@@ -1,0 +1,16 @@
+{
+  "scripts": [
+    {
+      "id": "inflate_1.0",
+      "name": "inflate_1.0",
+      "description": "Inflate — give a flat vector shape the look of an inflated pillow, in one step, without adding nodes. Grows each shape by the room inside it rather than by a constant, so a fat body swells while a thin arm barely moves, edges bow between pinched corners, and counters close as they would on a real puffy letter. Node count and node order are preserved, so the result is still editable as the shape you drew. Two settings: how much to inflate, and how much to round sharp points.",
+      "version": "1.0.0",
+      "author": "olliollio",
+      "contributors": ["olliollio"],
+      "category": "Path",
+      "url": "https://www.analog.de",
+      "email": "ollio@ollio.de",
+      "download_url": "https://raw.githubusercontent.com/olliollio/affinity-scripts/main/inflate/dist/inflate.js"
+    }
+  ]
+}

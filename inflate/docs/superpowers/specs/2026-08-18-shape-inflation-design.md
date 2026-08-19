@@ -18,8 +18,8 @@ the **local thickness** — how far it is across the material at that point.
 ## Why this is not part of `gravity`
 
 `gravity` simulates. This does not. There is no timestep, no solver, no world scale, no planck, and
-no convergence criterion: every output point is a closed-form function of the input geometry and one
-number.
+no convergence criterion: every output point is a closed-form function of the input geometry and two
+numbers.
 
 `gravity` also demonstrates the trap this design exists to avoid. Its softbodies flatten every curve
 to a polyline so the physics can step them, and write the result back with `lineToXY`
@@ -34,7 +34,8 @@ original Béziers with moved anchors and recomputed handles.
 - **Adding nodes.** Node count out equals node count in. A bulge that a single cubic per segment
   cannot follow is a recorded limitation, not a case to subdivide for.
 - **3D shading, bevels or highlights.** This changes the outline only.
-- **Self-intersection repair.** Not detected and not fixed in the first version; see Known risks.
+- **Self-intersection repair.** Not repaired. The guards below keep real artwork clear of it at
+  100%, and `ringCrossings` can detect what remains; see Known risks.
 
 ## Architecture
 
@@ -48,12 +49,20 @@ file, so sharing sources across scripts costs nothing at install time.
 | `../gravity/src/softmesh.js` | `distanceToRings(x, y, face)`, `pointInFace(x, y, face)`. Self-contained in `GR` terms: no planck, no earcut |
 | `src/thickness.js` | Local thickness at an anchor. Pure geometry, no SDK |
 | `src/inflate.js` | The displacement rules: anchors and handles in, anchors and handles out. Pure geometry, no SDK |
-| `src/ui.js` | One slider |
+| `src/ui.js` | Two sliders |
 | `src/main.js` | Reads the selection, calls the above, writes back. The only file touching the Affinity SDK |
 | `build.js` | Concatenates the above into `dist/inflate.js` |
 
-`inflate/build.js` must be able to resolve sources outside its own `src/`; `gravity/build.js`
-resolves every entry against `ROOT/src`. The mechanism is left to implementation.
+`inflate/build.js` resolves entries against the inflate root rather than against `ROOT/src`, so a
+sibling script's sources can be named directly. `test/harness.js` does the same. Runtime geometry is
+reused **by reference**, where drift is dangerous because behaviour must match and a stale copy fails
+silently; the build and test harness are **copied**, where drift is harmless because the two scripts
+legitimately differ.
+
+`build.js` guards both directions. `read()` catches a file named in `SRC` but absent from disk;
+`checkSrcComplete()` catches the opposite, which is the one that fails quietly — a `src` file that
+exists and was never added to `SRC` ships nothing, and `--check` still passes, because `--check`
+compares `dist` only against what `SRC` named.
 
 `enforceWinding` is deliberately not used. `buildFaces` classifies purely by nesting-depth parity and
 never reads winding, so normalising the rings first buys nothing — and it returns new arrays, which
@@ -99,6 +108,18 @@ M     = B(0.5)  = (A + 3c1 + 3c2 + B) / 8
 m     = the unit normal of B'(0.5) = (3/4)(B + c2 - c1 - A), times the ring sign
 ```
 
+**The flatten tolerance is RELATIVE**, `5e-4` of the face's bounding-box diagonal, not the absolute
+`FLATTEN_TOL` of `flatten.js`. `tau` is built from it and `tau` bounds the accuracy of `t`, so an
+absolute tolerance makes the error scale-dependent: a slab measured at 0.005× comes out at −600% and
+an annulus at −767%, against an identical 1.0% at every scale for a relative one.
+
+`probeCtx` therefore **requires** the tolerance the rings were actually flattened at, and `classify`
+returns it. It cannot be defaulted: `classify` picks one tolerance for the whole selection from the
+hull of every curve, while a face knows only its own box, and on a letter "i" those differ by 5×.
+A `tau` computed from the dot's own box is too small to cover chords flattened at the stem's scale,
+and the dot then measures 31.0 against a true 50 — a plausible number rather than a zero, so it
+would ship as "the dots look under-inflated" rather than as a failure.
+
 `t = 2r`, where `r` is the largest value satisfying
 
 ```
@@ -131,18 +152,50 @@ exactly the anchors where nothing was wrong. No fixed combining rule over the tw
 at a reflex junction, such as a disc meeting a narrow stem, the larger value is the right one and
 the smaller would crease the notch away from the disc it belongs to.
 
-An anchor probe counts as degenerate when it returns `r < 4·tau`. The floor is a multiple of `tau`
-rather than an absolute epsilon because a square corner probe returns a small but non-zero radius —
-of order the flattening tolerance, not of order `1e-9`.
+**An anchor probe is corner-limited when `2·r·(1 − sin(θ/2)) >= tau`.** No fixed floor works. A
+CONVEX corner of interior angle `θ` caps its own bisector probe at `tau/(1 − sin(θ/2))` — 3.41·tau at
+90°, 5.24 at 108°, 7.46 at 120° — so a floor that is right at one angle is wrong at every other. A
+floor of `4·tau` accepts everything blunter than about 97°, and a pentagon then inflates by 1.05
+units where it should inflate by 80.
+
+Rearranged, a purely corner-limited probe satisfies `2·r·(1 − sin(θ/2)) == 2·tau` *exactly, at every
+angle*, while a probe stopped by real material across the shape comes in under that. The test
+therefore discriminates by a factor of two and needs no angle threshold at all. `|n_in + n_out| / 2`
+**is** `sin(θ/2)`, and the bisector already computes it, so this costs nothing. At a smooth anchor
+`θ = 180°`, the left side is zero and the anchor's own probe always wins — which is what is wanted
+there.
+
+**One expression, two rules.** `sin` is not injective over a full turn, so a reflex angle and its
+convex complement share a `sinHalf`: a star's 249.6° notch and a 110.4° corner both give 0.8208. A
+reflex vertex is therefore rejected too. That is wanted, but for the separate reason given above —
+the larger neighbour is the thickness that belongs to the anchor — and not because its probe is
+bad. At a 270° L-corner the own probe measures a perfectly real 28.92 and is rejected anyway. The
+flag is named for the decision it makes, not for a defect in the probe.
+
+Convex and reflex are told apart by the cross product of the travel-direction tangents, folded with
+the ring sign so it means the same on a counter as on an outer ring; `sinHalf` alone cannot.
+
+Where only one adjacent tangent exists — a duplicated anchor, common in traced paths — there is no
+bisector and no angle, and `sinHalf` is reported as null rather than as a fabricated 0.5.
 
 **The bisection is well posed, with no second root, for any `tau`.** `dist(C(r))` is 1-Lipschitz in
 `r` and `|dC/dr| = 1`, so `dist(C(r)) - r` is non-increasing; the satisfying set is therefore exactly
 `[0, r*]`. This holds on concave shapes too, which is what makes bisection legitimate rather than
 merely convenient.
 
-**`tau` does not over-report.** On a true circle of radius `R`, a probe centre at `r > R` has passed
-the centre, so its distance to the boundary is `2R - r` and the search caps at `R + tau/2`. On a slab
-it caps at `(w + tau)/2`.
+**`tau` is load-bearing, not slack.** With `tau = 0` every curved probe returns ~0 — a disc of
+radius 100 measures 0.002. The reason is not that the probe point is off the ring: `flatten.js`
+subdivides at `t = 0.5`, so `B(0.5)` **is** a flattening vertex and its own distance to the ring is
+exactly zero. The deficit lives in the neighbouring chords, which cut inside the true arc, so a
+"measure the local deficit at the probe point" variant cannot work.
+
+**What `tau` costs.** It inflates the probe RADIUS by `tau/(1 − cos θ)`, where `θ` is the angle
+between the binding wall and the probe path; `t = 2r`, so the error in `t` is double that. Head-on
+the radius error is `tau/2` and the `t` error is exactly `tau` — measured on a slab and on an
+annulus wall, and 0.858·tau on a disc where the flattening deficit partly cancels it. Across a
+convex corner it is not head-on: on a 300×100 rounded rectangle the probe centre passes the corner
+arc's own centre and the binding walls become the top and right edges, symmetric at 45° to the probe
+path, giving 3.41·tau of radius error and so 6.8·tau on `t`.
 
 Values this yields, measured:
 
@@ -284,8 +337,17 @@ A slab of width `w` has `t = w`, and both of its facing boundary points move out
 so at 100% the slab is `2w` across. The definition is scale-free: the same percentage means the same
 thing on a 20pt letter and a 2000pt shape.
 
-It is exact where the boundary is locally parallel-sided — a slab, a disc. At a corner both adjacent
-walls contribute, so the material there more than doubles.
+It is exact where the boundary is locally parallel-sided — a slab, a disc. **At a corner the shape
+grows LESS**, and that is the pinched-corner look rather than a shortfall to be corrected: a bisector
+move delivers only `sin(θ/2)` of itself perpendicular to its two edges, so on a 100 square at 100%
+the flat side's midpoint gains 50.07 while the corner gains 35.41 — short by 14.67, which is this
+document's own miter shortfall, `amount·w/2·(1 − cos 45°)`.
+
+The shortfall grows as the corner sharpens, and past about 80° the edges swell past the corner and
+the outline goes out-in-out — a re-entrant dip that draws as a spike. Convex corners are therefore
+compensated toward keeping pace, with 90° as the reference so the square above is untouched, and
+bounded because full compensation is exactly a miter join and miters blow out without limit as the
+angle closes.
 
 ## Document behaviour
 
@@ -304,9 +366,26 @@ walls contribute, so the material there more than doubles.
 
 ### Dialog
 
-One `Inflate %` slider and one line of help. The dialog does not scroll: once it outgrows the screen
-the OK and Cancel buttons move off the bottom and it cannot be dismissed at all. Every control and
-every full-width help paragraph is spent against that budget.
+Two sliders and one line of help. The dialog does not scroll: once it outgrows the screen the OK and
+Cancel buttons move off the bottom and it cannot be dismissed at all. Every control and every
+full-width help paragraph is spent against that budget.
+
+`Inflate %`, 0–100, default 30, as above.
+
+`Round corners %`, 0–200, default 90, as a fraction of the pillow's depth at that corner. **How
+round a corner should be is taste rather than geometry**, so it is the one guard the user sets. 0
+turns it off and leaves the pinched point. The range runs past 100 because the radius is a fraction
+of a depth rather than of anything bounded, and a corner can legitimately be rounded harder than the
+shape puffed.
+
+The sharpness gate is deliberately not exposed. It sits at 85°, below the square whose pinched
+corner this design asks for, so a control that could cross it would let the dialog contradict the
+amount parameter's own definition.
+
+Help text is `grp.addStaticText(label, text)` on the group, chained with `.setIsFullWidth(true)`;
+there is no `addText`. `dlg.runModal()` is compared through `.value`, because some builds return a
+result that is not the enum member itself, and there a direct comparison reads every OK as a Cancel
+— the dialog closes, nothing happens, and no error explains it.
 
 ## Testing
 
@@ -340,7 +419,11 @@ Everything but `main.js` and `ui.js` is headless.
 - **Smooth-anchor tangent continuity.** At an anchor whose input tangents are parallel, the output
   tangents are too. A bow points along its own segment's normal, so without the re-collinearising
   post-pass a smooth curve acquires a break at every anchor.
-- **A circle inflates to a circle**, exactly, to the bisection's precision. Its handles scale by
+- **A circle inflates to a circle**, asserted RELATIVE and against its own input. A circle drawn as
+  four cubics is itself `2.7e-4` off a true circle, so at `R = 200` its radii already spread by
+  0.0546 before anything is inflated, and an absolute tolerance here would be a number tuned to
+  whatever the code emits. The property that holds, and that fails under a translate-only handle
+  rule, is that the output is no less round than its input. Its handles scale by
   `s = 1 + amount`, which is exactly the handle length a circle of radius `R(1 + amount)` requires
   since `k·R·(1 + amount) = k·R'` for `k = (4/3)(sqrt2 - 1)`, so the midpoint is already on target and
   `b = 0`. Under a translate-only rule the handles instead fall short by `k · amount · R` and the
@@ -363,19 +446,56 @@ are both that kind of test.
 - **Whether displacement should be linear in `t` is unmeasured.** It is the one shape heuristic
   left; the bow is derived from it rather than tuned alongside it, so there is no second parameter to
   trade against. The first real output is the calibration.
-- **The re-collinearising post-pass trades midpoint accuracy for continuity**, and how visible that
-  trade is has not been measured. The first
-  real output is the calibration; nothing in this document is a prediction of how it looks.
-- **`FLATTEN_TOL` is an absolute 0.1 source units**, inherited from `flatten.js`. It bounds the
-  accuracy of `t` and dominates on small artwork. It may need to become relative to the shape's
-  bounding box.
+- **The re-collinearising post-pass trades midpoint accuracy for continuity.** On a 300×100 rounded
+  rectangle at `amount = 0.5`, against an intended displacement of 25, the flat side's midpoint lands
+  7.65 off target and the corner arc's 4.26. A square never shows it: its corners are not smooth, so
+  the pass skips them and its midpoint lands exactly. The error is bounded by a regression assertion;
+  whether it reads as a defect is a judgement, and the candidate change if it ever does is applying
+  the bow *after* collinearising rather than before.
+- **`LINE_EPS`**, the collapsed-handle threshold, is relative but its value is not set from real
+  curve data. The SDK reference says a straight segment stores `c1 ≈ start`, not `c1 == start`;
+  logging `|c1 − A| / |B − A|` over a drawn rectangle would settle it.
 - **Self-intersection at high amounts.** A thin crescent or an "S" can swallow its own concavity.
-  `ringCrossings` (`softmesh.js`) can detect it, but detection is deferred: until `t` and `K` are
-  calibrated against real output, a crossing is more likely to be a symptom of those than a case
-  worth reporting.
+  `ringCrossings` (`softmesh.js`) can detect it. The guards keep real artwork — letters with
+  counters, a star with a round hole — clear of self-intersection at 100%, so detection has not been
+  needed in the pipeline; a sufficiently thin crescent at a high amount remains the open case.
 - **One cubic per segment may not follow a complex bulge.** A long edge across a shape of varying
   thickness has a profile a single cubic can only approximate. Accepted, to hold node count; the
   fallback, if it matters, is inserting anchors only where fit error exceeds a tolerance.
+
+## Guards
+
+The rules above scale by the **material thickness**, and nothing in them relates that to the size of
+the **feature** they are applied to. Those diverge wherever a small step adjoins thick material,
+which is most of what a letterform is. Each guard is inert where nothing is degenerating, and names
+what it held back in the console.
+
+Every one of them scales the segment's **midpoint target** as well as its anchors. The bow
+re-derives from `t` to land the midpoint on the pillow surface *wherever the anchors ended up*, so a
+cap applied to anchors alone is simply absorbed: capping a ring's anchors without its bow took a
+counter to 1% of its area, worse than not capping at all.
+
+- **No chord below half its original length.** Solved per segment as the largest uniform scale on
+  both its anchors' displacements, each anchor taking the minimum over its two segments. Without it,
+  a capital R's 22.4-long notch under the bowl closes to 5.8 at 30%, because the stem beside it
+  measures 89.6 and both anchors move 13.4 toward each other.
+- **No handle longer than its chord.** A cubic whose handle outruns its chord loops rather than
+  bulges. This fires where the chord never collapsed at all, so the floor above does not cover it.
+- **No ring closing past its own width**, capped at a fraction of its own inradius. A counter closes
+  by `amount·t/2` where `t` is the wall *around* it, which says nothing about the size of the hole:
+  a capital A's counter has an inradius of 33.9 against a wall of 90, so at 100% it is asked to
+  close by 45 and vanishes outright at 75%. Node count is preserved, so it cannot simply be dropped.
+  Only a closing ring can run out of room, so the area says which rings these are and no
+  counter/outer test is needed.
+- **Sharp convex corners are rounded**, by the amount the user sets. Nothing else here can round a
+  corner: this design moves anchors and recomputes handles but never adds a node, so a corner anchor
+  stays a corner and its output tangent break comes out at `180° − the input angle`. A capital A's
+  apex reads round not because anything rounded it but because 110° is already blunt.
+
+  Rounding reuses the collinearising post-pass, but **shortens the handles at that anchor to the
+  pillow's depth there first**. Handle length is what sets the rounding radius, and rotating a
+  handle of 136 without shortening it sweeps the letterform away — a 40-wide slab comes out 117
+  across instead of 80. Reflex vertices are excluded: rounding a notch fills it in.
 
 ## Verification
 
