@@ -188,6 +188,43 @@ module.exports = function (GR, h) {
   h.assert('and the cusp is named in the notes',
     spOut.notes.join(' ').indexOf('cusp') >= 0, 'notes: ' + spOut.notes.join('; '));
 
+  h.group('inflate — no feature may collapse');
+
+  // Displacement is scaled by the MATERIAL thickness, and nothing else bounds it by the size of the
+  // FEATURE the anchor sits on. Those diverge wherever a small step adjoins thick material, which
+  // is most of what a letterform is. Measured on a real capital R: the notch under the bowl is 22.4
+  // long while the stem beside it measures 89.6, so at 30% both of that notch's anchors moved 13.4
+  // toward each other and the segment closed to 5.8 — a visible kink. And on a real star with a
+  // round hole at 100%, the handles came out 0.86 of their chord, which draws as a loop, not a
+  // bulge: the hole "looked triangulated".
+  //
+  // Two assertions, because the two failures are different. A chord that collapses is the anchors
+  // converging; a handle longer than its chord is the BOW compensating for anchors that were capped
+  // — which is why the cap has to scale the segment's midpoint target too, not just its anchors.
+  var hard = [['star with a round hole', [F.star(0,0,100,40,5), F.circle(0,0,25,false)]],
+              ['stepped bar', [F.poly([0,0, 100,0, 100,60, 78,60, 78,200, 0,200])]],
+              ['spike', [F.spike()]]];
+  hard.forEach(function (c) {
+    var res = GR.inflateCurves(c[1], 1.0);
+    var worstChord = 1, worstHandle = 0;
+    res.forEach(function (o, ci) {
+      o.segments.forEach(function (t, i) {
+        var src = c[1][ci].segments[i];
+        var lb = Math.hypot(src.end.x - src.start.x, src.end.y - src.start.y);
+        var la = Math.hypot(t.end.x - t.start.x, t.end.y - t.start.y);
+        if (lb > 1e-9 && la / lb < worstChord) worstChord = la / lb;
+        if (la < 1e-9) return;
+        worstHandle = Math.max(worstHandle,
+          Math.hypot(t.c1.x - t.start.x, t.c1.y - t.start.y) / la,
+          Math.hypot(t.c2.x - t.end.x, t.c2.y - t.end.y) / la);
+      });
+    });
+    h.assert('no chord collapses: ' + c[0], worstChord >= 0.45,
+      'worst chord is ' + (worstChord * 100).toFixed(0) + '% of its original');
+    h.assert('no handle outruns its chord: ' + c[0], worstHandle < 1.0,
+      'worst handle/chord ' + worstHandle.toFixed(2) + ' — above 1 draws as a loop');
+  });
+
   h.group('inflate — invariants');
 
   // WINDING INDEPENDENCE. The original curves are deliberately NOT rewound, so the two outputs
