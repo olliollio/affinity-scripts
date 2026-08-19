@@ -232,8 +232,94 @@
     return { t: r < 0 ? -1 : 2 * r, r: r };
   }
 
+  // Where the two adjacent normals cancel — a doubled-back node, a zero-width spike — the bisector
+  // DIRECTION is numerically arbitrary while the displacement magnitude is not, so the anchor would
+  // shoot sideways. The threshold is on UNIT vectors and so is scale-free.
+  var CUSP_EPS = 1e-4;
+
+  /**
+   * The two tangents at anchor `i`, both IN THE DIRECTION OF TRAVEL.
+   *
+   * Affinity stores the incoming handle as c2, and `c2 - A` points BACKWARD. Using it directly makes
+   * every smooth node look like a cusp, and the failure surfaces as a bow artefact rather than as a
+   * sign error, which is a much harder thing to read.
+   *
+   * Affinity also stores a straight segment as a cubic with its handles ON the anchors, so deriving
+   * a tangent from `c1 - A` returns a zero vector on every straight segment — the COMMON case, not
+   * a rare one. There the chord stands in.
+   */
+  function tangentsAt(segs, i) {
+    var n = segs.length, cur = segs[i], prv = segs[(i - 1 + n) % n];
+    var chordOut = { x: cur.end.x - cur.start.x, y: cur.end.y - cur.start.y };
+    var chordIn = { x: prv.end.x - prv.start.x, y: prv.end.y - prv.start.y };
+    var lOut = Math.sqrt(chordOut.x * chordOut.x + chordOut.y * chordOut.y);
+    var lIn = Math.sqrt(chordIn.x * chordIn.x + chordIn.y * chordIn.y);
+    return {
+      tOut: collapsed(cur.c1.x, cur.c1.y, cur.start.x, cur.start.y, lOut)
+        ? chordOut : { x: cur.c1.x - cur.start.x, y: cur.c1.y - cur.start.y },
+      tIn: collapsed(prv.c2.x, prv.c2.y, prv.end.x, prv.end.y, lIn)
+        ? chordIn : { x: prv.end.x - prv.c2.x, y: prv.end.y - prv.c2.y }
+    };
+  }
+
+  /**
+   * The bisector normal and the thickness at one anchor.
+   *
+   * n = normalize(n_in + n_out) is the bisector at a corner and degenerates to the perpendicular at
+   * a smooth node, with no corner/smooth threshold to pick and so no divergence between
+   * implementations.
+   *
+   * THE DEGENERACY TEST. Because the probe point lies on the boundary, the largest tangent disc at
+   * a CONVEX CORNER has radius zero — the nearest boundary point to a nearby interior point is not
+   * the corner itself. So probing at anchors returns near zero at every corner of a polygon and a
+   * square, whose only anchors are corners, would come back unchanged. But the probe is not
+   * worthless everywhere: at a SMOOTH anchor it is perfectly well behaved and is the MORE accurate
+   * measure, and on a rounded rectangle taking the larger adjacent segment instead over-reports by
+   * 2.5x at exactly the anchors where nothing was wrong.
+   *
+   * A fixed floor cannot separate those two cases. A corner of interior angle th caps its own probe
+   * at r = tau/(1 - sin(th/2)) — 3.41*tau at 90 degrees, 5.2*tau at 108, 23*tau at 165 — so any
+   * fixed multiple of tau is right for one angle and wrong for the rest. Measured against a fixed
+   * 4*tau floor: a pentagon inflated at 100% grew by 1.05 units instead of 80.
+   *
+   * Rearranged, a purely corner-limited probe satisfies 2*r*(1 - sin(th/2)) == 2*tau EXACTLY, at
+   * every angle, while a probe stopped by real geometry across the material comes in under that. So
+   * the test discriminates by a factor of two and needs no angle threshold at all. |n_in + n_out|/2
+   * IS sin(th/2), and the bisector already computed it, so this costs nothing. At a smooth anchor
+   * th = 180, the left side is 0, and every probe is well posed — which is what is wanted there.
+   */
+  function anchorMeasure(segs, i, sign, ctx, segT) {
+    var n = segs.length;
+    var tg = tangentsAt(segs, i);
+    var nIn = normalOf(tg.tIn.x, tg.tIn.y, sign);
+    var nOut = normalOf(tg.tOut.x, tg.tOut.y, sign);
+    var sum = (nIn && nOut) ? { x: nIn.x + nOut.x, y: nIn.y + nOut.y } : (nIn || nOut);
+    if (!sum) return { n: null, t: 0, cusp: true, wellPosed: false };
+    var L = Math.sqrt(sum.x * sum.x + sum.y * sum.y);
+    if (L < CUSP_EPS) return { n: null, t: 0, cusp: true, wellPosed: false };
+
+    var nrm = { x: sum.x / L, y: sum.y / L };
+    var ap = anchorThickness(segs[i].start.x, segs[i].start.y, nrm, ctx);
+    var sinHalf = L / 2;                                   // == sin(th/2)
+    var wellPosed = ap.r >= 0 && 2 * ap.r * (1 - sinHalf) < ctx.tau;
+
+    var t;
+    if (wellPosed) {
+      t = ap.t;
+    } else if (segT) {
+      // At a reflex junction — a disc meeting a narrow stem — the LARGER value is the right one, and
+      // the smaller would crease the notch away from the disc it belongs to.
+      t = Math.max(segT[(i - 1 + n) % n], segT[i]);
+    } else {
+      t = Math.max(segmentThickness(segs[(i - 1 + n) % n], sign, ctx).t,
+                   segmentThickness(segs[i], sign, ctx).t);
+    }
+    return { n: nrm, t: t, cusp: false, wellPosed: wellPosed, own: ap.t, sinHalf: sinHalf };
+  }
+
   GR.INFL_LINE_EPS = LINE_EPS;
   GR.INFL_TOL_FRAC = TOL_FRAC;
+  GR.INFL_CUSP_EPS = CUSP_EPS;
   GR.inflCollapsed = collapsed;
   GR.inflMidPoint = midPoint;
   GR.inflMidTangent = midTangent;
@@ -246,5 +332,7 @@
   GR.inflProbeRadius = probeRadius;
   GR.inflSegmentThickness = segmentThickness;
   GR.inflAnchorThickness = anchorThickness;
+  GR.inflTangentsAt = tangentsAt;
+  GR.inflAnchorMeasure = anchorMeasure;
 
 })(GR);
