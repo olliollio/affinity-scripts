@@ -29,7 +29,8 @@ var SRC = [
   '../gravity/src/softmesh.js',
   'src/thickness.js',
   'src/inflate.js',
-  'src/ui.js'
+  'src/ui.js',
+  'src/main.js'
 ];
 
 var VERSION = '1.0.0-dev';
