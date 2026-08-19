@@ -13,6 +13,33 @@
   // Two input tangents this close to parallel count as a smooth anchor for the continuity pass.
   var PARALLEL_EPS = 1e-6;
 
+  // No segment's chord may shrink below this fraction of its original length.
+  var COLLAPSE_FLOOR = 0.5;
+
+  // Nor may a handle outrun its own chord. A cubic whose handle is longer than its chord does not
+  // bulge, it loops back on itself - which is what "the hole looks triangulated" was: alternating
+  // segments at 0.28 and 0.86 of chord, flat next to folded. The two caps are independent: the
+  // chord floor catches anchors converging, this catches the BOW overshooting on a chord that never
+  // collapsed at all. 0.9 leaves room for a genuine strong bulge; a quarter-circle sits at 0.39.
+  var HANDLE_MAX = 0.9;
+
+  /** Largest L in [0,1] with |chord + L*delta| >= floor*|chord|. */
+  function maxScale(chord, delta, floor) {
+    var cc = chord.x * chord.x + chord.y * chord.y;
+    var dd = delta.x * delta.x + delta.y * delta.y;
+    var cd = chord.x * delta.x + chord.y * delta.y;
+    var target = floor * floor * cc;
+    if (cc + 2 * cd + dd >= target) return 1;
+    if (dd < 1e-18) return 1;
+    var disc = 4 * cd * cd - 4 * dd * (cc - target);
+    if (disc < 0) return 1;
+    var r = Math.sqrt(disc), best = 1;
+    var l1 = (-2 * cd - r) / (2 * dd), l2 = (-2 * cd + r) / (2 * dd);
+    if (l1 >= 0 && l1 < best) best = l1;
+    if (l2 >= 0 && l2 < best) best = l2;
+    return best;
+  }
+
   function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y }; }
   function add(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
   function mul(a, k) { return { x: a.x * k, y: a.y * k }; }
@@ -61,6 +88,37 @@
       Ap.push(add(segs[i].start, mul(m.n, amount * m.t / 2)));
     }
 
+    // --- no segment may collapse ---------------------------------------------------
+    // Displacement is scaled by the MATERIAL thickness, and nothing else bounds it by the size of
+    // the FEATURE the anchor sits on. Those diverge wherever a small step adjoins thick material,
+    // which is most of what a letterform is: on a capital R the notch under the bowl is 22.4 long
+    // while the stem beside it measures 89.6, so at 30% both of that notch's anchors move 13.4
+    // toward each other and a 22.4 segment closes to 5.8 - a visible kink, and a crossing further
+    // up. Cap it on the OUTPUT rather than fudging the input: no chord may fall below FLOOR of its
+    // original length. Where nothing is collapsing every scale is 1 and this changes nothing.
+    //
+    // segScale must be applied to the SEGMENT's midpoint target as well, not only to its anchors.
+    // The bow re-derives from segT to land the midpoint on the pillow surface wherever the anchors
+    // ended up, so clamping the anchors alone just makes the bow bulge harder to compensate -
+    // measured, the handle came out 1.14x the chord, which is a loop rather than a bulge.
+    var lam = [], segScale = [];
+    for (i = 0; i < n; i++) { lam.push(1); segScale.push(1); }
+    for (i = 0; i < n; i++) {
+      var jj = (i + 1) % n;
+      var ch = sub(segs[jj].start, segs[i].start);
+      var dl = sub(sub(Ap[jj], segs[jj].start), sub(Ap[i], segs[i].start));
+      var Lm = maxScale(ch, dl, COLLAPSE_FLOOR);
+      segScale[i] = Lm;
+      if (Lm < lam[i]) lam[i] = Lm;
+      if (Lm < lam[jj]) lam[jj] = Lm;
+    }
+    for (i = 0; i < n; i++) {
+      if (lam[i] >= 1) continue;
+      notes.push('anchor ' + i + ': displacement capped to ' + Math.round(lam[i] * 100) +
+                 '% so its segment would not collapse');
+      Ap[i] = add(segs[i].start, mul(sub(Ap[i], segs[i].start), lam[i]));
+    }
+
     // --- handles ------------------------------------------------------------------
     var out = [];
     for (i = 0; i < n; i++) {
@@ -86,10 +144,22 @@
       // There is no gain constant to calibrate.
       var b = 0, nM = segN[i];
       if (nM && clen > 0) {
-        var Mt = add(segM[i], mul(nM, amount * segT[i] / 2));
+        var Mt = add(segM[i], mul(nM, segScale[i] * amount * segT[i] / 2));
         var Mn = { x: (Ap[i].x + 3 * c1n.x + 3 * c2n.x + Ap[j].x) / 8,
                    y: (Ap[i].y + 3 * c1n.y + 3 * c2n.y + Ap[j].y) / 8 };
         b = dot(sub(Mt, Mn), nM) / 0.75;
+      }
+      // Cap the bow so neither handle outruns the chord. b is derived rather than tuned, so this
+      // does not adjust it toward a nicer number - it only refuses the cases where the derivation
+      // asks for a curve that folds.
+      if (nM && b !== 0) {
+        var lim = HANDLE_MAX * len(sub(Ap[j], Ap[i]));
+        for (var g = 0; g < 8; g++) {
+          var t1 = len(add(sub(c1n, Ap[i]), mul(nM, b)));
+          var t2 = len(add(sub(c2n, Ap[j]), mul(nM, b)));
+          if (Math.max(t1, t2) <= lim || lim <= 0) break;
+          b *= 0.75;
+        }
       }
       var bow = nM ? mul(nM, b) : { x: 0, y: 0 };
       // COPIES of the anchors, not the Ap entries themselves. Ap[j] is also Ap[i] of the next
