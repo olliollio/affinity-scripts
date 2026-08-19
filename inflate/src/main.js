@@ -114,7 +114,7 @@
       var curves = readCurves(node);
       if (!curves.length) { skipped.push('a node with no curve geometry'); continue; }
 
-      var inflated = GR.inflateCurves(curves, settings.amount);
+      var inflated = GR.inflateCurves(curves, settings.amount, undefined, settings.round);
       for (var k = 0; k < inflated.length; k++) {
         var nn = inflated[k].notes || [];
         for (var q = 0; q < nn.length; q++) notes.push('curve ' + k + ': ' + nn[q]);

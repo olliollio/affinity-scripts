@@ -243,6 +243,20 @@ module.exports = function (GR, h) {
     'outer is ' + (ringArea(A[0]) / ringArea(aOuter) * 100).toFixed(0) + '% of its area');
   h.assert('the ring that was capped says so', A[1].notes.length > 0, 'no note');
 
+  function worstBreak2(curve, amount, round) {
+    var out = GR.inflateCurves([curve], amount, undefined, round)[0], n = out.segments.length, w = 0;
+    for (var i = 0; i < n; i++) {
+      var p = (i - 1 + n) % n;
+      var dO = { x: out.segments[i].c1.x - out.segments[i].start.x,
+                 y: out.segments[i].c1.y - out.segments[i].start.y };
+      var dI = { x: out.segments[p].end.x - out.segments[p].c2.x,
+                 y: out.segments[p].end.y - out.segments[p].c2.y };
+      var b = Math.abs(Math.atan2(dO.x * dI.y - dO.y * dI.x, dO.x * dI.x + dO.y * dI.y)) * 180 / Math.PI;
+      if (b > w) w = b;
+    }
+    return w;
+  }
+
   h.group('inflate — sharp convex corners round off');
 
   // Nothing else in this design can round a corner: it moves anchors and recomputes handles but
@@ -285,6 +299,29 @@ module.exports = function (GR, h) {
   h.assert('a square is not rounded', worstBreak(F.rect(0, 0, 100, 100), 1) > 30,
     'a 90 degree corner must stay a corner');
   h.assert('and neither is a hexagon', worstBreak(F.ngon(0, 0, 100, 6), 1) > 20);
+
+  h.group('inflate — rounding is the user\'s to set');
+
+  // How round a corner should be is taste, not geometry, so it is a dialog control rather than a
+  // constant. Both ends have to mean something: 0 must genuinely leave the pinched point the
+  // geometry produces unaided, and turning it up must visibly do more.
+  var tri = F.ngon(0, 0, 100, 3);
+  h.assert('rounding 0 leaves a sharp corner sharp', worstBreak2(tri, 1, 0) > 60,
+    'break ' + worstBreak2(tri, 1, 0).toFixed(0) + ' deg — 0 must be OFF, not merely gentle');
+  h.assert('the default rounds it', worstBreak2(tri, 1, undefined) < 15,
+    'break ' + worstBreak2(tri, 1, undefined).toFixed(0) + ' deg');
+  h.assert('and a blunt corner is untouched at any setting',
+    Math.abs(worstBreak2(F.ngon(0,0,100,6), 1, 0) - worstBreak2(F.ngon(0,0,100,6), 1, 2)) < 1,
+    'a hexagon is above the sharpness gate, so the slider must not reach it');
+
+  // The radius scales with the setting, which is what makes the slider mean anything.
+  function tipRadius(round) {
+    var o = GR.inflateCurves([tri], 1, undefined, round)[0];
+    return Math.hypot(o.segments[0].c1.x - o.segments[0].start.x,
+                      o.segments[0].c1.y - o.segments[0].start.y);
+  }
+  h.assert('a higher setting rounds harder', tipRadius(1.6) > tipRadius(0.4) * 1.5,
+    tipRadius(0.4).toFixed(1) + ' -> ' + tipRadius(1.6).toFixed(1));
 
   h.group('inflate — invariants');
 

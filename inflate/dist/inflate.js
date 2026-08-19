@@ -1825,8 +1825,11 @@ var GR = {};
   // left exactly as the design intends and only genuinely pointed corners are softened.
   var ROUND_BELOW_SIN = 0.676;
 
-  // The rounding radius, as a fraction of the pillow's depth at that corner. The depth is the
+  // Default rounding radius, as a fraction of the pillow's depth at that corner. The depth is the
   // natural scale: a shape that puffed by 45 units should round its points at about that radius.
+  // The dialog exposes this, because how round a corner should be is a matter of taste and not
+  // something geometry can settle; 0 turns rounding off and leaves corners as the design's
+  // pinched points.
   var ROUND_FRAC = 0.9;
 
   /** Largest L in [0,1] with |chord + L*delta| >= floor*|chord|. */
@@ -1863,7 +1866,7 @@ var GR = {};
    * b    = dot(M' - M_naive, n_M) / 0.75
    * c1'  = A' + h1*s + n_M*b        c2' = B' + h2*s + n_M*b
    */
-  function inflateCurve(curve, sign, ctx, amount, inradius) {
+  function inflateCurve(curve, sign, ctx, amount, inradius, round) {
     var segs = curve.segments, n = segs.length, i;
     var notes = [];
 
@@ -1910,7 +1913,7 @@ var GR = {};
       }
       // Sharp CONVEX corners get rounded by the post-pass below; remember which, and how deep the
       // pillow is here, since that depth is the natural radius to round with.
-      convex.push(!m.reflex && m.sinHalf !== null && m.sinHalf < ROUND_BELOW_SIN);
+      convex.push(round > 0 && !m.reflex && m.sinHalf !== null && m.sinHalf < ROUND_BELOW_SIN);
       anchorT.push(m.t);
       Ap.push(add(segs[i].start, mul(m.n, boost * amount * m.t / 2)));
     }
@@ -2056,7 +2059,7 @@ var GR = {};
       if (!d) continue;
       var lOut = len(sub(out[i].c1, out[i].start)), lIn = len(sub(out[p].end, out[p].c2));
       if (!smooth) {
-        var rad = ROUND_FRAC * amount * anchorT[i] / 2;
+        var rad = round * amount * anchorT[i] / 2;
         if (rad > 0) { if (lOut > rad) lOut = rad; if (lIn > rad) lIn = rad; }
       }
       out[i].c1 = add(out[i].start, mul(d, lOut));       // lengths unchanged, directions replaced
@@ -2067,7 +2070,8 @@ var GR = {};
   }
 
   /** Inflates every curve of one node. Open, degenerate and zero-area curves pass through. */
-  function inflateCurves(curves, amount, flattenTol) {
+  function inflateCurves(curves, amount, flattenTol, round) {
+    var r0 = (typeof round === 'number' && isFinite(round)) ? Math.max(0, round) : ROUND_FRAC;
     var cl = GR.inflClassify(curves, flattenTol);
     var out = [];
     for (var i = 0; i < cl.recs.length; i++) {
@@ -2094,7 +2098,7 @@ var GR = {};
                          (ring[w + 1] - ring[q + 1]) * (ring[w + 1] - ring[q + 1]));
       }
       var inr = per > 0 ? 2 * Math.abs(GR.signedArea(ring)) / per : 0;
-      out.push(inflateCurve(r.curve, r.sign, GR.inflProbeCtx(r.face, cl.tol), amount, inr));
+      out.push(inflateCurve(r.curve, r.sign, GR.inflProbeCtx(r.face, cl.tol), amount, inr, r0));
     }
     return out;
   }
@@ -2102,6 +2106,7 @@ var GR = {};
   GR.inflateCurve = inflateCurve;
   GR.inflateCurves = inflateCurves;
   GR.INFL_PARALLEL_EPS = PARALLEL_EPS;
+  GR.INFL_ROUND_FRAC = ROUND_FRAC;
 
 })(GR);
 
@@ -2125,6 +2130,13 @@ var GR = {};
   // percentage means the same thing on a 20pt letter and a 2000pt shape.
   var DEFAULT_PCT = 30;
 
+  // How far a sharp corner is rounded off, as a percentage of the pillow's depth there. 0 leaves
+  // corners as pinched points, which is what the geometry does unaided: this design never adds a
+  // node, so a corner anchor stays a corner and its tangent break comes out at 180 minus the input
+  // angle - a hard point on anything sharper than about 90 degrees. How round is right is a matter
+  // of taste, so it is the user's to set.
+  var DEFAULT_ROUND_PCT = 90;
+
   function showSettings() {
     var mod = require('/dialog');
     var Dialog = mod.Dialog, DialogResult = mod.DialogResult, UnitType = mod.UnitType;
@@ -2136,6 +2148,10 @@ var GR = {};
     var ctl = grp.addUnitValueEditor('Inflate %', UnitType.Number, UnitType.Number, DEFAULT_PCT, 0, 100);
     ctl.setShowPopupSlider(true);
     ctl.precision = 0;
+    var rnd = grp.addUnitValueEditor('Round corners %', UnitType.Number, UnitType.Number,
+                                     DEFAULT_ROUND_PCT, 0, 200);
+    rnd.setShowPopupSlider(true);
+    rnd.precision = 0;
     // What the label "Inflate %" cannot say: growth follows LOCAL thickness (so a fat body swells
     // and a thin arm barely moves), what a corner does (a bisector move only delivers cos(45) of
     // itself perpendicular to each edge, so a corner falls SHORT of the flat-wall doubling — that
@@ -2150,18 +2166,21 @@ var GR = {};
     grp.addStaticText('', 'Grows each shape by the room inside it: a fat body swells, a thin arm ' +
       'barely moves, and corners stay pinched rather than rounding off. 100% doubles the ' +
       'thickness across a flat span. Live shapes are skipped unchanged — Convert to Curves ' +
-      'first. Re-run to compound; undo to dial back.').setIsFullWidth(true);
+      'first. Round corners softens sharp points - 0 leaves them pinched. Re-run to ' +
+      'compound; undo to dial back.').setIsFullWidth(true);
 
     // Compare through .value. Some builds return a DialogResult whose identity does not match the
     // enum member, and there the direct comparison reads every OK as a Cancel - the dialog closes
     // and nothing happens, with no error to explain it. Comparing .value is correct on both.
     var result = dlg.runModal();
     if (!result || result.value !== DialogResult.Ok.value) return null;
-    return { amount: Math.max(0, Math.min(100, ctl.value)) / 100 };
+    return { amount: Math.max(0, Math.min(100, ctl.value)) / 100,
+             round: Math.max(0, Math.min(200, rnd.value)) / 100 };
   }
 
   GR.inflShowSettings = showSettings;
   GR.INFL_DEFAULT_PCT = DEFAULT_PCT;
+  GR.INFL_DEFAULT_ROUND_PCT = DEFAULT_ROUND_PCT;
 
 })(GR);
 
@@ -2283,7 +2302,7 @@ var GR = {};
       var curves = readCurves(node);
       if (!curves.length) { skipped.push('a node with no curve geometry'); continue; }
 
-      var inflated = GR.inflateCurves(curves, settings.amount);
+      var inflated = GR.inflateCurves(curves, settings.amount, undefined, settings.round);
       for (var k = 0; k < inflated.length; k++) {
         var nn = inflated[k].notes || [];
         for (var q = 0; q < nn.length; q++) notes.push('curve ' + k + ': ' + nn[q]);
