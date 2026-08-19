@@ -1821,6 +1821,14 @@ var GR = {};
   // never: an outer ring's anchors move outward and its inradius grows.
   var CLOSURE_MAX = 0.45;
 
+  // Only corners sharper than this are rounded. sin(th/2) for th = 85 degrees, so a square at 90 is
+  // left exactly as the design intends and only genuinely pointed corners are softened.
+  var ROUND_BELOW_SIN = 0.676;
+
+  // The rounding radius, as a fraction of the pillow's depth at that corner. The depth is the
+  // natural scale: a shape that puffed by 45 units should round its points at about that radius.
+  var ROUND_FRAC = 0.9;
+
   /** Largest L in [0,1] with |chord + L*delta| >= floor*|chord|. */
   function maxScale(chord, delta, floor) {
     var cc = chord.x * chord.x + chord.y * chord.y;
@@ -1873,13 +1881,14 @@ var GR = {};
     }
 
     // --- anchors ------------------------------------------------------------------
-    var Ap = [];
+    var Ap = [], convex = [], anchorT = [];
     for (i = 0; i < n; i++) {
       var m = GR.inflAnchorMeasure(segs, i, sign, ctx, segT);
       if (m.cusp) {
         // The bisector direction is arbitrary here while the magnitude is not, so the anchor would
         // shoot sideways. Leave it exactly where it is, and say so.
         notes.push('anchor ' + i + ': cusp, left in place');
+        convex.push(false); anchorT.push(0);
         Ap.push({ x: segs[i].start.x, y: segs[i].start.y });
         continue;
       }
@@ -1899,6 +1908,10 @@ var GR = {};
         if (boost < 1) boost = 1;
         if (boost > CORNER_BOOST_MAX) boost = CORNER_BOOST_MAX;
       }
+      // Sharp CONVEX corners get rounded by the post-pass below; remember which, and how deep the
+      // pillow is here, since that depth is the natural radius to round with.
+      convex.push(!m.reflex && m.sinHalf !== null && m.sinHalf < ROUND_BELOW_SIN);
+      anchorT.push(m.t);
       Ap.push(add(segs[i].start, mul(m.n, boost * amount * m.t / 2)));
     }
 
@@ -2021,7 +2034,19 @@ var GR = {};
       var tg = GR.inflTangentsAt(segs, i);
       var a1 = unit(tg.tIn), a2 = unit(tg.tOut);
       if (!a1 || !a2) continue;
-      if (Math.abs(a1.x * a2.y - a1.y * a2.x) > PARALLEL_EPS || dot(a1, a2) <= 0) continue;
+      var smooth = Math.abs(a1.x * a2.y - a1.y * a2.x) <= PARALLEL_EPS && dot(a1, a2) > 0;
+      // A sharp convex corner is rounded, because nothing else here can: this design moves anchors
+      // and recomputes handles but never adds a node, so a corner anchor stays a corner - measured
+      // on a capital A, the output's tangent break is essentially 180 minus the input angle, 106
+      // degrees at its 70 degree tips. The apex reads round not because anything rounded it but
+      // because 110 degrees is already blunt.
+      //
+      // Only genuinely sharp corners, so a square is untouched and its measured miter shortfall
+      // stands. And the handles are SHORTENED to the depth the pillow has here before being made
+      // collinear: the handle length is what sets the rounding radius, and rotating the A's
+      // diagonal handle of 136 without shortening it swept the whole letterform away - measured, a
+      // 40-wide slab came out 117 across instead of 80.
+      if (!smooth && !convex[i]) continue;
       // BOTH directions are taken in travel order. The incoming handle is stored as c2 and points
       // backward, so summing `c2 - A` with `c1 - A` would very nearly CANCEL instead of averaging.
       var dOut = unit(sub(out[i].c1, out[i].start));
@@ -2030,6 +2055,10 @@ var GR = {};
       var d = unit(add(dOut, dIn));
       if (!d) continue;
       var lOut = len(sub(out[i].c1, out[i].start)), lIn = len(sub(out[p].end, out[p].c2));
+      if (!smooth) {
+        var rad = ROUND_FRAC * amount * anchorT[i] / 2;
+        if (rad > 0) { if (lOut > rad) lOut = rad; if (lIn > rad) lIn = rad; }
+      }
       out[i].c1 = add(out[i].start, mul(d, lOut));       // lengths unchanged, directions replaced
       out[p].c2 = sub(out[p].end, mul(d, lIn));
     }
