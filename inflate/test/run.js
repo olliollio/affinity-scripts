@@ -21,6 +21,10 @@ var GR = h.loadPD([
 
 var SUITES = [];
 
+// Zero suites still reports "0 passed, 0 failed" and exits 0, which is a green light from a suite
+// that asserts nothing. Say so out loud until Task 3 lands the first one.
+if (!SUITES.length) console.log('(no suites yet - this run asserts nothing)');
+
 for (var i = 0; i < SUITES.length; i++) SUITES[i](GR, h);
 
 process.exit(h.reportTests() ? 0 : 1);

@@ -14,18 +14,15 @@
 var fs = require('fs');
 var path = require('path');
 
-var ROOT = path.join(__dirname);
-// Keep BOTH: gravity's body calls fs.existsSync(OUT_DIR) and fs.mkdirSync(OUT_DIR), so replacing
-// the pair with a single OUT_FILE gives `ReferenceError: OUT_DIR is not defined` at write time.
+var ROOT = __dirname;
 var OUT_DIR = path.join(ROOT, 'dist');
 var OUT_FILE = path.join(OUT_DIR, 'inflate.js');
 
 // Paths are relative to the INFLATE ROOT so that gravity's pure-geometry modules can be named
 // directly. They are reused by reference rather than copied: a copy goes stale silently, and
 // nothing would fail loudly when it had.
-// `read()` exits 1 on a missing file, so SRC must name only what EXISTS at this task. Each later
-// task appends its own entry as it creates the file; the order below is the dependency order and
-// new entries go at the end.
+// read() exits 1 on a missing file, so every entry must name a file that exists. Order is
+// dependency order: a module may use anything defined above it, and new ones go at the end.
 var SRC = [
   '../gravity/src/contours.js',
   '../gravity/src/flatten.js',
@@ -33,10 +30,12 @@ var SRC = [
   'src/thickness.js'
 ];
 
+var VERSION = '1.0.0-dev';
+
 var HEADER = [
   'name: inflate',
   'description: Give a flat vector shape the look of an inflated pillow.',
-  'version: 1.0.0-dev',
+  'version: ' + VERSION,
   'author: ollio'
 ];
 
@@ -49,7 +48,23 @@ function read(rel) {
   return fs.readFileSync(p, 'utf8');
 }
 
+// read() catches a file named in SRC but absent from disk. This catches the OPPOSITE, which is the
+// one that fails quietly: a src file that exists and was never added to SRC ships nothing, and
+// --check still passes, because --check only compares dist against what SRC named. The omission
+// would surface first inside Affinity, where there is no debugger.
+function checkSrcComplete() {
+  var onDisk = fs.readdirSync(path.join(ROOT, 'src'));
+  for (var d = 0; d < onDisk.length; d++) {
+    if (/\.js$/.test(onDisk[d]) && SRC.indexOf('src/' + onDisk[d]) < 0) {
+      console.error('build: src/' + onDisk[d] + ' exists but is not in SRC');
+      process.exit(1);
+    }
+  }
+}
+
 function build() {
+  checkSrcComplete();
+
   var parts = [];
 
   parts.push('/**');
@@ -57,6 +72,9 @@ function build() {
   parts.push(' *');
   parts.push(' * GENERATED FILE - do not edit. Built from inflate/src/ (and gravity/src/, reused by');
   parts.push(' * path) by inflate/build.js. Edit the sources and rebuild; the real diff lives in src/.');
+  parts.push(' *');
+  parts.push(' * The reused gravity modules carry comments about planck.js and earcut - gravity\'s');
+  parts.push(' * vendored libraries. inflate bundles neither; those comments describe gravity, not this file.');
   parts.push(' */');
   parts.push('');
   parts.push("'use strict';");
@@ -74,7 +92,7 @@ function build() {
   parts.push('// ' + new Array(74).join('-'));
   parts.push('// entry');
   parts.push('if (typeof GR.main === \'function\') GR.main();');
-  parts.push('else console.log(\'inflate ' + HEADER[2].split(': ')[1] +
+  parts.push('else console.log(\'inflate ' + VERSION +
              ' - geometry layer only, no entry point yet. Loaded: \' + Object.keys(GR).sort().join(\', \'));');
   parts.push('');
 
