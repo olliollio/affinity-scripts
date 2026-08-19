@@ -121,6 +121,31 @@ module.exports = function (GR, h) {
   h.assert('smooth input anchors stay smooth in the output', worst < 0.5,
     'worst break ' + worst.toFixed(4) + ' deg');
 
+  // WHAT THAT CONTINUITY COSTS. The bow puts each segment's midpoint exactly on the pillow surface,
+  // and then the post-pass rotates the handles at every smooth anchor, which moves it off again.
+  // The square never shows this - its corners are not smooth, so the pass skips them and the
+  // midpoint assertion above holds exactly. On a rounded rectangle every anchor IS smooth, so the
+  // pass runs everywhere and nothing else here pins the result.
+  //
+  // Measured at amount 0.5 against an intended displacement of 25: the flat side's midpoint lands
+  // 7.65 off target and the corner arc's 4.26. This assertion is a REGRESSION GUARD on a trade the
+  // design accepts, not a claim that the trade is right - whether 7.65 reads as a defect on real
+  // artwork is a question only real artwork answers.
+  var pcl = GR.inflClassify([F.roundRect(0,0,300,100,20)]), prec = pcl.recs[0];
+  var pctx = GR.inflProbeCtx(prec.face, pcl.tol), worstMid = 0;
+  for (var q = 0; q < rr2.segments.length; q++) {
+    var srcSeg = F.roundRect(0,0,300,100,20).segments[q];
+    var pst = GR.inflSegmentThickness(srcSeg, prec.sign, pctx);
+    if (!pst.n) continue;
+    var got = mid(rr2.segments[q]);
+    var target = { x: pst.M.x + pst.n.x * 0.5 * pst.t / 2,
+                   y: pst.M.y + pst.n.y * 0.5 * pst.t / 2 };
+    var off = Math.hypot(got.x - target.x, got.y - target.y);
+    if (off > worstMid) worstMid = off;
+  }
+  h.assert('the continuity pass costs no more midpoint accuracy than measured',
+    worstMid < 9.0, 'worst midpoint error ' + worstMid.toFixed(4) + ' (measured 7.65)');
+
   h.group('inflate — faces and pass-through');
   // createSetCurves replaces a node's geometry outright, so a shape with counters must rebuild ALL
   // its rings in one call. This is that case, computed in one call.
@@ -135,8 +160,31 @@ module.exports = function (GR, h) {
       h.assertClose('counter closes, ' + c[0], Math.max.apply(null, radii(ann[1],0,0)), 62.5, 0.25);
     });
 
+  // Output points must not be shared between adjacent segments. out[i].end and out[i+1].start are
+  // the same ANCHOR but must be different OBJECTS: a consumer that maps points in place - which is
+  // exactly what writing back through an inverse transform looks like - would otherwise transform
+  // every shared anchor twice, shearing the shape while node count and closedness stay correct.
+  var al = GR.inflateCurves([F.rect(0, 0, 100, 100)], 0.5)[0];
+  h.assert('adjacent segments do not share point objects',
+    al.segments[0].end !== al.segments[1].start);
+  var srcCurve = F.openPath(), thruOut = GR.inflateCurves([srcCurve], 1)[0];
+  h.assert('a passed-through curve does not share the input array',
+    thruOut.segments !== srcCurve.segments);
+
   var thru = GR.inflateCurves([F.openPath(), F.degenerateRing()], 1);
   h.assertEqual('an open path is copied through', thru[0].segments[1].end.x, 100);
   h.assertEqual('an open path keeps isClosed false', thru[0].isClosed, false);
   h.assert('a zero-area ring is copied through', !!thru[1].notes.length);
+
+  h.group('inflate \u2014 the cusp guard');
+  // The cusp guard: at a zero-width slit the two adjacent normals cancel, so the bisector
+  // DIRECTION is arbitrary while the magnitude is not - an unguarded anchor shoots sideways. No
+  // other fixture reaches this branch, so without this assertion the guard could be deleted and
+  // every other test would stay green.
+  var sp = F.spike(), spOut = GR.inflateCurves([sp], 0.5)[0];
+  var tipIn = sp.segments[4].start, tipOut = spOut.segments[4].start;
+  h.assertClose('a cusp anchor is left exactly where it was',
+    Math.hypot(tipOut.x - tipIn.x, tipOut.y - tipIn.y), 0, 1e-12);
+  h.assert('and the cusp is named in the notes',
+    spOut.notes.join(' ').indexOf('cusp') >= 0, 'notes: ' + spOut.notes.join('; '));
 };
