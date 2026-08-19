@@ -243,6 +243,49 @@ module.exports = function (GR, h) {
     'outer is ' + (ringArea(A[0]) / ringArea(aOuter) * 100).toFixed(0) + '% of its area');
   h.assert('the ring that was capped says so', A[1].notes.length > 0, 'no note');
 
+  h.group('inflate — sharp convex corners round off');
+
+  // Nothing else in this design can round a corner: it moves anchors and recomputes handles but
+  // never adds a node, so a corner anchor stays a corner. Measured on a real capital A, the output's
+  // tangent break is essentially 180 minus the input angle — 106 degrees at its 70 degree bottom
+  // tips, which draws as a hard point. Its apex reads round not because anything rounded it but
+  // because 110 degrees is already blunt.
+  //
+  // Three things are asserted, because the rule has three parts and each can break alone: sharp
+  // convex corners round, blunt ones are left exactly as the design intends, and reflex notches are
+  // left alone too — rounding a notch fills it in, which is a different effect entirely.
+  function worstBreak(curve, amount, pick) {
+    var out = GR.inflateCurves([curve], amount)[0], n = out.segments.length, worst = 0;
+    for (var i = 0; i < n; i++) {
+      if (pick && !pick(i)) continue;
+      var p = (i - 1 + n) % n;
+      var dO = { x: out.segments[i].c1.x - out.segments[i].start.x,
+                 y: out.segments[i].c1.y - out.segments[i].start.y };
+      var dI = { x: out.segments[p].end.x - out.segments[p].c2.x,
+                 y: out.segments[p].end.y - out.segments[p].c2.y };
+      var b = Math.abs(Math.atan2(dO.x * dI.y - dO.y * dI.x, dO.x * dI.x + dO.y * dI.y)) * 180 / Math.PI;
+      if (b > worst) worst = b;
+    }
+    return worst;
+  }
+  h.assert('a 60 degree corner rounds', worstBreak(F.ngon(0, 0, 100, 3), 1) < 15,
+    'worst break ' + worstBreak(F.ngon(0, 0, 100, 3), 1).toFixed(0) + ' deg');
+  h.assert('a star\'s 36 degree points round',
+    worstBreak(F.star(0, 0, 100, 40, 5), 1, function (i) { return i % 2 === 0; }) < 15,
+    'tips break ' + worstBreak(F.star(0,0,100,40,5), 1, function(i){return i%2===0;}).toFixed(0));
+  h.assert('but its reflex notches are left sharp',
+    worstBreak(F.star(0, 0, 100, 40, 5), 1, function (i) { return i % 2 === 1; }) > 45,
+    'rounding a notch would fill it in');
+
+  // The gate sits below 90 on purpose: a square is exactly the shape whose pinched corner the design
+  // asked for, and whose miter shortfall is pinned above. If rounding ever reaches it, that
+  // assertion and this one disagree — which is the point of having both.
+  var sq0 = GR.inflateCurves([F.rect(0,0,100,100)], 1)[0];
+  var sq1 = GR.inflateCurves([F.rect(0,0,100,100)], 0.3)[0];
+  h.assert('a square is not rounded', worstBreak(F.rect(0, 0, 100, 100), 1) > 30,
+    'a 90 degree corner must stay a corner');
+  h.assert('and neither is a hexagon', worstBreak(F.ngon(0, 0, 100, 6), 1) > 20);
+
   h.group('inflate — invariants');
 
   // WINDING INDEPENDENCE. The original curves are deliberately NOT rewound, so the two outputs
