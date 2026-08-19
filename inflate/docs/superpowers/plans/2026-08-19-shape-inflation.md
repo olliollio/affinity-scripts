@@ -875,35 +875,78 @@ definition. A test that only checked a square would pass against the broken rule
 ```js
   h.group('thickness — the anchor measure across corner angles');
 
-  // A bisector probe at a corner of interior angle th is capped at tau/(1 - sin(th/2)) by the
+  // segT is required: segT[k] is the thickness of the segment STARTING at anchor k, measured with
+  // the same sign and the same ctx.
+  function measured(curve) {
+    var cl = GR.inflClassify([curve]), rec = cl.recs[0];
+    var ctx = GR.inflProbeCtx(rec.face, cl.tol), segT = [];
+    for (var k = 0; k < curve.segments.length; k++) {
+      segT.push(GR.inflSegmentThickness(curve.segments[k], rec.sign, ctx).t);
+    }
+    return { rec: rec, ctx: ctx, segT: segT };
+  }
+
+  // A bisector probe at a CONVEX corner of interior angle th is capped at tau/(1 - sin(th/2)) by the
   // corner's own walls and by NOTHING to do with the material. At 90 degrees that is 3.41*tau, so a
   // square slips under a fixed 4*tau floor and a square-only test passes; at 108 degrees it is
-  // 5.2*tau and a pentagon does not. Every one of these must come back as the across-flats width.
+  // 5.24*tau and a pentagon does not — measured, a pentagon read 2.75 against a true 161.80. Every
+  // one of these must come back as the across-flats width 2R*cos(pi/n): the incircle is tangent at
+  // every edge midpoint, so it is the largest disc there for odd n as well as even.
+  //
+  // Anchor 0 only is sufficient — every anchor of a regular n-gon is equivalent by symmetry — and
+  // anchor 0 is the one whose incoming tangent comes from the wrapped last segment.
+  //
+  // 8*tau against a measured error of 1 to 1.4*tau: slack enough not to be brittle, tight enough
+  // that the collapse this task fixes (t of order 2 against 162) cannot hide inside it.
   [3, 4, 5, 6, 8, 12, 24, 48].forEach(function (n) {
-    var g = F.ngon(0, 0, 100, n);
-    var cl = GR.inflClassify([g]), rec = cl.recs[0], ctx = GR.inflProbeCtx(rec.face, cl.tol);
-    var m = GR.inflAnchorMeasure(g.segments, 0, rec.sign, ctx);
+    var g = F.ngon(0, 0, 100, n), M = measured(g);
+    var m = GR.inflAnchorMeasure(g.segments, 0, M.rec.sign, M.ctx, M.segT);
     h.assertClose(n + '-gon anchor measures its across-flats width',
-      m.t, 2 * 100 * Math.cos(Math.PI / n), 8 * ctx.tau);
+      m.t, 2 * 100 * Math.cos(Math.PI / n), 8 * M.ctx.tau);
   });
+
+  // Pin the tolerance every bound above rides on. They are all multiples of ctx.tau taken from
+  // tolFor, which no other assertion fixes — raise TOL_FRAC tenfold and they all loosen in lockstep
+  // and stay green.
+  //
+  // Derived, not observed: a hexagon of circumradius 100 is 2*100*cos(30) = 173.205 wide and 200
+  // tall, so its hull DIAGONAL — which is what tolFor uses, not its width — is 264.575. Hence
+  // tol = 5e-4 * 264.575 and tau = 2*tol = 0.264575.
+  var hexDiag = Math.sqrt(Math.pow(2 * 100 * Math.cos(Math.PI / 6), 2) + Math.pow(2 * 100, 2));
+  h.assertClose('the relative tolerance yields the tau these bounds assume',
+    measured(F.ngon(0, 0, 100, 6)).ctx.tau, 2 * 5e-4 * hexDiag, 1e-6);
+
+  // THE LARGER NEIGHBOUR, NOT THE SMALLER. Every fallback anchor above has congruent neighbours, so
+  // Math.max and Math.min are indistinguishable there — both mutants survive the suite without
+  // this. A body-plus-stem polygon is the smallest shape where the two differ: at the reflex
+  // junction the body measures 40.6 and the stem 20.3, and the body's is the thickness that belongs
+  // to this anchor. Taking the stem's would crease the notch away from the body it is part of.
+  var Lshape = F.poly([0, 0, 200, 0, 200, 40, 300, 40, 300, 60, 200, 60, 200, 100, 0, 100]);
+  var LM = measured(Lshape);
+  var reflex = GR.inflAnchorMeasure(Lshape.segments, 2, LM.rec.sign, LM.ctx, LM.segT);
+  h.assert('a reflex junction does not use its own probe', reflex.useOwnProbe === false,
+    'useOwnProbe ' + reflex.useOwnProbe);
+  h.assertClose('and takes the body (40.6), not the stem (20.3)', reflex.t, 40.63, 1.0);
 
   // The other half of the same rule: at a SMOOTH anchor the anchor's own probe is the more accurate
   // measure and must be kept. On a 300x100 rounded rectangle with corner radius 20, the anchor
   // joining arc to side measures 40 by its own probe against 100 for the adjacent long side, so
   // "take the larger adjacent segment" over-reports by 2.5x at exactly the anchors where nothing
   // was wrong.
-  var rr2 = F.roundRect(0, 0, 300, 100, 20);
-  var rcl = GR.inflClassify([rr2]), rrec = rcl.recs[0], rctx = GR.inflProbeCtx(rrec.face, rcl.tol);
-  var sm = GR.inflAnchorMeasure(rr2.segments, 1, rrec.sign, rctx);
-  h.assert('smooth anchor uses its OWN probe', sm.wellPosed === true, 'wellPosed ' + sm.wellPosed);
-  h.assertClose('smooth anchor measures the arc (40), not the side (100)', sm.t, 40, 8 * rctx.tau);
+  var rr2 = F.roundRect(0, 0, 300, 100, 20), rM = measured(rr2);
+  var sm = GR.inflAnchorMeasure(rr2.segments, 1, rM.rec.sign, rM.ctx, rM.segT);
+  h.assert('smooth anchor uses its OWN probe', sm.useOwnProbe === true, 'useOwnProbe ' + sm.useOwnProbe);
+  h.assertClose('smooth anchor measures the arc (40), not the side (100)', sm.t, 40, 8 * rM.ctx.tau);
 
-  // A reflex junction: at the notch of a star the LARGER adjacent segment is the right answer, and
-  // the smaller would crease the notch away from the body it belongs to.
-  var st = F.star(0, 0, 100, 40, 5);
-  var scl = GR.inflClassify([st]), srec = scl.recs[0], sctx = GR.inflProbeCtx(srec.face, scl.tol);
-  var tip = GR.inflAnchorMeasure(st.segments, 0, srec.sign, sctx);
-  h.assert('a spike measures its LOCAL width, not the star diameter', tip.t < 60,
+  // A star's SPIKE TIP — anchor 0, a 38 degree point. NOT the notch: the notch is anchor 1, and the
+  // comment here used to name it while the assertion probed the tip. A thickness measure using a
+  // single ray, or the face's extent, would report the star's 200 diameter here.
+  //
+  // Bounded on BOTH sides. `< 60` alone would also pass at t = 2 — which is exactly the collapse
+  // this task exists to fix, so a one-sided bound here would be blind to the bug next door.
+  var st = F.star(0, 0, 100, 40, 5), sM = measured(st);
+  var tip = GR.inflAnchorMeasure(st.segments, 0, sM.rec.sign, sM.ctx, sM.segT);
+  h.assert('a spike measures its LOCAL width, not the star diameter', tip.t > 15 && tip.t < 60,
     'got ' + tip.t.toFixed(2) + ' against a diameter of 200');
 ```
 
@@ -942,7 +985,13 @@ Add to `thickness.js`, before the exports:
 ```js
   // Where the two adjacent normals cancel — a doubled-back node, a zero-width spike — the bisector
   // DIRECTION is numerically arbitrary while the displacement magnitude is not, so the anchor would
-  // shoot sideways. The threshold is on UNIT vectors and so is scale-free.
+  // shoot sideways. Both inputs are unit vectors, so |sum| is in [0, 2] whatever the artwork's
+  // scale: the threshold is scale-free by construction, not by choice of value.
+  //
+  // 1e-4 means the tangents are antiparallel to within 0.006 degrees. Float noise only makes the
+  // direction arbitrary six or so orders below that, so this is deliberately conservative — and it
+  // has no cliff, because an anchor just above the threshold falls to the larger neighbour, which
+  // is the same answer a corner would have got.
   var CUSP_EPS = 1e-4;
 
   /**
@@ -955,6 +1004,10 @@ Add to `thickness.js`, before the exports:
    * Affinity also stores a straight segment as a cubic with its handles ON the anchors, so deriving
    * a tangent from `c1 - A` returns a zero vector on every straight segment — the COMMON case, not
    * a rare one. There the chord stands in.
+   *
+   * DIRECTIONS ONLY. A handle-derived tangent is about a handle long and a chord fallback is about a
+   * segment long, so the two are not comparable in magnitude — roughly 3x apart on a circle. Every
+   * caller here normalises immediately; do not sum or compare these raw.
    */
   function tangentsAt(segs, i) {
     var n = segs.length, cur = segs[i], prv = segs[(i - 1 + n) % n];
@@ -973,9 +1026,10 @@ Add to `thickness.js`, before the exports:
   /**
    * The bisector normal and the thickness at one anchor.
    *
-   * n = normalize(n_in + n_out) is the bisector at a corner and degenerates to the perpendicular at
-   * a smooth node, with no corner/smooth threshold to pick and so no divergence between
-   * implementations.
+   * n = normalize(n_in + n_out) is the bisector at a corner and REDUCES to the perpendicular at a
+   * smooth node, with no corner/smooth threshold to pick and so no divergence between
+   * implementations. ("degenerate" is reserved in this module for rings and probes that carry no
+   * information; a smooth node is the good case.)
    *
    * THE DEGENERACY TEST. Because the probe point lies on the boundary, the largest tangent disc at
    * a CONVEX CORNER has radius zero — the nearest boundary point to a nearby interior point is not
@@ -985,44 +1039,74 @@ Add to `thickness.js`, before the exports:
    * measure, and on a rounded rectangle taking the larger adjacent segment instead over-reports by
    * 2.5x at exactly the anchors where nothing was wrong.
    *
-   * A fixed floor cannot separate those two cases. A corner of interior angle th caps its own probe
-   * at r = tau/(1 - sin(th/2)) — 3.41*tau at 90 degrees, 5.2*tau at 108, 23*tau at 165 — so any
+   * A fixed floor cannot separate those two cases. A CONVEX corner of interior angle th caps its own
+   * probe at r = tau/(1 - sin(th/2)) — 3.41*tau at 90 degrees, 5.24 at 108, 7.46 at 120 — so any
    * fixed multiple of tau is right for one angle and wrong for the rest. Measured against a fixed
    * 4*tau floor: a pentagon inflated at 100% grew by 1.05 units instead of 80.
    *
    * Rearranged, a purely corner-limited probe satisfies 2*r*(1 - sin(th/2)) == 2*tau EXACTLY, at
-   * every angle, while a probe stopped by real geometry across the material comes in under that. So
-   * the test discriminates by a factor of two and needs no angle threshold at all. |n_in + n_out|/2
-   * IS sin(th/2), and the bisector already computed it, so this costs nothing. At a smooth anchor
-   * th = 180, the left side is 0, and every probe is well posed — which is what is wanted there.
+   * every angle, while a convex probe stopped by real material comes in under that. So the test
+   * discriminates by a factor of two and needs no angle threshold at all. |n_in + n_out|/2 IS
+   * sin(th/2), and the bisector already computed it, so this costs nothing. At a smooth anchor
+   * th = 180, the left side is 0 and the own probe always wins — which is what is wanted there.
+   *
+   * TWO RULES SHARE ONE EXPRESSION, and the second is not the corner argument above. sin is not
+   * injective over (0, 360), so a REFLEX angle th and its convex complement 360 - th give the same
+   * sinHalf: a star's 249.6 degree notch and a 110.4 degree corner both give 0.8208. At a reflex
+   * vertex — any L, T, cross or notch, not just a star — the own probe is a perfectly good material
+   * measurement (measured 28.92 on a 270 degree L) and is rejected anyway. That is WANTED, for the
+   * separate reason given at the Math.max below: the larger neighbour is the value that belongs to
+   * the anchor. So this flag names a DECISION, not a defect in the probe, which is why it is called
+   * useOwnProbe rather than wellPosed.
+   */
+  /**
+   * @param {Array}  segs  the curve's segments, CLOSED: index arithmetic wraps, so anchor 0 takes
+   *                       its incoming tangent from the last segment. Open curves never reach here.
+   * @param {number} i     anchor index; the anchor is segs[i].start
+   * @param {number} sign  the ring sign from classify
+   * @param {object} ctx   from probeCtx, built with the tolerance classify flattened at
+   * @param {number[]} segT  REQUIRED. segT[k] is segmentThickness(segs[k]).t - the thickness of the
+   *                       segment STARTING at anchor k - measured with the same sign and the same
+   *                       ctx. Same length as segs. It is required rather than optional because the
+   *                       caller builds it anyway, because recomputing here probes every segment
+   *                       twice (each is a neighbour twice), and because a wrong-length or
+   *                       wrong-ctx array degrades into a plausible number rather than a throw.
+   * @returns {{n, t, cusp, useOwnProbe, own, sinHalf}}
+   *   n            unit bisector normal pointing away from the material, or null at a cusp
+   *   t            the thickness to displace by; -1 if both neighbours' probes escaped
+   *   cusp         true when there is no usable bisector; t is not meaningful, do not displace
+   *   useOwnProbe  which branch supplied t (see below)
+   *   own          the anchor's own probe, -1 if it escaped; diagnostic only
+   *   sinHalf      sin(interior angle / 2), or null when only one tangent existed
    */
   function anchorMeasure(segs, i, sign, ctx, segT) {
     var n = segs.length;
+    if (!segT || segT.length !== n) {
+      throw new Error('inflAnchorMeasure: segT is required and must be one entry per segment');
+    }
     var tg = tangentsAt(segs, i);
     var nIn = normalOf(tg.tIn.x, tg.tIn.y, sign);
     var nOut = normalOf(tg.tOut.x, tg.tOut.y, sign);
     var sum = (nIn && nOut) ? { x: nIn.x + nOut.x, y: nIn.y + nOut.y } : (nIn || nOut);
-    if (!sum) return { n: null, t: 0, cusp: true, wellPosed: false };
+    if (!sum) return { n: null, t: -1, cusp: true, useOwnProbe: false, own: -1, sinHalf: null };
     var L = Math.sqrt(sum.x * sum.x + sum.y * sum.y);
-    if (L < CUSP_EPS) return { n: null, t: 0, cusp: true, wellPosed: false };
+    if (L < CUSP_EPS) return { n: null, t: -1, cusp: true, useOwnProbe: false, own: -1, sinHalf: null };
 
     var nrm = { x: sum.x / L, y: sum.y / L };
     var ap = anchorThickness(segs[i].start.x, segs[i].start.y, nrm, ctx);
-    var sinHalf = L / 2;                                   // == sin(th/2)
-    var wellPosed = ap.r >= 0 && 2 * ap.r * (1 - sinHalf) < ctx.tau;
+    // L/2 is sin(th/2) ONLY when both tangents existed. With one, sum is a single unit vector and
+    // L is 1, which would report a 60 degree corner at what may be a straight-through point — a
+    // duplicated anchor does exactly that, and it is common in traced and imported paths. Report
+    // null rather than a fabricated angle, since this value ships in the returned object.
+    var sinHalf = (nIn && nOut) ? L / 2 : null;
+    var useOwnProbe = ap.r >= 0 && sinHalf !== null && 2 * ap.r * (1 - sinHalf) < ctx.tau;
 
-    var t;
-    if (wellPosed) {
-      t = ap.t;
-    } else if (segT) {
-      // At a reflex junction — a disc meeting a narrow stem — the LARGER value is the right one, and
-      // the smaller would crease the notch away from the disc it belongs to.
-      t = Math.max(segT[(i - 1 + n) % n], segT[i]);
-    } else {
-      t = Math.max(segmentThickness(segs[(i - 1 + n) % n], sign, ctx).t,
-                   segmentThickness(segs[i], sign, ctx).t);
-    }
-    return { n: nrm, t: t, cusp: false, wellPosed: wellPosed, own: ap.t, sinHalf: sinHalf };
+    // The LARGER of the two neighbours, not the smaller: at a reflex junction — a wide body meeting
+    // a narrow stem — the body's thickness is the one that belongs to this anchor, and taking the
+    // stem's would crease the notch away from the body. Congruent neighbours cannot show this, so
+    // the test uses a body-plus-stem polygon where the two differ 2:1.
+    var t = useOwnProbe ? ap.t : Math.max(segT[(i - 1 + n) % n], segT[i]);
+    return { n: nrm, t: t, cusp: false, useOwnProbe: useOwnProbe, own: ap.t, sinHalf: sinHalf };
   }
 ```
 
