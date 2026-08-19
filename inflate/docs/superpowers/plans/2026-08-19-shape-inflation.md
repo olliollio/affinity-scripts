@@ -404,9 +404,18 @@ function openPath() {
 /** A closed ring of zero enclosed area: out and back along the same line. */
 function degenerateRing() { return poly([0, 0, 100, 0, 50, 0]); }
 
+/**
+ * A square with a zero-width slit cut into it: the path runs up the slit and straight back down.
+ *
+ * The anchor at the slit's tip has two adjacent normals that cancel, so its bisector direction is
+ * numerically arbitrary while the displacement magnitude is not — the cusp case. No other fixture
+ * reaches it, so without this the cusp guard could be deleted and every assertion would stay green.
+ */
+function spike() { return poly([0, 0, 100, 0, 100, 100, 50, 100, 50, 40, 50, 100, 0, 100]); }
+
 module.exports = { K: K, P: P, poly: poly, rect: rect, ngon: ngon, circle: circle,
                    roundRect: roundRect, star: star, reverseCurve: reverseCurve,
-                   openPath: openPath, degenerateRing: degenerateRing };
+                   openPath: openPath, degenerateRing: degenerateRing, spike: spike };
 ```
 
 - [ ] **Step 2: Verify the fixtures are what they claim, before anything depends on them**
@@ -1276,6 +1285,31 @@ module.exports = function (GR, h) {
   h.assert('smooth input anchors stay smooth in the output', worst < 0.5,
     'worst break ' + worst.toFixed(4) + ' deg');
 
+  // WHAT THAT CONTINUITY COSTS. The bow puts each segment's midpoint exactly on the pillow surface,
+  // and then the post-pass rotates the handles at every smooth anchor, which moves it off again.
+  // The square never shows this — its corners are not smooth, so the pass skips them and the
+  // midpoint assertion above holds exactly. On a rounded rectangle every anchor IS smooth, so the
+  // pass runs everywhere and nothing else here pins the result.
+  //
+  // Measured at amount 0.5 against an intended displacement of 25: the flat side's midpoint lands
+  // 7.65 off target and the corner arc's 4.26. This assertion is a REGRESSION GUARD on a trade the
+  // design accepts, not a claim that the trade is right — whether 7.65 reads as a defect on real
+  // artwork is a question only real artwork answers.
+  var pcl = GR.inflClassify([F.roundRect(0,0,300,100,20)]), prec = pcl.recs[0];
+  var pctx = GR.inflProbeCtx(prec.face, pcl.tol), worstMid = 0;
+  for (var q = 0; q < rr2.segments.length; q++) {
+    var srcSeg = F.roundRect(0,0,300,100,20).segments[q];
+    var pst = GR.inflSegmentThickness(srcSeg, prec.sign, pctx);
+    if (!pst.n) continue;
+    var got = mid(rr2.segments[q]);
+    var target = { x: pst.M.x + pst.n.x * 0.5 * pst.t / 2,
+                   y: pst.M.y + pst.n.y * 0.5 * pst.t / 2 };
+    var off = Math.hypot(got.x - target.x, got.y - target.y);
+    if (off > worstMid) worstMid = off;
+  }
+  h.assert('the continuity pass costs no more midpoint accuracy than measured',
+    worstMid < 9.0, 'worst midpoint error ' + worstMid.toFixed(4) + ' (measured 7.65)');
+
   h.group('inflate — faces and pass-through');
   // createSetCurves replaces a node's geometry outright, so a shape with counters must rebuild ALL
   // its rings in one call. This is that case, computed in one call.
@@ -1289,6 +1323,28 @@ module.exports = function (GR, h) {
       // 70 - 0.5 * 30/2 = 62.5: the counter's wall is 30, so at amount 0.5 it closes by 7.5.
       h.assertClose('counter closes, ' + c[0], Math.max.apply(null, radii(ann[1],0,0)), 62.5, 0.25);
     });
+
+  // The cusp guard: at a zero-width slit the two adjacent normals cancel, so the bisector
+  // DIRECTION is arbitrary while the magnitude is not — an unguarded anchor shoots sideways. No
+  // other fixture reaches this branch, so without this assertion the guard could be deleted and
+  // every other test would stay green.
+  var sp = F.spike(), spOut = GR.inflateCurves([sp], 0.5)[0];
+  var tipIn = sp.segments[4].start, tipOut = spOut.segments[4].start;
+  h.assertClose('a cusp anchor is left exactly where it was',
+    Math.hypot(tipOut.x - tipIn.x, tipOut.y - tipIn.y), 0, 1e-12);
+  h.assert('and the cusp is named in the notes',
+    spOut.notes.join(' ').indexOf('cusp') >= 0, 'notes: ' + spOut.notes.join('; '));
+
+  // Output points must not be shared between adjacent segments. out[i].end and out[i+1].start are
+  // the same ANCHOR but must be different OBJECTS: a consumer that maps points in place - which is
+  // exactly what writing back through an inverse transform looks like - would otherwise transform
+  // every shared anchor twice, shearing the shape while node count and closedness stay correct.
+  var al = GR.inflateCurves([F.rect(0, 0, 100, 100)], 0.5)[0];
+  h.assert('adjacent segments do not share point objects',
+    al.segments[0].end !== al.segments[1].start);
+  var srcCurve = F.openPath(), thruOut = GR.inflateCurves([srcCurve], 1)[0];
+  h.assert('a passed-through curve does not share the input array',
+    thruOut.segments !== srcCurve.segments);
 
   var thru = GR.inflateCurves([F.openPath(), F.degenerateRing()], 1);
   h.assertEqual('an open path is copied through', thru[0].segments[1].end.x, 100);
@@ -1401,7 +1457,13 @@ Expected: `GR.inflateCurves is not a function`.
         b = dot(sub(Mt, Mn), nM) / 0.75;
       }
       var bow = nM ? mul(nM, b) : { x: 0, y: 0 };
-      out.push({ start: Ap[i], c1: add(c1n, bow), c2: add(c2n, bow), end: Ap[j] });
+      // COPIES of the anchors, not the Ap entries themselves. Ap[j] is also Ap[i] of the next
+      // segment, so pushing the object would make out[i].end and out[i+1].start the SAME point -
+      // and a consumer that maps points in place would then transform every shared anchor twice.
+      // The shape shears while node count and closedness stay perfectly correct, which is the kind
+      // of wrong that survives every structural assertion.
+      out.push({ start: { x: Ap[i].x, y: Ap[i].y }, c1: add(c1n, bow),
+                 c2: add(c2n, bow), end: { x: Ap[j].x, y: Ap[j].y } });
     }
 
     // --- restore tangent continuity where the INPUT was smooth --------------------
@@ -1434,7 +1496,15 @@ Expected: `GR.inflateCurves is not a function`.
     for (var i = 0; i < cl.recs.length; i++) {
       var r = cl.recs[i];
       if (r.skip) {
-        out.push({ segments: r.curve.segments, isClosed: r.curve.isClosed,
+        // Copied, not shared: returning the caller's own segment array would let a consumer that
+        // maps points in place mutate the input curve it was handed.
+        var copy = [];
+        for (var k = 0; k < r.curve.segments.length; k++) {
+          var sg = r.curve.segments[k];
+          copy.push({ start: { x: sg.start.x, y: sg.start.y }, c1: { x: sg.c1.x, y: sg.c1.y },
+                      c2: { x: sg.c2.x, y: sg.c2.y }, end: { x: sg.end.x, y: sg.end.y } });
+        }
+        out.push({ segments: copy, isClosed: r.curve.isClosed,
                    notes: ['copied through unchanged: ' + r.skip] });
         continue;
       }
@@ -1939,8 +2009,17 @@ Two things in the spec are explicitly unmeasured, and this is their calibration:
 
 - **Whether displacement should be LINEAR in `t`.** It is the one shape heuristic left. The bow is
   derived from it rather than tuned alongside it, so there is no second parameter to trade against.
-- **How visible the re-collinearising post-pass's midpoint error is.** It trades midpoint accuracy
-  for continuity, and nothing in the design predicts how that looks.
+- **How visible the re-collinearising post-pass's midpoint error is.** The error itself is now
+  MEASURED — what is unknown is whether it reads as a defect. The bow puts each segment's midpoint
+  exactly on the pillow surface; the post-pass then rotates the handles at every smooth anchor and
+  moves it off again. On a 300x100 rounded rectangle at `amount = 0.5`, against an intended
+  displacement of 25, the flat side's midpoint lands **7.65 off target** and the corner arc's
+  **4.26**. A regression guard pins that so it cannot silently worsen.
+
+  **Look at this first in the exported SVG.** A square will not show it — its corners are not
+  smooth, so the pass skips them — so judge it on the ellipse and the rounded rectangle. If the
+  bulge reads as flattened or lopsided at the middle of a long side, this is the cause, and the
+  fix to weigh is applying the bow AFTER collinearising rather than before.
 
 Do not change either without a real output in hand. Record what the run showed in the spec's
 "Known risks" section, replacing the prediction with the measurement.
