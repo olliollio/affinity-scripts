@@ -4,15 +4,22 @@ var F = require('./fixtures');
 module.exports = function (GR, h) {
   h.group('thickness — classification and sign');
 
-  // tau over-reports by tau/(1 - cos th) where th is the angle the binding wall makes with the
-  // probe path. Head-on (a slab, a disc, an annulus wall, a flat side) that is exactly tau. Across
-  // a convex corner it is not: on this rounded rectangle the binding wall is the top edge at 45
-  // degrees, giving 6.8*tau. That is a property of the geometry, not a slack to be tightened.
+  // tau inflates the probe RADIUS by tau/(1 - cos th), where th is the angle between the binding
+  // wall and the probe path. t = 2r, so the error in t is DOUBLE that - the two numbers below are
+  // easy to conflate and the factor of two is real, not a fudge.
   //
-  // The head-on over-report is EXACTLY tau by construction, so asserting "within tau" is asserting
-  // equality at the boundary and fails on floating-point dust — measured at 6.7e-15 over, on the
-  // annulus. Every head-on tolerance below therefore carries a 1% margin, which is slack against
-  // arithmetic and not against the geometry.
+  // Head-on, the radius error is tau/2 and the t error is tau: measured exactly on the slab and the
+  // annulus wall, and 0.858*tau on the disc, where the flattening deficit partly cancels it. So a
+  // head-on tolerance of tau is an upper bound.
+  //
+  // Across a convex corner it is not head-on. On this rounded rectangle the probe centre passes the
+  // corner arc's own centre and the binding walls become the top and right edges, symmetric at 45
+  // degrees to the probe path: tau/(1 - cos 45) = 3.41*tau of radius error, measured 3.38, so
+  // 6.8*tau on t, measured 6.76. That is a property of the geometry, not slack to be tightened.
+  //
+  // Head-on being an EXACT upper bound is what makes "within tau" an assertion of equality at the
+  // boundary, which fails on floating-point dust - measured 6.7e-15 over, on the annulus. Every
+  // head-on tolerance below therefore carries a 1% margin: slack against arithmetic, not geometry.
   var MARGIN = 1.01;
 
   function one(curves, tol) {
@@ -21,6 +28,12 @@ module.exports = function (GR, h) {
   }
 
   var TOL = 0.1;   // absolute here ONLY so these unit numbers stay hand-checkable
+
+  // Every tolerance below is a multiple of ctx.tau, so widening tau would loosen the whole suite in
+  // lockstep and stay green while accuracy degraded. The tau = 0 test at the bottom pins the floor;
+  // this pins the ceiling. tau = 2*tol + float dust, and TOL is 0.1 here.
+  h.assertClose('tau is twice the flatten tolerance',
+    GR.inflProbeCtx(GR.inflClassify([F.rect(0, 0, 40, 400)], TOL).recs[0].face, TOL).tau, 0.2, 1e-6);
 
   var slab = one([F.rect(0, 0, 40, 400)], TOL);
   h.assertClose('slab of width 40 measures 40',
@@ -66,6 +79,23 @@ module.exports = function (GR, h) {
   h.assertClose('mirrored winding measures the same thickness',
     GR.inflSegmentThickness(revd.recs[0].curve.segments[0], revd.recs[0].sign,
                             GR.inflProbeCtx(revd.recs[0].face, TOL)).t, 200, disc.ctx.tau * MARGIN);
+
+  h.group('thickness — the tolerance classify chose is the one the probe must use');
+  // Every other assertion here hands classify an explicit TOL, which leaves TOL_FRAC, hullDiagonal
+  // and tolFor untested — and hides the coupling that matters: classify picks ONE tolerance for the
+  // whole selection from the hull of every curve, so a face's own box is not what its rings were
+  // flattened at. A letter "i" is the smallest shape where those diverge. classify's hull is 408
+  // across and picks tol 0.2040, while the dot's own box is 70.7 and would pick 0.0354 — a tau five
+  // times too small to cover chords flattened at the stem's scale. Measured, the dot then reads
+  // 31.00 against a true 50: not a zero that fails loudly, a plausible number that ships as "the
+  // dots on the i's look under-inflated". probeCtx now REQUIRES the tolerance for that reason, and
+  // this measures the small face at the tolerance classify actually used.
+  var stem = F.rect(0, 0, 40, 300), dot = F.circle(20, -80, 25);
+  var iCls = GR.inflClassify([stem, dot]);            // no explicit tol: tolFor picks it
+  var dotCtx = GR.inflProbeCtx(iCls.recs[1].face, iCls.tol);
+  h.assertEqual('an "i" is two faces', iCls.faces.length, 2);
+  h.assertClose('the small face measures at the SELECTION tolerance, not its own',
+    GR.inflSegmentThickness(dot.segments[0], iCls.recs[1].sign, dotCtx).t, 50, dotCtx.tau * MARGIN);
 
   h.group('thickness — pass-through cases');
   var pt = GR.inflClassify([F.openPath(), F.degenerateRing()], TOL);

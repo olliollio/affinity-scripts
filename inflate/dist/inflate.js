@@ -1403,7 +1403,8 @@ var GR = {};
   // Relative: a handle counts as collapsed when it sits within this fraction of the chord length of
   // its anchor. flatten.js's LINE_EPS is module-local and ABSOLUTE; the SDK reference says a
   // straight segment stores `c1 ~= start`, not `c1 == start`, so an absolute threshold would be a
-  // guess against unverified data. UNVERIFIED against real curves until Task 9 probes it.
+  // guess against unverified data. This threshold has NOT been validated against real Affinity
+  // curve data; the first real run is what sets it from measurement rather than from a guess.
   var LINE_EPS = 1e-6;
 
   // The flatten tolerance, as a fraction of the face's bounding-box diagonal. RELATIVE, not the
@@ -1412,6 +1413,10 @@ var GR = {};
   // tolerance gives -600%; this gives the same 1.0% at every scale.
   var TOL_FRAC = 5e-4;
 
+  // Area goes as length squared, so a ring's area is judged against diag*diag rather than against
+  // diag. 1e-9 sits far below anything a real shape produces and far above float dust. The diagonal
+  // is the FACE's box, not the ring's own, so a small counter is judged at the scale it will be
+  // inflated at rather than at its own - a tiny hole in a huge glyph is not thereby "degenerate".
   var ZERO_AREA_REL = 1e-9;
 
   function collapsed(cx, cy, ax, ay, chordLen) {
@@ -1435,8 +1440,13 @@ var GR = {};
    * (ey, -ex)/|e|, times the ring sign.
    *
    * That formula points OUT of the enclosed region of a positively-wound ring and INTO it for a
-   * negatively-wound one. So with outer rings signed +1 and counters -1, one formula points away
-   * from the MATERIAL everywhere: outward on an outer ring, into the void on a hole.
+   * negatively-wound one. Multiplying by the ring sign makes ONE formula point away from the
+   * MATERIAL everywhere: outward on an outer ring, into the void on a counter.
+   *
+   * The sign is NOT simply +1 outer / -1 counter. It is the ring's ROLE times its OWN WINDING,
+   * because (ey, -ex) already points into the void of a negatively-wound hole and needs no flip
+   * there - so such a hole signs +1. classify computes that product; do not "correct" it to a
+   * constant.
    */
   function normalOf(dx, dy, sign) {
     var len = Math.sqrt(dx * dx + dy * dy);
@@ -1490,7 +1500,7 @@ var GR = {};
    * ring sign.
    *
    * The original curves are NOT rewound. Reversing them would reorder the output nodes, and node
-   * order is what this feature exists to preserve, so the sign is carried alongside instead — one
+   * order is what this feature exists to preserve, so the sign is carried alongside instead — a
    * shoelace per ring, not a test per anchor.
    *
    * buildFaces pushes the CALLER'S array references, so a face's ring is mapped back to the curve
@@ -1512,6 +1522,10 @@ var GR = {};
     for (i = 0; i < recs.length; i++) if (recs[i].ring) rings.push(recs[i].ring);
     var faces = GR.buildFaces(rings);
 
+    // The linear scan is deliberate and should stay. buildFaces is already O(n^2) over these same
+    // rings, so an index here would not change the shape of the cost; and the two ways to build one
+    // are both worse - an ES6 Map is against house style, and stamping an id onto the ring arrays
+    // would mutate the caller's data, which the paragraph above promises not to do.
     function tag(ring, face, outerSign) {
       for (var k = 0; k < recs.length; k++) {
         if (recs[k].ring === ring) {                       // identity, not value
@@ -1550,9 +1564,21 @@ var GR = {};
    * is the sagitta bound plus a factor of two.
    */
   function probeCtx(face, flattenTol) {
+    // flattenTol is REQUIRED, and must be the tolerance this face's rings were actually flattened
+    // at - classify returns it as `.tol` for exactly this reason. It cannot be defaulted here:
+    // classify picks one tolerance for the whole SELECTION, from the hull of every curve, while a
+    // face knows only its own box. On a letter "i" those differ by 5x, and a tau computed from the
+    // dot's own box is too small to cover chords flattened at the stem's scale - the dot then
+    // measures 31.0 against a true 50. That is the tau-collapse this module's own test guards,
+    // reached through a default. It degrades into a PLAUSIBLE number rather than a zero, so it
+    // would ship as "the dots on the i's look under-inflated" rather than as a failure.
+    if (typeof flattenTol !== 'number' || !isFinite(flattenTol)) {
+      throw new Error('inflProbeCtx: flattenTol is required - pass the tol classify() returned');
+    }
     var diag = faceBBoxDiagonal(face);
-    var tol = flattenTol === undefined ? TOL_FRAC * diag : flattenTol;
-    return { face: face, tau: 2 * tol + 1e-9 * diag, maxR: diag / 2, diag: diag };
+    // The 1e-9*diag term is float dust, scaled so it stays meaningful on large artwork; 2*tol is
+    // the part that does the work, and the paragraph above is about that.
+    return { face: face, tau: 2 * flattenTol + 1e-9 * diag, maxR: diag / 2, diag: diag };
   }
 
   /**
@@ -1569,6 +1595,8 @@ var GR = {};
    * would yield a plausible t in silence; pointInFace is what catches that.
    */
   function probeRadius(px, py, nx, ny, face, maxR, tau) {
+    // 60 halvings drive the bracket below the last representable bit of maxR, far past any accuracy
+    // tau permits claiming. Deliberate slack, not a tuned count: 52 is already bit-identical.
     var lo = 0, hi = maxR;
     for (var it = 0; it < 60; it++) {
       var mid = (lo + hi) / 2;
@@ -1583,7 +1611,9 @@ var GR = {};
     var M = midPoint(seg), T = midTangent(seg);
     var n = normalOf(T.x, T.y, sign);
     if (!n) n = normalOf(seg.end.x - seg.start.x, seg.end.y - seg.start.y, sign);
-    if (!n) return { t: 0, r: 0, M: M, n: null };
+    // -1, matching anchorThickness. A 0 here would be indistinguishable from a legitimate
+    // zero-radius tangency, and a caller scaling a displacement by t would silently use it.
+    if (!n) return { t: -1, r: -1, M: M, n: null };
     var r = probeRadius(M.x, M.y, n.x, n.y, ctx.face, ctx.maxR, ctx.tau);
     return { t: r < 0 ? -1 : 2 * r, r: r, M: M, n: n };
   }
