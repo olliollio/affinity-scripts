@@ -1626,7 +1626,13 @@ var GR = {};
 
   // Where the two adjacent normals cancel — a doubled-back node, a zero-width spike — the bisector
   // DIRECTION is numerically arbitrary while the displacement magnitude is not, so the anchor would
-  // shoot sideways. The threshold is on UNIT vectors and so is scale-free.
+  // shoot sideways. The threshold is on UNIT vectors, so L lies in [0, 2] whatever the artwork's
+  // scale and the number is scale-free.
+  //
+  // 1e-4 is deliberately conservative, not derived: it is antiparallel to within 0.006 degrees,
+  // some orders above where float noise actually makes the direction arbitrary. There is no cliff
+  // at it either way — an anchor just ABOVE the threshold has a near-zero probe and falls to the
+  // larger neighbour, which is the same displacement magnitude a cusp would want anyway.
   var CUSP_EPS = 1e-4;
 
   /**
@@ -1639,6 +1645,15 @@ var GR = {};
    * Affinity also stores a straight segment as a cubic with its handles ON the anchors, so deriving
    * a tangent from `c1 - A` returns a zero vector on every straight segment — the COMMON case, not
    * a rare one. There the chord stands in.
+   *
+   * DIRECTIONS ONLY. The two returned vectors are not comparable in magnitude: a handle-derived
+   * tangent is about a handle long and a chord fallback about a segment long, some 3x apart on a
+   * quarter-arc, and one of each is the normal case at a line/arc junction. Normalize before doing
+   * anything with them; never sum or compare them raw.
+   *
+   * PRECONDITION: a CLOSED ring. `(i - 1 + n) % n` wraps, so anchor 0 takes its incoming tangent
+   * from the last segment, which is the previous segment only when the ring closes. classify marks
+   * open curves for pass-through and they never reach here.
    */
   function tangentsAt(segs, i) {
     var n = segs.length, cur = segs[i], prv = segs[(i - 1 + n) % n];
@@ -1657,8 +1672,8 @@ var GR = {};
   /**
    * The bisector normal and the thickness at one anchor.
    *
-   * n = normalize(n_in + n_out) is the bisector at a corner and degenerates to the perpendicular at
-   * a smooth node, with no corner/smooth threshold to pick and so no divergence between
+   * n = normalize(n_in + n_out) is the bisector at a corner and reduces to the perpendicular at a
+   * smooth node, with no corner/smooth threshold to pick and so no divergence between
    * implementations.
    *
    * THE DEGENERACY TEST. Because the probe point lies on the boundary, the largest tangent disc at
@@ -1669,44 +1684,70 @@ var GR = {};
    * measure, and on a rounded rectangle taking the larger adjacent segment instead over-reports by
    * 2.5x at exactly the anchors where nothing was wrong.
    *
-   * A fixed floor cannot separate those two cases. A corner of interior angle th caps its own probe
-   * at r = tau/(1 - sin(th/2)) — 3.41*tau at 90 degrees, 5.2*tau at 108, 23*tau at 165 — so any
-   * fixed multiple of tau is right for one angle and wrong for the rest. Measured against a fixed
-   * 4*tau floor: a pentagon inflated at 100% grew by 1.05 units instead of 80.
+   * A fixed floor cannot separate those two cases. A CONVEX corner of interior angle th caps its
+   * own probe at r = tau/(1 - sin(th/2)) — 3.41*tau at 90 degrees, 5.24*tau at 108, 7.46*tau at
+   * 120 — so any fixed multiple of tau is right for one angle and wrong for the rest. Measured
+   * against a fixed 4*tau floor: a pentagon inflated at 100% grew by 1.05 units instead of 80.
    *
    * Rearranged, a purely corner-limited probe satisfies 2*r*(1 - sin(th/2)) == 2*tau EXACTLY, at
    * every angle, while a probe stopped by real geometry across the material comes in under that. So
    * the test discriminates by a factor of two and needs no angle threshold at all. |n_in + n_out|/2
    * IS sin(th/2), and the bisector already computed it, so this costs nothing. At a smooth anchor
    * th = 180, the left side is 0, and every probe is well posed — which is what is wanted there.
+   *
+   * TWO RULES SHARE ONE EXPRESSION, and the second is not the corner argument above. sin is not
+   * injective over (0, 360), so a REFLEX angle th and its convex complement 360 - th give the same
+   * sinHalf: a star's 249.6 degree notch and a 110.4 degree corner both give 0.8208. At a reflex
+   * vertex — any L, T, cross or notch, not just a star — the own probe is a perfectly good material
+   * measurement (measured 28.92 on a 270 degree L) and is rejected anyway. That is WANTED, for the
+   * separate reason given at the Math.max below: the larger neighbour is the value that belongs to
+   * the anchor. So this flag names a DECISION, not a defect in the probe, which is why it is called
+   * useOwnProbe rather than wellPosed.
+   *
+   * @param {Array} segs   the ring's segments, in node order.
+   * @param {number} i     the anchor's index; the anchor is `segs[i].start`.
+   * @param {number} sign  the ring sign from classify — see normalOf.
+   * @param {Object} ctx   the probe context from probeCtx, for THIS anchor's face.
+   * @param {Array<number>} segT  REQUIRED, one entry per segment: segT[k] is the thickness of the
+   *   segment STARTING at anchor k, measured with the same `sign` and the same `ctx`. It is not
+   *   recomputed here, because every segment is a neighbour twice and doing so probes the whole
+   *   ring twice; and because an array from another sign or another ctx degrades into a plausible
+   *   number rather than a throw, which is the failure class probeCtx now throws to prevent.
+   * @returns {Object}
+   *   n     {x,y} unit bisector pointing away from the material, or null at a cusp.
+   *   t     the thickness to displace by, or -1 where no measure exists.
+   *   cusp  true when the two normals cancelled and no direction can be had.
+   *   useOwnProbe  true when `t` came from this anchor's own probe rather than from a neighbour.
+   *   own   this anchor's own probe thickness, whether or not it was used; -1 at a cusp.
+   *   sinHalf  sin(th/2) for interior angle th, or null when only one tangent existed.
    */
   function anchorMeasure(segs, i, sign, ctx, segT) {
     var n = segs.length;
+    if (!segT || segT.length !== n) {
+      throw new Error('inflAnchorMeasure: segT is required and must be one entry per segment');
+    }
     var tg = tangentsAt(segs, i);
     var nIn = normalOf(tg.tIn.x, tg.tIn.y, sign);
     var nOut = normalOf(tg.tOut.x, tg.tOut.y, sign);
     var sum = (nIn && nOut) ? { x: nIn.x + nOut.x, y: nIn.y + nOut.y } : (nIn || nOut);
-    if (!sum) return { n: null, t: 0, cusp: true, wellPosed: false };
+    if (!sum) return { n: null, t: -1, cusp: true, useOwnProbe: false, own: -1, sinHalf: null };
     var L = Math.sqrt(sum.x * sum.x + sum.y * sum.y);
-    if (L < CUSP_EPS) return { n: null, t: 0, cusp: true, wellPosed: false };
+    if (L < CUSP_EPS) return { n: null, t: -1, cusp: true, useOwnProbe: false, own: -1, sinHalf: null };
 
     var nrm = { x: sum.x / L, y: sum.y / L };
     var ap = anchorThickness(segs[i].start.x, segs[i].start.y, nrm, ctx);
-    var sinHalf = L / 2;                                   // == sin(th/2)
-    var wellPosed = ap.r >= 0 && 2 * ap.r * (1 - sinHalf) < ctx.tau;
+    // L/2 is sin(th/2) ONLY when both tangents existed. With one, sum is a single unit vector and
+    // L is 1, which would report a 60 degree corner at what may be a straight-through point — a
+    // duplicated anchor does exactly that, and it is common in traced and imported paths. Report
+    // null rather than a fabricated angle, since this value ships in the returned object.
+    var sinHalf = (nIn && nOut) ? L / 2 : null;
+    var useOwnProbe = ap.r >= 0 && sinHalf !== null && 2 * ap.r * (1 - sinHalf) < ctx.tau;
 
-    var t;
-    if (wellPosed) {
-      t = ap.t;
-    } else if (segT) {
-      // At a reflex junction — a disc meeting a narrow stem — the LARGER value is the right one, and
-      // the smaller would crease the notch away from the disc it belongs to.
-      t = Math.max(segT[(i - 1 + n) % n], segT[i]);
-    } else {
-      t = Math.max(segmentThickness(segs[(i - 1 + n) % n], sign, ctx).t,
-                   segmentThickness(segs[i], sign, ctx).t);
-    }
-    return { n: nrm, t: t, cusp: false, wellPosed: wellPosed, own: ap.t, sinHalf: sinHalf };
+    // THE LARGER NEIGHBOUR. At a reflex junction — a disc meeting a narrow stem, the inside corner
+    // of an L — the anchor belongs to the thick body it is part of, and taking the stem's smaller
+    // value instead would crease the notch away from that body.
+    var t = useOwnProbe ? ap.t : Math.max(segT[(i - 1 + n) % n], segT[i]);
+    return { n: nrm, t: t, cusp: false, useOwnProbe: useOwnProbe, own: ap.t, sinHalf: sinHalf };
   }
 
   GR.INFL_LINE_EPS = LINE_EPS;

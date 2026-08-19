@@ -113,16 +113,38 @@ module.exports = function (GR, h) {
 
   h.group('thickness — the anchor measure across corner angles');
 
+  // segT is required: segT[k] is the thickness of the segment STARTING at anchor k, measured with
+  // the same sign and the same ctx.
+  function measured(curve) {
+    var cl = GR.inflClassify([curve]), rec = cl.recs[0];
+    var ctx = GR.inflProbeCtx(rec.face, cl.tol), segT = [];
+    for (var k = 0; k < curve.segments.length; k++) {
+      segT.push(GR.inflSegmentThickness(curve.segments[k], rec.sign, ctx).t);
+    }
+    return { rec: rec, ctx: ctx, segT: segT };
+  }
+
+  // Every bound in this group is a multiple of ctx.tau, and tau comes from tolFor, which nothing
+  // else here pins: raise TOL_FRAC tenfold and the whole group loosens together and stays green.
+  // So derive one. tolFor uses the hull DIAGONAL, not the width - a hexagon of circumradius 100 is
+  // 2*100*cos(30) = 173.205 across the flats and 200 tall, so the diagonal is 264.575 and
+  // tau = 2 * 5e-4 * 264.575.
+  var hexCls = GR.inflClassify([F.ngon(0, 0, 100, 6)]);
+  h.assertClose('the hexagon these bounds ride on has tau = 0.264575',
+    GR.inflProbeCtx(hexCls.recs[0].face, hexCls.tol).tau, 0.264575, 1e-6);
+
   // A bisector probe at a corner of interior angle th is capped at tau/(1 - sin(th/2)) by the
   // corner's own walls and by NOTHING to do with the material. At 90 degrees that is 3.41*tau, so a
   // square slips under a fixed 4*tau floor and a square-only test passes; at 108 degrees it is
-  // 5.2*tau and a pentagon does not. Every one of these must come back as the across-flats width.
+  // 5.24*tau and a pentagon does not. Every one of these must come back as the across-flats width.
+  //
+  // 8*tau is deliberate slack, not a tuned number: the measured error across this sweep is 1 to
+  // 1.4*tau, so the bound has room to spare and still fails a collapse by two orders of magnitude.
   [3, 4, 5, 6, 8, 12, 24, 48].forEach(function (n) {
-    var g = F.ngon(0, 0, 100, n);
-    var cl = GR.inflClassify([g]), rec = cl.recs[0], ctx = GR.inflProbeCtx(rec.face, cl.tol);
-    var m = GR.inflAnchorMeasure(g.segments, 0, rec.sign, ctx);
+    var g = F.ngon(0, 0, 100, n), M = measured(g);
+    var m = GR.inflAnchorMeasure(g.segments, 0, M.rec.sign, M.ctx, M.segT);
     h.assertClose(n + '-gon anchor measures its across-flats width',
-      m.t, 2 * 100 * Math.cos(Math.PI / n), 8 * ctx.tau);
+      m.t, 2 * 100 * Math.cos(Math.PI / n), 8 * M.ctx.tau);
   });
 
   // The other half of the same rule: at a SMOOTH anchor the anchor's own probe is the more accurate
@@ -130,17 +152,38 @@ module.exports = function (GR, h) {
   // joining arc to side measures 40 by its own probe against 100 for the adjacent long side, so
   // "take the larger adjacent segment" over-reports by 2.5x at exactly the anchors where nothing
   // was wrong.
-  var rr2 = F.roundRect(0, 0, 300, 100, 20);
-  var rcl = GR.inflClassify([rr2]), rrec = rcl.recs[0], rctx = GR.inflProbeCtx(rrec.face, rcl.tol);
-  var sm = GR.inflAnchorMeasure(rr2.segments, 1, rrec.sign, rctx);
-  h.assert('smooth anchor uses its OWN probe', sm.wellPosed === true, 'wellPosed ' + sm.wellPosed);
-  h.assertClose('smooth anchor measures the arc (40), not the side (100)', sm.t, 40, 8 * rctx.tau);
+  var rr2 = F.roundRect(0, 0, 300, 100, 20), RM = measured(rr2);
+  var sm = GR.inflAnchorMeasure(rr2.segments, 1, RM.rec.sign, RM.ctx, RM.segT);
+  h.assert('smooth anchor uses its OWN probe', sm.useOwnProbe === true,
+    'useOwnProbe ' + sm.useOwnProbe);
+  h.assertClose('smooth anchor measures the arc (40), not the side (100)', sm.t, 40, 8 * RM.ctx.tau);
 
-  // A reflex junction: at the notch of a star the LARGER adjacent segment is the right answer, and
-  // the smaller would crease the notch away from the body it belongs to.
-  var st = F.star(0, 0, 100, 40, 5);
-  var scl = GR.inflClassify([st]), srec = scl.recs[0], sctx = GR.inflProbeCtx(srec.face, scl.tol);
-  var tip = GR.inflAnchorMeasure(st.segments, 0, srec.sign, sctx);
-  h.assert('a spike measures its LOCAL width, not the star diameter', tip.t < 60,
-    'got ' + tip.t.toFixed(2) + ' against a diameter of 200');
+  // Anchor 0 of a star is a spike TIP, not a notch. A one-sided `< 60` also passes at t = 2, which
+  // is precisely the collapse this rule exists to prevent, so bound it from below as well: the
+  // spike's own local width is about 25 against a star diameter of 200.
+  var st = F.star(0, 0, 100, 40, 5), SM = measured(st);
+  var tip = GR.inflAnchorMeasure(st.segments, 0, SM.rec.sign, SM.ctx, SM.segT);
+  h.assert('a spike measures its LOCAL width, not the star diameter and not zero',
+    tip.t > 15 && tip.t < 60, 'got ' + tip.t.toFixed(2) + ' against a diameter of 200');
+
+  // THE LARGER NEIGHBOUR, NOT THE SMALLER. Every fallback anchor above has congruent neighbours, so
+  // Math.max and Math.min are indistinguishable there — both mutants survive the suite without
+  // this. A body-plus-stem polygon is the smallest shape where the two differ: at the reflex
+  // junction the body measures 40.6 and the stem 20.3, and the body's is the thickness that belongs
+  // to this anchor. Taking the stem's would crease the notch away from the body it is part of.
+  var Lshape = F.poly([0, 0, 200, 0, 200, 40, 300, 40, 300, 60, 200, 60, 200, 100, 0, 100]);
+  var LM = measured(Lshape);
+  var reflex = GR.inflAnchorMeasure(Lshape.segments, 2, LM.rec.sign, LM.ctx, LM.segT);
+  h.assert('a reflex junction does not use its own probe', reflex.useOwnProbe === false,
+    'useOwnProbe ' + reflex.useOwnProbe);
+  h.assertClose('and takes the body (40.6), not the stem (20.3)', reflex.t, 40.63, 1.0);
+
+  // segT is not optional. Without it a caller gets a plausible number from a recompute that may
+  // have used another sign or another ctx; with the throw, a wrong array cannot ship silently.
+  h.assertThrows('anchorMeasure refuses a missing segT', function () {
+    GR.inflAnchorMeasure(Lshape.segments, 2, LM.rec.sign, LM.ctx);
+  });
+  h.assertThrows('anchorMeasure refuses a segT of the wrong length', function () {
+    GR.inflAnchorMeasure(Lshape.segments, 2, LM.rec.sign, LM.ctx, LM.segT.slice(1));
+  });
 };
