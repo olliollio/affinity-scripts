@@ -28,15 +28,14 @@
     ctl.setShowPopupSlider(true);
     ctl.precision = 0;
     // What the label "Inflate %" cannot say: growth follows LOCAL thickness (so a fat body swells
-    // and a thin arm barely moves), what a notch does (stays pinched, does not swell shut), what an
-    // outward corner does (grows past the flat-wall doubling, because two walls push it at once —
-    // see the P' formula in inflate.js), and the two inputs that silently do nothing: live shapes
-    // (need Convert to Curves first — inflate only ever moves curve anchors) and open paths (no
-    // enclosed material to measure, copied through as drawn).
+    // and a thin arm barely moves), what a corner does (a bisector move only delivers cos(45) of
+    // itself perpendicular to each edge, so a corner falls SHORT of the flat-wall doubling — that
+    // shortfall is the pinched-corner look, not a bug in it), and the one input that silently does
+    // nothing: live shapes (need Convert to Curves first — inflate only ever moves curve anchors).
     col.addText('Grows each shape by the room inside it: a fat body swells, a thin arm barely ' +
-                'moves, a notch stays pinched rather than closing up. 100% doubles the thickness ' +
-                '— more at an outward corner, where two walls both push. Live shapes are skipped, ' +
-                'left unchanged — Convert to Curves first. Re-run to compound; undo to dial back.');
+                'moves, and corners stay pinched rather than rounding off. 100% doubles the ' +
+                'thickness across a flat span. Live shapes are skipped unchanged — Convert to ' +
+                'Curves first. Re-run to compound; undo to dial back.');
 
     if (dlg.runModal() !== DialogResult.Ok) return null;
     return { amount: Math.max(0, Math.min(100, ctl.value)) / 100 };
