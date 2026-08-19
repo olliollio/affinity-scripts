@@ -23,6 +23,24 @@
   // collapsed at all. 0.9 leaves room for a genuine strong bulge; a quarter-circle sits at 0.39.
   var HANDLE_MAX = 0.9;
 
+  // How far a sharp CONVEX corner may be pushed toward keeping pace with its own edges. 1 leaves
+  // the re-entrant spikes; unbounded is a miter join, which spikes the other way.
+  var CORNER_BOOST_MAX = 1.6;
+
+  // No ring may close by more than this fraction of its OWN inradius.
+  //
+  // A counter closes by amount*t/2 per side, where t is the WALL around it - and nothing in that
+  // relates to the size of the hole. The A's counter has an inradius of 33.9 while its wall
+  // measures 90, so at 100% it is asked to close by 45, a third more than it has, and it vanishes
+  // outright at 75%. Node count is preserved so it cannot simply be dropped; uncapped it degenerates
+  // into a leaf with a folded tail.
+  //
+  // The cap is on the RING, applied to its anchors and its midpoint targets alike - capping anchors
+  // alone leaves the bow to pull every side into the centroid, which is the same lesson every other
+  // cap here had to learn. It only ever binds where a ring is closing, which for an outer ring is
+  // never: an outer ring's anchors move outward and its inradius grows.
+  var CLOSURE_MAX = 0.45;
+
   /** Largest L in [0,1] with |chord + L*delta| >= floor*|chord|. */
   function maxScale(chord, delta, floor) {
     var cc = chord.x * chord.x + chord.y * chord.y;
@@ -57,7 +75,7 @@
    * b    = dot(M' - M_naive, n_M) / 0.75
    * c1'  = A' + h1*s + n_M*b        c2' = B' + h2*s + n_M*b
    */
-  function inflateCurve(curve, sign, ctx, amount) {
+  function inflateCurve(curve, sign, ctx, amount, inradius) {
     var segs = curve.segments, n = segs.length, i;
     var notes = [];
 
@@ -85,7 +103,52 @@
         Ap.push({ x: segs[i].start.x, y: segs[i].start.y });
         continue;
       }
-      Ap.push(add(segs[i].start, mul(m.n, amount * m.t / 2)));
+      // A bisector move delivers only sin(th/2) of itself PERPENDICULAR to its own two edges, so a
+      // sharp corner falls further behind its edges than a blunt one: measured 0.57 at 70 degrees
+      // against 0.81 at 109. Past about 80 degrees the edges swell right past the corner and the
+      // outline goes out-in-out - a re-entrant dip that reads as a spike, and it is the opposite of
+      // what an inflated object does with a sharp corner, which is round it off MORE.
+      //
+      // Compensate toward keeping pace, with 90 degrees as the reference so the square's measured
+      // miter shortfall is untouched, and a cap because FULL compensation is exactly a miter join,
+      // and miters blow out without bound as the angle closes. Convex corners only: at a reflex
+      // vertex the anchor moves into a notch and needs no help getting there.
+      var boost = 1;
+      if (m.sinHalf !== null && m.sinHalf > 1e-6 && !m.reflex) {
+        boost = Math.SQRT1_2 / m.sinHalf;
+        if (boost < 1) boost = 1;
+        if (boost > CORNER_BOOST_MAX) boost = CORNER_BOOST_MAX;
+      }
+      Ap.push(add(segs[i].start, mul(m.n, boost * amount * m.t / 2)));
+    }
+
+    // --- a ring may not close past its own width -----------------------------------
+    var ringScale = 1;
+    if (inradius > 0) {
+      var polyArea = function (pts) {
+        var acc = 0, m = pts.length;
+        for (var q = 0; q < m; q++) {
+          var w = pts[(q + 1) % m];
+          acc += (pts[q].x - w.x) * (pts[q].y + w.y);
+        }
+        return Math.abs(acc / 2);
+      };
+      var was = [], now = [];
+      for (i = 0; i < n; i++) { was.push(segs[i].start); now.push(Ap[i]); }
+      // Only a CLOSING ring can run out of room. An outer ring's anchors move outward and its
+      // inradius grows, so this never binds there and needs no counter/outer test of its own.
+      if (polyArea(now) < polyArea(was)) {
+        var worst = 0;
+        for (i = 0; i < n; i++) worst = Math.max(worst, len(sub(Ap[i], segs[i].start)));
+        if (worst > CLOSURE_MAX * inradius) {
+          ringScale = CLOSURE_MAX * inradius / worst;
+          notes.push('this ring would have closed past its own width; displacement scaled to ' +
+                     Math.round(ringScale * 100) + '%');
+          for (i = 0; i < n; i++) {
+            Ap[i] = add(segs[i].start, mul(sub(Ap[i], segs[i].start), ringScale));
+          }
+        }
+      }
     }
 
     // --- no segment may collapse ---------------------------------------------------
@@ -102,13 +165,13 @@
     // ended up, so clamping the anchors alone just makes the bow bulge harder to compensate -
     // measured, the handle came out 1.14x the chord, which is a loop rather than a bulge.
     var lam = [], segScale = [];
-    for (i = 0; i < n; i++) { lam.push(1); segScale.push(1); }
+    for (i = 0; i < n; i++) { lam.push(1); segScale.push(ringScale); }
     for (i = 0; i < n; i++) {
       var jj = (i + 1) % n;
       var ch = sub(segs[jj].start, segs[i].start);
       var dl = sub(sub(Ap[jj], segs[jj].start), sub(Ap[i], segs[i].start));
       var Lm = maxScale(ch, dl, COLLAPSE_FLOOR);
-      segScale[i] = Lm;
+      segScale[i] = Lm * ringScale;
       if (Lm < lam[i]) lam[i] = Lm;
       if (Lm < lam[jj]) lam[jj] = Lm;
     }
@@ -213,7 +276,16 @@
                    notes: ['copied through unchanged: ' + r.skip] });
         continue;
       }
-      out.push(inflateCurve(r.curve, r.sign, GR.inflProbeCtx(r.face, cl.tol), amount));
+      // The ring's own inradius, 2*area/perimeter of the flattened ring: how much room a closing
+      // ring actually has, which is unrelated to the thickness of the material around it.
+      var ring = r.ring, per = 0;
+      for (var q = 0; q < ring.length; q += 2) {
+        var w = (q + 2) % ring.length;
+        per += Math.sqrt((ring[w] - ring[q]) * (ring[w] - ring[q]) +
+                         (ring[w + 1] - ring[q + 1]) * (ring[w + 1] - ring[q + 1]));
+      }
+      var inr = per > 0 ? 2 * Math.abs(GR.signedArea(ring)) / per : 0;
+      out.push(inflateCurve(r.curve, r.sign, GR.inflProbeCtx(r.face, cl.tol), amount, inr));
     }
     return out;
   }

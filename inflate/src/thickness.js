@@ -343,6 +343,11 @@
     if (L < CUSP_EPS) return { n: null, t: -1, cusp: true, useOwnProbe: false, own: -1, sinHalf: null };
 
     var nrm = { x: sum.x / L, y: sum.y / L };
+    // sin is not injective over a full turn, so sinHalf alone cannot tell a convex corner from a
+    // reflex one - the cross product of the travel-direction tangents can, once the ring sign is
+    // folded in so it means the same thing on a counter as on an outer ring.
+    var cross = tg.tIn.x * tg.tOut.y - tg.tIn.y * tg.tOut.x;
+    var reflex = (cross * sign) < 0;
     var ap = anchorThickness(segs[i].start.x, segs[i].start.y, nrm, ctx);
     // L/2 is sin(th/2) ONLY when both tangents existed. With one, sum is a single unit vector and
     // L is 1, which would report a 60 degree corner at what may be a straight-through point — a
@@ -355,7 +360,8 @@
     // of an L — the anchor belongs to the thick body it is part of, and taking the stem's smaller
     // value instead would crease the notch away from that body.
     var t = useOwnProbe ? ap.t : Math.max(segT[(i - 1 + n) % n], segT[i]);
-    return { n: nrm, t: t, cusp: false, useOwnProbe: useOwnProbe, own: ap.t, sinHalf: sinHalf };
+    return { n: nrm, t: t, cusp: false, useOwnProbe: useOwnProbe, own: ap.t, sinHalf: sinHalf,
+             reflex: reflex };
   }
 
   GR.INFL_LINE_EPS = LINE_EPS;

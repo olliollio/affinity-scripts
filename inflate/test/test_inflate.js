@@ -225,6 +225,24 @@ module.exports = function (GR, h) {
       'worst handle/chord ' + worstHandle.toFixed(2) + ' — above 1 draws as a loop');
   });
 
+  // A ring closes by amount*t/2 per side where t is the WALL AROUND it, and nothing in that relates
+  // to the size of the hole. The A's counter has an inradius of 33.9 against a wall of 90, so at
+  // 100% it is asked to close by 45 — a third more than it has — and vanishes outright at 75%. Node
+  // count is preserved so it cannot be dropped; uncapped it degenerated into a leaf with a folded
+  // tail. Measured: 1% of its area survived, against 38% with the cap.
+  var aOuter = F.poly([1164.952,932.375, 1021.895,932.375, 998.962,1000.081, 901.225,1000.081,
+                       1039.914,616.777, 1148.025,616.777, 1286.714,1000.081, 1187.884,1000.081]);
+  var aInner = F.poly([1140.927,860.3, 1093.423,719.974, 1046.466,860.3]);
+  var A = GR.inflateCurves([aOuter, aInner], 1.0);
+  function ringArea(c) { return Math.abs(GR.signedArea(GR.flattenSegments(c.segments, { flattenTol: 0.05 }))); }
+  h.assert('a counter survives an amount that would close it outright',
+    ringArea(A[1]) > 0.25 * ringArea(aInner),
+    'kept ' + (ringArea(A[1]) / ringArea(aInner) * 100).toFixed(0) + '% of its area');
+  h.assert('and the shape around it still grew',
+    ringArea(A[0]) > 1.5 * ringArea(aOuter),
+    'outer is ' + (ringArea(A[0]) / ringArea(aOuter) * 100).toFixed(0) + '% of its area');
+  h.assert('the ring that was capped says so', A[1].notes.length > 0, 'no note');
+
   h.group('inflate — invariants');
 
   // WINDING INDEPENDENCE. The original curves are deliberately NOT rewound, so the two outputs
