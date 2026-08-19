@@ -1866,7 +1866,13 @@ var GR = {};
         b = dot(sub(Mt, Mn), nM) / 0.75;
       }
       var bow = nM ? mul(nM, b) : { x: 0, y: 0 };
-      out.push({ start: Ap[i], c1: add(c1n, bow), c2: add(c2n, bow), end: Ap[j] });
+      // COPIES of the anchors, not the Ap entries themselves. Ap[j] is also Ap[i] of the next
+      // segment, so pushing the object would make out[i].end and out[i+1].start the SAME point -
+      // and a consumer that maps points in place would then transform every shared anchor twice.
+      // The shape shears while node count and closedness stay perfectly correct, which is the kind
+      // of wrong that survives every structural assertion.
+      out.push({ start: { x: Ap[i].x, y: Ap[i].y }, c1: add(c1n, bow),
+                 c2: add(c2n, bow), end: { x: Ap[j].x, y: Ap[j].y } });
     }
 
     // --- restore tangent continuity where the INPUT was smooth --------------------
@@ -1899,7 +1905,15 @@ var GR = {};
     for (var i = 0; i < cl.recs.length; i++) {
       var r = cl.recs[i];
       if (r.skip) {
-        out.push({ segments: r.curve.segments, isClosed: r.curve.isClosed,
+        // Copied, not shared: returning the caller's own segment array would let a consumer that
+        // maps points in place mutate the input curve it was handed.
+        var copy = [];
+        for (var k = 0; k < r.curve.segments.length; k++) {
+          var sg = r.curve.segments[k];
+          copy.push({ start: { x: sg.start.x, y: sg.start.y }, c1: { x: sg.c1.x, y: sg.c1.y },
+                      c2: { x: sg.c2.x, y: sg.c2.y }, end: { x: sg.end.x, y: sg.end.y } });
+        }
+        out.push({ segments: copy, isClosed: r.curve.isClosed,
                    notes: ['copied through unchanged: ' + r.skip] });
         continue;
       }

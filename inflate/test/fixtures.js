@@ -122,10 +122,19 @@ function openPath() {
                       { start: b, c1: P(b.x, b.y), c2: P(c.x, c.y), end: c }], isClosed: false };
 }
 
+/**
+ * A square with a zero-width slit cut into it: the path runs up the slit and straight back down.
+ *
+ * The anchor at the slit's tip has two adjacent normals that cancel, so its bisector direction is
+ * numerically arbitrary while the displacement magnitude is not - the cusp case. No other fixture
+ * reaches it, so without this the cusp guard could be deleted and every assertion would stay green.
+ */
+function spike() { return poly([0, 0, 100, 0, 100, 100, 50, 100, 50, 40, 50, 100, 0, 100]); }
+
 /** A closed ring of zero enclosed area: out and back along the same line. No inside to
  * grow into, so this exercises the pass-through path rather than the inflate math. */
 function degenerateRing() { return poly([0, 0, 100, 0, 50, 0]); }
 
 module.exports = { K: K, P: P, poly: poly, rect: rect, ngon: ngon, circle: circle,
                    roundRect: roundRect, star: star, reverseCurve: reverseCurve,
-                   openPath: openPath, degenerateRing: degenerateRing };
+                   openPath: openPath, spike: spike, degenerateRing: degenerateRing };
