@@ -12,10 +12,11 @@
 
 ---
 
-## Before you start: four measured corrections to the spec
+## Before you start: five measured corrections to the spec
 
 The spec was reviewed three times but never executed. A working prototype of its algorithm was run
-against hand-derived exact answers before this plan was written, and found four defects. **Each
+against hand-derived exact answers before this plan was written, and found four defects; a fifth
+surfaced later, while checking a sentence of user-facing help text against the geometry. **Each
 correction below is what this plan implements; the spec document is stale on these four points and
 should be patched to match.** Everything else in the spec was confirmed correct by the same run.
 
@@ -96,6 +97,32 @@ precision" is unreachable and, worse, invites an absolute tolerance tuned to wha
 happens to emit. The property that actually holds — and that fails under a translate-only handle
 rule — is that the output is **no less round, relatively, than its input**. Measured: input relative
 spread `2.734e-4`, output `2.746e-4`.
+
+### C5 — a convex corner grows LESS than a flat, not more (severity: wrong in the shipped help text)
+
+The spec's "The amount parameter" section says: *"At a corner both adjacent walls contribute, so the
+material there more than doubles."* That is backwards, and the spec contradicts itself — its
+"Normals" section already states the truth: *"Corners therefore sit slightly inside the offset its
+edges would imply. This miter shortfall is accepted: it is part of the pinched-corner look."*
+
+Measured on a 100 square at `amount = 1`:
+
+| | moved | perpendicular gain |
+|---|---|---|
+| flat side midpoint | 50.07 | **50.07** — the half-thickness doubles |
+| corner, along its bisector | 50.07 | **35.41** — short by 14.67 |
+
+The shortfall matches the spec's own formula, `amount·w/2·(1 − cos 45°) = 14.645`. A corner picks up
+only `cos(θ/2)` of its bisector displacement perpendicular to each edge, so it grows LESS than the
+flat between corners. That is the pinched look; it is the whole visual difference between a pillow
+and an outline offset.
+
+This one only surfaced because the sentence was being checked for a dialog's help text, which is
+where a wrong claim about what the tool does actually reaches a user.
+
+**Related, and true:** a reflex NOTCH fills in rather than staying pinched — a five-point star's notch
+floor rises from 40 to 52.59 at `amount = 1`. Its spike DEPTH is exactly preserved (60.00 → 60.00),
+because tip and notch take the same local thickness and move together.
 
 ### Confirmed correct, and worth not re-litigating
 
@@ -2061,6 +2088,8 @@ the real run's numbers in hand, not this plan's prototype numbers.
 - **C3**, the "`tau` does not over-report" paragraph: qualify it to head-on constraints and give the
   `tau/(1 − cos θ)` amplification.
 - **C4**, the circle assertion in "Testing": relative-against-input, not absolute.
+- **C5**, "The amount parameter": a corner grows LESS than a flat, not more — delete the
+  more-than-doubles sentence, which contradicts the miter-shortfall paragraph in "Normals".
 
 Also add the finding that `tau` is load-bearing rather than slack, and why a local-deficit variant
 cannot replace it — otherwise someone will try it again.
