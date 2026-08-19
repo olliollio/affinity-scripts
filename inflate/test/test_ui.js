@@ -71,13 +71,20 @@ module.exports = function (GR, h) {
 
   h.assertEqual('the dialog is titled', ok.title, 'Inflate');
   h.assertEqual('it builds exactly one group', ok.groups.length, 1);
-  h.assertEqual('with exactly one slider', ok.editors.length, 1);
+  h.assertEqual('with two sliders', ok.editors.length, 2);
   h.assertEqual('and one paragraph of help', ok.texts.length, 1);
 
-  h.assertEqual('the slider is a popup slider', ok.editors[0].slider, true);
+  h.assertEqual('the amount slider is a popup slider', ok.editors[0].slider, true);
   h.assertEqual('its range is 0..100 percent', ok.editors[0].min + '..' + ok.editors[0].max, '0..100');
   h.assertEqual('its default is the module default', ok.editors[0].value, GR.INFL_DEFAULT_PCT);
   h.assertEqual('whole percentages only', ok.editors[0].precision, 0);
+
+  // Rounding runs past 100%: the radius is a fraction of the pillow's DEPTH, and a corner can
+  // legitimately be rounded harder than that. 0 is the meaningful end - it turns rounding off.
+  h.assertEqual('the rounding slider is a popup slider', ok.editors[1].slider, true);
+  h.assertEqual('rounding reaches from off to twice the depth',
+    ok.editors[1].min + '..' + ok.editors[1].max, '0..200');
+  h.assertEqual('its default is the module default', ok.editors[1].value, GR.INFL_DEFAULT_ROUND_PCT);
 
   // Height is the scarce resource in a panel that cannot scroll, and help only wraps when it is
   // full width. Without this it is a clipped single line.
@@ -95,6 +102,8 @@ module.exports = function (GR, h) {
   // The dialog speaks percent because that is what a user reasons about; everything downstream
   // takes a fraction. This is the one conversion, and it happens here.
   h.assertClose('percent becomes a fraction', amount, GR.INFL_DEFAULT_PCT / 100, 1e-12);
+  h.assertClose('and so does the rounding', got ? got.round : NaN,
+    GR.INFL_DEFAULT_ROUND_PCT / 100, 1e-12);
 
   // Cancel must be distinguishable from "0%", which is a legitimate setting that means the identity.
   var cancelled = run(stub({ value: 0 }));

@@ -45,8 +45,11 @@
   // left exactly as the design intends and only genuinely pointed corners are softened.
   var ROUND_BELOW_SIN = 0.676;
 
-  // The rounding radius, as a fraction of the pillow's depth at that corner. The depth is the
+  // Default rounding radius, as a fraction of the pillow's depth at that corner. The depth is the
   // natural scale: a shape that puffed by 45 units should round its points at about that radius.
+  // The dialog exposes this, because how round a corner should be is a matter of taste and not
+  // something geometry can settle; 0 turns rounding off and leaves corners as the design's
+  // pinched points.
   var ROUND_FRAC = 0.9;
 
   /** Largest L in [0,1] with |chord + L*delta| >= floor*|chord|. */
@@ -83,7 +86,7 @@
    * b    = dot(M' - M_naive, n_M) / 0.75
    * c1'  = A' + h1*s + n_M*b        c2' = B' + h2*s + n_M*b
    */
-  function inflateCurve(curve, sign, ctx, amount, inradius) {
+  function inflateCurve(curve, sign, ctx, amount, inradius, round) {
     var segs = curve.segments, n = segs.length, i;
     var notes = [];
 
@@ -130,7 +133,7 @@
       }
       // Sharp CONVEX corners get rounded by the post-pass below; remember which, and how deep the
       // pillow is here, since that depth is the natural radius to round with.
-      convex.push(!m.reflex && m.sinHalf !== null && m.sinHalf < ROUND_BELOW_SIN);
+      convex.push(round > 0 && !m.reflex && m.sinHalf !== null && m.sinHalf < ROUND_BELOW_SIN);
       anchorT.push(m.t);
       Ap.push(add(segs[i].start, mul(m.n, boost * amount * m.t / 2)));
     }
@@ -276,7 +279,7 @@
       if (!d) continue;
       var lOut = len(sub(out[i].c1, out[i].start)), lIn = len(sub(out[p].end, out[p].c2));
       if (!smooth) {
-        var rad = ROUND_FRAC * amount * anchorT[i] / 2;
+        var rad = round * amount * anchorT[i] / 2;
         if (rad > 0) { if (lOut > rad) lOut = rad; if (lIn > rad) lIn = rad; }
       }
       out[i].c1 = add(out[i].start, mul(d, lOut));       // lengths unchanged, directions replaced
@@ -287,7 +290,8 @@
   }
 
   /** Inflates every curve of one node. Open, degenerate and zero-area curves pass through. */
-  function inflateCurves(curves, amount, flattenTol) {
+  function inflateCurves(curves, amount, flattenTol, round) {
+    var r0 = (typeof round === 'number' && isFinite(round)) ? Math.max(0, round) : ROUND_FRAC;
     var cl = GR.inflClassify(curves, flattenTol);
     var out = [];
     for (var i = 0; i < cl.recs.length; i++) {
@@ -314,7 +318,7 @@
                          (ring[w + 1] - ring[q + 1]) * (ring[w + 1] - ring[q + 1]));
       }
       var inr = per > 0 ? 2 * Math.abs(GR.signedArea(ring)) / per : 0;
-      out.push(inflateCurve(r.curve, r.sign, GR.inflProbeCtx(r.face, cl.tol), amount, inr));
+      out.push(inflateCurve(r.curve, r.sign, GR.inflProbeCtx(r.face, cl.tol), amount, inr, r0));
     }
     return out;
   }
@@ -322,5 +326,6 @@
   GR.inflateCurve = inflateCurve;
   GR.inflateCurves = inflateCurves;
   GR.INFL_PARALLEL_EPS = PARALLEL_EPS;
+  GR.INFL_ROUND_FRAC = ROUND_FRAC;
 
 })(GR);
