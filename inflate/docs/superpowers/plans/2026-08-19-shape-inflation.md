@@ -1571,8 +1571,12 @@ property fixed while changing something the property must not depend on.
   h.assertClose('displacement scales with the shape (x0.005 vs x1)', disp[0], disp[1], disp[1] * 1e-3);
   h.assertClose('displacement scales with the shape (x20 vs x1)', disp[2], disp[1], disp[1] * 1e-3);
 
-  // A SMOKE TEST ONLY. An offset passes this too, so it is not coverage of the pillow behaviour —
-  // it only catches an inflation that shrinks.
+  // An offset passes this too, so it is not coverage of the PILLOW behaviour. It is not redundant
+  // either, and the reason is worth stating: every other invariant here compares magnitudes or
+  // ratios, which are sign-symmetric, so a displacement that ran INWARD would leave winding
+  // independence, scale invariance and the fat-versus-thin ratio all intact. Measured with a
+  // negative amount: those three pass unchanged while the area falls 11755 -> 3693. This is the
+  // only assertion in the suite that knows which way "out" is.
   var prev = -1, mono = true;
   [0, 0.1, 0.25, 0.5, 0.75, 1].forEach(function (a) {
     var ar = absArea(GR.inflateCurves([F.star(0,0,100,40,5)], a)[0]);
@@ -1582,14 +1586,27 @@ property fixed while changing something the property must not depend on.
   h.assert('enclosed area increases monotonically in amount', mono);
 
   // THE PILLOW PROPERTY ITSELF, which the monotonic test above does NOT cover: a fat body must grow
-  // more than a thin arm. Under an offset both grow the same, so this is the assertion that
-  // separates the two effects.
+  // more than a thin arm. Under an offset both grow the same.
+  //
+  // MEASURE THE ANCHOR, NOT THE MIDPOINT. This is the trap: mid() reads the BOW-CORRECTED bezier
+  // midpoint, and the bow independently re-derives from segT[i] and solves for whatever residual
+  // lands the midpoint on the pillow surface — regardless of where the anchor was put. So a mutant
+  // that replaces the anchor rule with a CONSTANT, turning the whole feature into the offset this
+  // assertion exists to rule out, still reports 9.82:1 through mid() and passes. Measured. The raw
+  // anchors tie at 1.00 under that same mutant, which is what an offset actually looks like.
+  //
+  // Both are asserted: the anchor ratio is what pins the rule, and the midpoint ratio is what pins
+  // the bow agreeing with it.
   var fat = GR.inflateCurves([F.rect(0, 0, 200, 200)], 0.5)[0];
   var thin = GR.inflateCurves([F.rect(0, 0, 20, 200)], 0.5)[0];
+  var fatAnchor = Math.abs(fat.segments[0].start.y);
+  var thinAnchor = Math.abs(thin.segments[0].start.y);
+  h.assert('a fat body\'s ANCHOR moves further than a thin arm\'s', fatAnchor > thinAnchor * 5,
+    'fat ' + fatAnchor.toFixed(2) + ' vs thin ' + thinAnchor.toFixed(2) + ' — an offset would tie');
   var fatGrow = Math.abs(mid(fat.segments[0]).y);
   var thinGrow = Math.abs(mid(thin.segments[0]).y);
-  h.assert('a fat body grows more than a thin arm', fatGrow > thinGrow * 5,
-    'fat ' + fatGrow.toFixed(2) + ' vs thin ' + thinGrow.toFixed(2) + ' — an offset would tie');
+  h.assert('and so does its surface', fatGrow > thinGrow * 5,
+    'fat ' + fatGrow.toFixed(2) + ' vs thin ' + thinGrow.toFixed(2));
 ```
 
 - [ ] **Step 2: Run**
@@ -1597,8 +1614,15 @@ property fixed while changing something the property must not depend on.
 ```bash
 node inflate/test/run.js
 ```
-Expected: all PASS. The fat/thin ratio should be about 10:1 — `0.5·200/2 = 50` against `0.5·20/2 = 5`.
-If it is 1:1 the displacement is not scaling with thickness and the whole feature is an offset.
+Expected: all PASS. The fat/thin ratio should be about 10:1 — `0.5·200/2 = 50` against `0.5·20/2 = 5`;
+measured 9.82:1. If it is 1:1 the displacement is not scaling with thickness and the whole feature is
+an offset.
+
+**Prove each invariant bites**, by mutating the specific mechanism it guards, and restoring after
+each: strip the winding factor from `classify`'s ring sign (winding must fail); make `tolFor` return
+the absolute `GR.FLATTEN_TOL` (both scale assertions must fail); replace the anchor displacement with
+a constant (the ANCHOR fat/thin assertion must fail — note the midpoint one will not, which is why
+both exist). An invariant nobody has watched fail is decoration.
 
 - [ ] **Step 3: Commit**
 
