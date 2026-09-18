@@ -1,0 +1,286 @@
+/*
+BSD 3-Clause License
+
+Copyright (c) 2026, Canva Pty Ltd.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+Neither the name of the copyright holder nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+'use strict';
+
+const { NodeRenderingEngineOptionsApi, RasterExtendType, RasterFormat, RasterIntent, RasterObjectApi, RasterObjectType, RasterResamplerType } = require('affinity:raster');
+const { HandleObject } = require('/handleobject.js');
+
+function createTypedRasterObject(handle) {
+    if (handle == null)
+        return null;
+    const rasterObjectType = RasterObjectApi.getType(handle);
+    switch (rasterObjectType.value) {
+        case RasterObjectType.Bitmap.value:
+            return new Bitmap(handle);
+        case RasterObjectType.Buffer.value:
+            return new PixelBuffer(handle);
+        case RasterObjectType.RenderingEngine.value:
+            return new NodeRenderingEngine(handle);
+        default:
+            return new RasterObject(handle);
+    }
+}
+
+class RasterObject extends HandleObject {
+    constructor(handle) {
+        super(handle)
+    }
+
+    get [Symbol.toStringTag]() {
+        return 'RasterObject';
+    }
+
+    get width() {
+        return RasterObjectApi.getWidth(this.handle);
+    }
+
+    get height() {
+        return RasterObjectApi.getHeight(this.handle);
+    }
+
+    get format() {
+        return RasterObjectApi.getFormat(this.handle);
+    }
+
+    get pixelSize() {
+        return RasterObjectApi.getPixelSize(this.handle);
+    }
+    
+    get type() {
+        return RasterObjectApi.getType(this.handle);
+    }
+
+    createCompatibleBitmap(copyContents) {
+        return new Bitmap(RasterObjectApi.createCompatibleBitmap(this.handle, copyContents));
+    }
+
+    createCompatibleBuffer(copyContents) {
+        return new PixelBuffer(RasterObjectApi.createCompatibleBuffer(this.handle, copyContents));
+    }
+
+    copyTo(dest, destRect, srcX, srcY) {
+        return RasterObjectApi.copyTo(this.handle, dest.handle, destRect, srcX, srcY);
+    }
+    
+    clone() {
+        return new RasterObject(RasterObjectApi.clone(this.handle));
+    }
+    
+    cloneEmpty() {
+        return new RasterObject(RasterObjectApi.cloneEmpty(this.handle));
+    }
+}
+
+class Bitmap extends RasterObject {
+    
+    constructor(handle) {
+        super(handle);
+    }
+
+    get [Symbol.toStringTag]() {
+        return 'Bitmap';
+    }
+
+    static create(width, height, format) {
+        return new Bitmap(RasterObjectApi.createBitmap(width, height, format));
+    }
+
+    static loadFromFile(path, format = RasterFormat.RGBA8) {
+        return new Bitmap(RasterObjectApi.loadBitmapFromFile(path, format));
+    }
+
+    static loadFromFileAsync(path, format, callback) {
+        if (typeof callback === 'function') {
+            function wrappedCallback(errorCode, rasterObjectHandle) {
+                let rasterObject = rasterObjectHandle ? new Bitmap(rasterObjectHandle) : null;
+                return callback(errorCode, rasterObject);
+            }
+            return RasterObjectApi.loadBitmapFromFileAsync(path, format, wrappedCallback);
+        }
+        return RasterObjectApi.loadBitmapFromFileAsync(path, format, callback);
+    }
+}
+
+class PixelBuffer extends RasterObject {
+    
+    constructor(handle) {
+        super(handle);
+    }
+
+    get [Symbol.toStringTag]() {
+        return 'PixelBuffer';
+    }
+
+    static create(width, height, format) {
+        return new PixelBuffer(RasterObjectApi.createPixelBuffer(width, height, format));
+    }
+
+    get buffer() {
+        return RasterObjectApi.getArrayBuffer(this.handle);
+    }
+}
+
+class NodeRenderingEngineOptions extends HandleObject {
+    constructor(...args) {
+        if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
+            super(args[0]);
+        }
+        else {
+            console.warn("Using deprecated new NodeRenderingEngineOptions(). Use NodeRenderingEngineOptions.create() instead.");
+            super(NodeRenderingEngineOptionsApi.create());
+        }
+    }
+
+    get [Symbol.toStringTag]() {
+        return 'NodeRenderingEngineOptions';
+    }
+
+    static create() {
+        return new NodeRenderingEngineOptions(NodeRenderingEngineOptionsApi.create());
+    }
+
+    clone() {
+        return new NodeRenderingEngineOptions(NodeRenderingEngineOptionsApi.clone(this.handle));
+    }
+
+    get downResamplerType() {
+        return NodeRenderingEngineOptionsApi.getDownResamplerType(this.handle);
+    }
+
+    set downResamplerType(value) {
+        NodeRenderingEngineOptionsApi.setDownResamplerType(this.handle, value);
+    }
+
+    get upResamplerType() {
+        return NodeRenderingEngineOptionsApi.getUpResamplerType(this.handle);
+    }
+
+    set upResamplerType(value) {
+        NodeRenderingEngineOptionsApi.setUpResamplerType(this.handle, value);
+    }
+
+    get isPerfectClipping() {
+        return NodeRenderingEngineOptionsApi.getIsPerfectClipping(this.handle);
+    }
+
+    set isPerfectClipping(value) {
+        NodeRenderingEngineOptionsApi.setIsPerfectClipping(this.handle, value);
+    }
+
+    get antialias() {
+        return NodeRenderingEngineOptionsApi.getAntialias(this.handle);
+    }
+
+    set antialias(value) {
+        NodeRenderingEngineOptionsApi.setAntialias(this.handle, value);
+    }
+
+    get ditherGradients() {
+        return NodeRenderingEngineOptionsApi.getDitherGradients(this.handle);
+    }
+
+    set ditherGradients(value) {
+        NodeRenderingEngineOptionsApi.setDitherGradients(this.handle, value);
+    }
+
+    get isMaskRenderingMode() {
+        return NodeRenderingEngineOptionsApi.getIsMaskRenderingMode(this.handle);
+    }
+
+    set isMaskRenderingMode(value) {
+        NodeRenderingEngineOptionsApi.setIsMaskRenderingMode(this.handle, value);
+    }
+
+    get clipToSpread() {
+        return NodeRenderingEngineOptionsApi.getClipToSpread(this.handle);
+    }
+
+    set clipToSpread(value) {
+        NodeRenderingEngineOptionsApi.setClipToSpread(this.handle, value);
+    }
+
+    get allowDegradedBitmaps() {
+        return NodeRenderingEngineOptionsApi.getAllowDegradedBitmaps(this.handle);
+    }
+
+    set allowDegradedBitmaps(value) {
+        NodeRenderingEngineOptionsApi.setAllowDegradedBitmaps(this.handle, value);
+    }
+
+    get isIsolatedRendering() {
+        return NodeRenderingEngineOptionsApi.getIsIsolatedRendering(this.handle);
+    }
+
+    set isIsolatedRendering(value) {
+        NodeRenderingEngineOptionsApi.setIsIsolatedRendering(this.handle, value);
+    }
+
+    get drawBackground() {
+        return NodeRenderingEngineOptionsApi.getDrawBackground(this.handle);
+    }
+
+    set drawBackground(value) {
+        NodeRenderingEngineOptionsApi.setDrawBackground(this.handle, value);
+    }
+}
+
+class NodeRenderingEngine extends RasterObject {
+
+    constructor(handle) {
+        super(handle);
+    }
+
+    get [Symbol.toStringTag]() {
+        return 'NodeRenderingEngine';
+    }
+
+    static createDefault(node, format) {
+        return new NodeRenderingEngine(RasterObjectApi.createDefaultNodeRenderingEngine(node.handle, format));
+    }
+
+    static create(node, format, options) {
+        return new NodeRenderingEngine(RasterObjectApi.createNodeRenderingEngine(node.handle, format, options.handle));
+    }
+}
+
+module.exports.createTypedRasterObject = createTypedRasterObject;
+
+module.exports.Bitmap = Bitmap;
+module.exports.NodeRenderingEngine = NodeRenderingEngine;
+module.exports.NodeRenderingEngineOptions = NodeRenderingEngineOptions;
+module.exports.PixelBuffer = PixelBuffer;
+module.exports.RasterExtendType = RasterExtendType;
+module.exports.RasterFormat = RasterFormat;
+module.exports.RasterIntent = RasterIntent;
+module.exports.RasterObject = RasterObject;
+module.exports.RasterObjectType = RasterObjectType;
+module.exports.RasterResamplerType = RasterResamplerType;
