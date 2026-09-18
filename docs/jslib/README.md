@@ -75,9 +75,10 @@ tests.
    coordinates, the preview/commit model, or the installed-vs-panel runtime
    split. Those are ours and stay ours.
 
-## Caveat
+## Version
 
-This is the library as shipped in some unidentified build — there is no version
-marker anywhere in the tree. If it drifts from the copy inside the Affinity
-install being scripted, reading it could mislead. Spot-check a signature at
-runtime before relying on it for anything load-bearing.
+**3.3.0** — from the SDK download page, which serves this ZIP alongside the
+matching API reference under the path `33000` (i.e. 3.3.0). There is no version
+marker inside the tree itself, so if the Affinity install being scripted is on a
+different build this could drift. Spot-check a signature at runtime before
+relying on it for anything load-bearing.

@@ -4,6 +4,32 @@ Practical notes for scripting **Affinity by Canva** (the newer version with MCP 
 AI Automation — classic Affinity V2 has no scripting). Everything below was
 verified at runtime, not assumed from documentation.
 
+**Current version: v3.3.0 (September 2026)**, which added the in-app Scripting
+Studio. Scripting is still beta and is **off by default** — turn it on at
+Settings → Scripting → *Enable Affinity Scripting*.
+
+---
+
+## Two ways to get a script into Affinity
+
+Since v3.3 there are two routes, and they are good at different things:
+
+| | Scripting Studio (in-app, v3.3) | Script Manager + MCP |
+|---|---|---|
+| Write & run | Script Editor, run unsaved with `Ctrl+Return` / `F5` | Import, then click in Scripts panel |
+| Debug | **Log Console** panel; **Running Scripts** panel can stop a runaway script | `console.log` to Scripts panel; dialog dumps |
+| Source of truth | Affinity's own library | **`.js` files on disk** |
+| Interchange | `.afscript` / `.afscripts` containers | plain `.js`, Watch Mode re-pushes on edit |
+
+For **this repo** — version-controlled `.js` plus `registry.json` and community
+publishing — the split that works is: keep git as the source of truth and use
+Script Manager's Watch Mode to push, but do the write/run/read-log loop in the
+Scripting Studio. The Studio has no "open a `.js` from disk" and no file watch,
+so it cannot replace the push step.
+
+Panels live under **Window → Scripting** (Log Console is hidden by default), or
+enable the whole **Scripting** studio in Studio Manager.
+
 ---
 
 ## Setup: getting the Script Manager connected
@@ -37,9 +63,14 @@ To get a full green chain:
 
 ## Debugging technique
 
-`console.log` **is** visible in the Scripts panel. It is the best debugging
-channel: no length limit, no clipping, and the output can be selected and copied
-as text. Prefer it for everything.
+Since v3.3 the default loop is the **Script Editor + Log Console**: write, hit
+`Ctrl+Return` / `F5`, read the log. There is no install step, so no stale-copy
+problem, and the **Running Scripts** panel can stop a script that will not end —
+which matters for anything timer-driven.
+
+`console.log` **is** visible in the Scripts panel and the Log Console. No length
+limit, no clipping, and the output can be selected and copied as text. Prefer it
+for everything.
 
 The built-in Documentation / SDK Search can fail ("Listing failed"), so it is not
 a reliable reference. Two better ones now exist:
@@ -86,18 +117,43 @@ dialog opens otherwise aborts silently, and the script appears to do nothing.
 
 ---
 
-## The testing environment is not the same runtime
+## Permissions belong to the script, not to your code
 
-**`/fs` and `doc.export` work in an INSTALLED script and are denied in the Script
-Manager's testing environment.** The same file, unchanged, exports frames once
-installed and is `PERMISSION_DENIED` every time it is run from the testing
-environment.
+**When a filesystem or export call is refused, look at the script's permissions
+before changing a single line.**
 
-So when a filesystem or export call is refused: **install the script and run it
-again before changing a single line.** Plausible-looking theories that all fitted
-the evidence and were all wrong — path separators, call timing, script size,
-export preset names, a per-script grant, a blanket capability gate — came out of
-never varying the one variable that mattered.
+### The v3.3 model (documented)
+
+**Settings → Scripting** holds three *Default Permissions* — *Access the file
+system*, *Access networks*, *Use Canva AI Studio features* — plus a **File
+System Access** list of the specific folders scripts may touch. (*Allow code
+generation from strings* separately gates `eval`.)
+
+The rules that bite:
+
+- Those defaults apply **only to new, blank scripts** made in the Script Editor.
+- **Imported scripts keep whatever permissions they were exported with**, even
+  when those differ from your defaults.
+- Any script's permissions can be changed from the **`Settings` cog** on the
+  Script Editor panel.
+
+Two identical files can therefore behave differently purely because of how each
+arrived. Check the cog first.
+
+### What we hit under v3.2
+
+**`/fs` and `doc.export` worked in an INSTALLED script and were denied in the
+Script Manager's testing environment** — same file, unchanged, exporting frames
+once installed and `PERMISSION_DENIED` every time from the testing environment.
+
+The documented model explains this cleanly (different routes → different
+permission provenance), but that is a **hypothesis, not a confirmed cause**: the
+observation predates 3.3 and has not been re-tested against it.
+
+Either way the rule holds. Plausible-looking theories that all fitted the
+evidence and were all wrong — path separators, call timing, script size, export
+preset names, a per-script grant, a blanket capability gate — came out of never
+varying the one variable that mattered.
 
 Access can also lapse mid-session and return after restarting Affinity, so
 confirm the current state with a known-good script before concluding anything.
