@@ -3,7 +3,11 @@
 A practical, runtime-verified reference for scripting **Affinity by Canva** — the
 AI/MCP-enabled Affinity. (Classic Affinity V2 has **no** scripting.)
 
-- **Version in scope:** Affinity **v3.2** (April 2026).
+- **Version in scope:** Affinity **v3.3.0** (September 2026). The SDK docs at
+  `sdk.affinity.studio/33000/` are this version — `33000` encodes 3.3.0, and it
+  is the only build published. Items in this document captured under v3.2 are
+  marked as such where the difference could matter; scripting is still labelled
+  **beta** by Affinity.
 - **Language:** JavaScript. Scripts run when clicked in the **Scripts panel**;
   convention is either top-level code or a `main()` called at end of file
   (optionally `module.exports.main = main`).
@@ -67,6 +71,39 @@ AI/MCP-enabled Affinity. (Classic Affinity V2 has **no** scripting.)
 
 ## 1. Environment & connection
 
+### The Scripting Studio (v3.3) — the in-app route
+
+As of **v3.3** Affinity has first-party scripting UI, and for *writing and
+debugging* it supersedes the Script Manager loop below. Enable it first:
+**Settings → Scripting → Enable Affinity Scripting** (scripting is off by
+default). Then Studio Manager → **Scripting**, or Window → Scripting for the
+individual panels.
+
+| Panel | What it gives you |
+|---|---|
+| **Script Editor** | Write and **Run without saving or installing** — `Ctrl+Return` or `F5` (Windows), `⌘⏎` (Mac). Has a per-script `Settings` cog. |
+| **Scripts Library** | Saved scripts in categories; click to run; right-click → Edit Script. |
+| **Running Scripts** | Monitor progress and **stop a running script**. |
+| **Log Console** | Debug output. **Not shown by default** — Window → Scripting. |
+
+Two settings on the editor's `Settings` cog are worth knowing: **Run as module**
+switches the script from CommonJS `require()` to ES6 `import`/`export`, and
+**Trusted** governs the run-time warning (see permissions below).
+
+Why this matters for our workflow: Run-without-install kills the
+import/re-import cache cycle, the Stop button means a runaway timer script no
+longer needs a force-quit of Affinity, and permissions are now visible per
+script instead of being guessed at. See
+[§19 Filesystem & export](#19-filesystem--export) for the permission model.
+
+**What it does not do:** there is no "open a `.js` from disk" and no file watch.
+Its interchange format is `.afscript` (one script) / `.afscripts` (a category) —
+Affinity containers that carry permission metadata, not plain JS. *(Unverified
+whether they are diffable text.)* So a git-managed repo of `.js` files like this
+one still needs the Script Manager route below to push changes in.
+
+### The Script Manager / MCP route — still needed for disk → Affinity
+
 Scripts are managed by the **Affinity Script Manager** (JiriKrblich) which talks
 to Affinity through a local **MCP bridge on port 6767**. Connection chain:
 **Manager → Bridge (6767) → Affinity**. Affinity itself *is* the MCP server once
@@ -113,14 +150,23 @@ panel UI.
 
 ## 2. Debugging technique
 
-- **`console.log` IS visible** in the Scripts panel. It is the best debugging
-  channel: no clipping, no control-count cap, copyable as text. Prefer it.
+**Order of preference as of v3.3:**
+
+1. **The Log Console panel + Run from the Script Editor.** Window → Scripting →
+   Log Console, then iterate with `Ctrl+Return` / `F5`. No install step, so no
+   stale-copy problem, and a runaway script can be killed from **Running
+   Scripts** instead of force-quitting Affinity. This is now the default loop.
+2. **`console.log`** — visible in the Scripts panel *and* the Log Console. No
+   clipping, no control-count cap, copyable as text.
+3. **The Dialog dump below** — now only for its original niche: reading state
+   *while a modal is already open*, where the log is not reachable.
+
 - The built-in Documentation / SDK Search can fail ("Listing failed"). It is no
   longer the place to look anyway: read [`jslib/`](jslib/) for the wrapper API
   and <https://sdk.affinity.studio/33000/js/> for native signatures.
 
-**Fallback — dump to a Dialog** (this is how much of the API below was
-reverse-engineered):
+**Dump to a Dialog** (this is how most of the API below was reverse-engineered,
+before the Log Console existed):
 
 ```js
 const { Dialog } = require('/dialog');
@@ -915,9 +961,13 @@ Other deltas seen in the wild: `StoryDelta.createGlyphString(GlyphAttStringType.
 `StoryDelta.createFamilyName(name)`, `StoryDelta.createParagraphString(ParagraphAttStringType.StyleName, name)`,
 `DocumentCommand.createSetText(selection, text)`.
 
-> **No document text-style creation API** in v3.2 — you can set
+> **No document text-style creation API** — you can set
 > `ParagraphAttStringType.StyleName` as metadata and apply direct formatting, but
 > you cannot register a named Text Style from a script.
+>
+> Found at runtime under v3.2 and **still true in v3.3**: the only style-related
+> symbol in either official source is `DocumentProperties.preserveTextStyles`, a
+> document flag. There is no create/register call in the native API or in JSLib.
 
 ---
 
@@ -1123,18 +1173,45 @@ reader.dispose();                        // holds native memory — release it
 
 > ## ⚠️ Read this before debugging any permission denial
 >
-> **`/fs` and `doc.export` work in an INSTALLED script and are denied in the
-> Script Manager's testing environment.** The same file, unchanged, exports
-> frames once installed and is `PERMISSION_DENIED` every time it is run from the
-> testing environment.
+> **Permissions are a property of the script, not of your code.** Check them
+> before changing a single line.
 >
-> **So: never debug an `/fs` or `doc.export` denial in code — install the script
-> and try again first.** A long chain of plausible theories came out of not
-> knowing this: path separators, call timing, script size, export preset names,
-> a per-script grant, a blanket capability gate. Every one of them fitted the
-> evidence, because the real variable was never varied. If a filesystem call is
-> denied while a known-good script succeeds, the difference is *how the script is
-> being run*.
+> ### The v3.3 permission model (documented)
+>
+> **Settings → Scripting** holds three *Default Permissions* — **Access the file
+> system**, **Access networks**, **Use Canva AI Studio features** — plus a
+> **File System Access** box listing the specific folders scripts may touch. A
+> fourth setting, *Allow code generation from strings*, gates `eval`.
+>
+> The rules that actually bite:
+>
+> - Those defaults apply **only to new, blank scripts** created in the Script
+>   Editor.
+> - **Imported scripts keep the permissions they were exported with**, even when
+>   those differ from your defaults.
+> - A script's own permissions are editable any time via the **`Settings` cog**
+>   on the Script Editor panel.
+>
+> So two copies of an identical file can have different permissions purely
+> because of how each got into Affinity. Look at the cog first.
+>
+> ### Our v3.2 finding, and how it probably fits
+>
+> Observed under v3.2 via the Script Manager: **`/fs` and `doc.export` worked in
+> an INSTALLED script and were denied in the testing environment** — the same
+> file, unchanged, exporting frames once installed and `PERMISSION_DENIED` every
+> time from the testing environment.
+>
+> The documented model above explains that cleanly: the two routes produce
+> scripts with different permission provenance. **This is a strong hypothesis,
+> not a confirmed cause** — the observation predates 3.3 and has not been
+> re-tested against it. Re-verify before treating it as settled.
+>
+> Either way the operational rule is unchanged: **never debug a permission
+> denial in code first.** A long chain of plausible theories came out of not
+> knowing this — path separators, call timing, script size, export preset names,
+> a per-script grant, a blanket capability gate. Every one fitted the evidence,
+> because the real variable was never varied.
 >
 > Denials can also come and go within a session — an installed script exported
 > successfully, failed an hour later, and was restored by restarting Affinity.
@@ -1155,7 +1232,9 @@ so a `typeof v === 'string'` check rejects a perfectly successful read.
 
 `FileOrigin` is a red herring: its values are `Begin/Current/End`, i.e. seek
 origin. `FilePermissions` is POSIX mode bits for `setFilePermissions`. **Neither
-grants anything** — there is no in-script mechanism to request access.
+grants anything** — there is no in-script mechanism to request access. Access is
+granted outside the script: the script's own `Settings` cog in the Script
+Editor, and the **File System Access** folder list in Settings → Scripting.
 
 ### Paths
 
@@ -1465,7 +1544,8 @@ wordRanges
 
 ---
 
-*Compiled from runtime probing of Affinity by Canva v3.2 and working community
+*Compiled from runtime probing of Affinity by Canva (v3.2, reviewed against the
+v3.3.0 official sources) and working community
 scripts. Members marked as enums expose a numeric `.value`. Verify anything
 marked **(unverified)** against [`jslib/`](jslib/) or
 <https://sdk.affinity.studio/33000/js/> before relying on it — and remember that
