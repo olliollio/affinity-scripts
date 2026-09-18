@@ -1,2 +1,5 @@
 # Affinity lock / temp files (created while a document is open)
 *~lock~*
+
+# Playwright MCP scratch (page snapshots, console logs) from doc-research sessions
+.playwright-mcp/
