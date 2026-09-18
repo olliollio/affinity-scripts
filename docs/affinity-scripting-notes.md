@@ -42,7 +42,18 @@ channel: no length limit, no clipping, and the output can be selected and copied
 as text. Prefer it for everything.
 
 The built-in Documentation / SDK Search can fail ("Listing failed"), so it is not
-a reliable reference.
+a reliable reference. Two better ones now exist:
+
+- **[`jslib/`](jslib/)** — the source of Affinity's own convenience library,
+  i.e. the very `/geometry`, `/nodes`, `/commands` … modules these scripts
+  `require`. Read it first; it answers most "what does this wrapper do"
+  questions outright, and ships 34 examples and ~50 tests.
+- **<https://sdk.affinity.studio/33000/js/>** — the published SDK reference for
+  the native `XxxApi` layer. Signatures, argument types, return types and all
+  143 enums; no prose or examples.
+
+Neither documents *behaviour*, so the runtime findings below still stand on
+their own.
 
 **Fallback: dump to a Dialog.** Useful when you need output while a modal is
 open. Build a modal dialog and write findings with `addStaticText`:
@@ -183,8 +194,21 @@ bottomRight, centre, area, offset, moveTo, clone, ...`.
 - Batch guides with `CompoundCommandBuilder.create()`, `builder.addCommand(cmd)`
   for each, then `doc.executeCommand(builder.createCommand())`. This also makes
   the whole set a single undo step.
-- Open question (untested): whether guides get *bound* to an artboard or are
-  plain document guides. Visually they land correctly either way.
+- **They are plain document guides — nothing binds them to an artboard.**
+  `createAddGuide(isHorizontal, position)` takes no node or artboard argument,
+  and Affinity's own `jslib/examples/addGuides.js` does exactly what we do:
+  computes absolute positions off a rect and batches them through a
+  `CompoundCommandBuilder`.
+
+  ```js
+  cmds.push(DocumentCommand.createAddGuide(false, rc.x + offsets.left));
+  cmds.push(DocumentCommand.createAddGuide(true,  rc.y + offsets.top));
+  cmds.push(DocumentCommand.createAddGuide(false, rc.centre.x + offsets.hCentre));
+  ```
+
+  Strictly this is an absence of any binding API rather than a documented
+  statement that guides are unbound, but there is no mechanism by which they
+  could be. Adding the artboard offset yourself remains the way.
 
 ### Units
 - `UnitType` uses **British spelling**: `Millimetre`, `Centimetre`, `Metre`,

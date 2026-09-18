@@ -10,10 +10,31 @@ AI/MCP-enabled Affinity. (Classic Affinity V2 has **no** scripting.)
 - **How this was verified:** everything below was confirmed at runtime by
   probing a live document (dumping objects into dialogs) or taken from working
   community scripts — not assumed from documentation. Items still unconfirmed
-  are marked **(unverified)**.
+  are marked **(unverified)**. Where a claim has since been checked against an
+  official source, it says so inline.
 
-> **The authoritative SDK docs live inside the local MCP server**, not on the
-> public web. See [MCP / connection](#1-environment--connection) to extract them.
+### Three sources, in order of authority
+
+1. **The JSLib source — [`jslib/`](jslib/).** Affinity's own convenience
+   library, vendored here (BSD 3-Clause, © 2026 Canva Pty Ltd). These files
+   *are* the `/application`, `/geometry`, `/nodes`, `/commands` … modules our
+   scripts `require`, so for the API we actually write this is the ground
+   truth — read it before probing. Includes 34 worked examples and ~50 test
+   files with document fixtures. See [`jslib/README.md`](jslib/README.md).
+2. **The published SDK docs — <https://sdk.affinity.studio/33000/js/>.**
+   Definitive for the *native* `XxxApi` / `XxxHandle` layer underneath JSLib:
+   exact signatures, argument types, return types, and the complete enum list
+   (143 of them). Signatures only — no prose, no examples. Its Sphinx
+   `objects.inv` decodes to a full 10,440-symbol index if you want to grep
+   offline for whether a native method exists.
+3. **This document and [`affinity-scripting-notes.md`](affinity-scripting-notes.md).**
+   Definitive for **behaviour**, which neither official source records: the
+   quantised timer interval, the modal-from-a-working-callback crash, base-space
+   curve coordinates, the preview/commit model, the installed-vs-panel runtime
+   split, and the bug list in [§21](#21-known-bugs--gotchas).
+
+> Sources 1 and 2 describe the API *surface*. They do not tell you what actually
+> happens when you call it — that is what this document is for.
 
 ---
 
@@ -94,7 +115,9 @@ panel UI.
 
 - **`console.log` IS visible** in the Scripts panel. It is the best debugging
   channel: no clipping, no control-count cap, copyable as text. Prefer it.
-- The built-in Documentation / SDK Search can fail ("Listing failed").
+- The built-in Documentation / SDK Search can fail ("Listing failed"). It is no
+  longer the place to look anyway: read [`jslib/`](jslib/) for the wrapper API
+  and <https://sdk.affinity.studio/33000/js/> for native signatures.
 
 **Fallback — dump to a Dialog** (this is how much of the API below was
 reverse-engineered):
@@ -560,9 +583,28 @@ const xf = Transform.createTranslate(p.x, p.y)
                     .multiply(Transform.createTranslate(-p.x, -p.y));
 // data === [kx, 0, p.x*(1-kx), 0, ky, p.y*(1-ky)]
 ```
-`t.around(x,y)` and `t.translated(...)` produce the same matrix but `around()`
-**mutates its receiver** and `translated()`'s multiply side is undocumented —
-prefer the explicit form. `t.about()` is deprecated in favour of `around()`.
+`t.around(x,y)` and `t.translated(...)` produce the same matrix, but they differ
+in whether they mutate. Confirmed against
+[`jslib/geometry.js`](jslib/geometry.js), which sections them explicitly:
+
+```js
+multiply:   function(other) { const res = new Transform(); TransformApi.multiply(this, other, res); return res; },
+
+// mutating helpers
+around:     function(x, y) { return this.translate(x, y).postmultiplyBy(Transform.createTranslate(-x, -y)); },
+
+// non-mutating helpers
+clone:      function()      { const res = new Transform(); res.assign(this); return res; },
+scaled:     function(x, y=x) { return this.clone().scale(x, y); },
+sheared:    function(x, y)  { return this.clone().shear(x, y); },
+rotated:    function(rads)  { return this.clone().rotate(rads); },
+translated: function(x, y)  { return this.clone().translate(x, y); },
+```
+
+So: `multiply(other)` is **non-mutating** and puts the receiver on the **left**
+(`this × other`), returning a new `Transform`. `around()` mutates its receiver.
+`scaled` / `sheared` / `rotated` / `translated` all clone first and are safe.
+`t.about()` is deprecated in favour of `around()` (it warns to the console).
 
 **What `createTransform` scales for you — do NOT scale these from a script:**
 
@@ -738,11 +780,16 @@ Reading the frame's string:
 
 ### Attribute runs — use `attRuns`, not `getGlyphAttsRunEnd`
 
-> ⚠️ **`story.getGlyphAttsRunEnd(pos)` returns `0`** and cannot drive a run
-> walk — a loop built on it never advances.
+> ⚠️ `StoryApi.getGlyphAttsRunEnd` is a real, documented native method — but at
+> runtime **`story.getGlyphAttsRunEnd(pos)` returns `0`**, so it cannot drive a
+> run walk: a loop built on it never advances. This is a behavioural trap, not a
+> missing API.
 
-Use the `attRuns` **Collection** instead. Each item is a plain
-`{begin, end, glyphAtts, paragraphAtts}`:
+Use the `attRuns` **Collection** instead — `jslib/story.js` defines it as
+`get attRuns() { return this.getAttRunsFrom(0); }`, so it and
+`story.getAttRunsFrom(pos)` are the same walk from different offsets.
+(`glyphAttRuns` and `paragraphAttRuns` are the same pattern for one att type.)
+Each item is a plain `{begin, end, glyphAtts, paragraphAtts}`:
 
 ```js
 const runs = story.attRuns.toArray();
@@ -753,8 +800,6 @@ for (const run of runs) {
   run.paragraphAtts.leadingType.value;
 }
 ```
-`story.getAttRunsFrom(pos)` returns the same shape from an offset.
-
 **Format one run** (verified — 18pt → 27pt at ×1.5):
 
 ```js
@@ -1422,4 +1467,6 @@ wordRanges
 
 *Compiled from runtime probing of Affinity by Canva v3.2 and working community
 scripts. Members marked as enums expose a numeric `.value`. Verify anything
-marked **(unverified)** against the live MCP SDK docs before relying on it.*
+marked **(unverified)** against [`jslib/`](jslib/) or
+<https://sdk.affinity.studio/33000/js/> before relying on it — and remember that
+neither documents behaviour, only surface.*
